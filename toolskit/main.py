@@ -64,7 +64,7 @@ def main(page: ft.Page):
         try:
             # Mostrar mensaje de espera
             result_label.value = "Espere, convirtiendo archivo..."
-            result_label.color = ft.colors.YELLOW  # Puedes usar otro color si lo prefieres
+            result_label.color = ft.colors.YELLOW  
             page.update()
 
             # Mostrar la barra de progreso
@@ -100,7 +100,8 @@ def main(page: ft.Page):
                 actions=[ft.ElevatedButton("Aceptar", on_click=close_alert)],
                 open=True,
             )
-            page.dialog = alert_dialog
+            #page.dialog = alert_dialog
+            page.overlay.append(alert_dialog)
             page.update()
 
         except PermissionError as e:
@@ -156,16 +157,16 @@ def main(page: ft.Page):
     
 #::::::::::::EXCEL Función: Selección de archivo XLXS:::::::::::::::
     # Variables de la interfaz
-    archivo_seleccionado = ft.TextField(label="Archivo seleccionado", read_only=True)
+    archivo_seleccionado = ft.TextField(label="Archivo seleccionado", read_only=True, expand=True)
     status_text = ft.Text(value="Selecciona un archivo Excel para comenzar", size=16)
-
-
+    
     # Función para manejar la selección del archivo
     def file_selected(e: ft.FilePickerResultEvent):
         if file_picker2.result and file_picker2.result.files:
             archivo_seleccionado.value = file_picker2.result.files[0].path
-            status_text.value = f"Archivo seleccionado: {archivo_seleccionado.value}"
-            status_text.color = ft.colors.YELLOW
+            status_text.value = f"Archivo seleccionado: {archivo_seleccionado.value}" 
+
+
         else:
             status_text.value = "No se seleccionó ningún archivo."
             status_text.color = ft.colors.RED
@@ -175,31 +176,56 @@ def main(page: ft.Page):
     def modificar_archivo(e):
         nonlocal alert_dialog  # Asegurar que podemos modificar la variable global
 
-        if not archivo_seleccionado.value:
-            status_text.value = "Por favor, selecciona un archivo primero."
-            status_text.color = ft.colors.RED
+        # if not archivo_seleccionado.value:
+        #     status_text.value = "Por favor, selecciona un archivo primero."
+        #     status_text.color = ft.colors.RED
+        #     page.update()
+        #     return
+
+        # try:
+
+        # Mostrar mensaje de espera
+        status_text.value = "Espere, convirtiendo archivo..."
+        status_text.color = ft.colors.GREEN 
+        page.update()
+
+        # Mostrar la barra de progreso
+        progress_bar.visible = True
+        progress_bar.value = 0  # Iniciar en 0
+        page.update()
+
+        # Cargar el archivo seleccionado
+        archivo = archivo_seleccionado.value
+        workbook = load_workbook(archivo)
+        sheet = workbook.active
+
+        # Insertar 2 columnas a partir de la posición 2
+        sheet.insert_cols(2, 2)
+        # Ejemplo: Eliminar columna D
+        #sheet.delete_cols(1,3,4)
+
+        # Guardar cambios en un nuevo archivo
+        nuevo_archivo = archivo.replace(".xlsx", "_modificado.xlsx")
+        workbook.save(nuevo_archivo)
+
+        # Simular el progreso de la arreglo de tformdet         
+        for i in range(0, 101):
+            progress_bar.value = i * 0.01
+            time.sleep(0.1)
             page.update()
-            return
 
-        try:
-            # Cargar el archivo seleccionado
-            archivo = archivo_seleccionado.value
-            workbook = load_workbook(archivo)
-            sheet = workbook.active
+        # Finalizar la barra de progreso
+        progress_bar.value = 100
+        page.update()
 
-            # Ejemplo: Eliminar columna D
-            sheet.delete_cols(4)
-
-            # Guardar cambios en un nuevo archivo
-            nuevo_archivo = archivo.replace(".xlsx", "_modificado.xlsx")
-            workbook.save(nuevo_archivo)
-
-            status_text.value = f"Archivo modificado guardado como: {nuevo_archivo}"
-            status_text.color = ft.colors.GREEN
-        except Exception as ex:
-            status_text.value = f"Error al modificar el archivo: {ex}"
-            status_text.color = ft.colors.RED
-
+        status_text.value = f"Archivo modificado guardado como: {nuevo_archivo}"
+        status_text.color = ft.colors.GREEN
+            
+        # except Exception as ex:
+        #     status_text.value = f"Error al modificar el archivo: No se selecciono ningún archivo"
+        #     status_text.color = ft.colors.RED
+        #     progress_bar.visible = False
+        #     page.update()
         page.update()
 
         # Crear y mostrar el AlertDialog
@@ -209,7 +235,12 @@ def main(page: ft.Page):
             actions=[ft.ElevatedButton("Aceptar", on_click=close_alert2)],
             open=True,
         )
-        page.dialog = alert_dialog
+        #page.dialog = alert_dialog
+        page.overlay.append(alert_dialog)
+        page.update()
+
+        # Ocultar la barra de progreso después de la conversión
+        progress_bar.visible = False
         page.update()
 
 
@@ -221,23 +252,47 @@ def main(page: ft.Page):
                 archivo_seleccionado.value = ""
                 status_text.value = "Por favor, selecciona un archivo con extensión .xlsx."
                 status_text.color = ft.colors.RED
+                progress_bar.visible = False
+                modificar_button.visible = False
             else:
                 archivo_seleccionado.value = file_path
                 archivo_seleccionado.color = ft.colors.BLUE_200
-                status_text.value = f"Archivo seleccionado: {file_path}"
-                status_text.color = ft.colors.YELLOW
+                file_name = os.path.basename(file_path)
+                status_text.value = f"ARCHIVO A MODIFICAR: {file_name}"
+                status_text.color = ft.colors.GREEN
+                modificar_button.visible = True  # Mostrar botón si el archivo es válido
+
         else:
             archivo_seleccionado.value = "No se seleccionó ningún archivo."
             archivo_seleccionado.color = ft.colors.RED
+            status_text.value ="Selecciona un archivo Excel para comenzar"
+            status_text.color = ft.colors.BLUE
+            modificar_button.visible = False 
         page.update()
 
 
     # Elementos para modificar un archivo de excel
     seleccionar_button = ft.ElevatedButton(
     "Seleccionar archivo",
+    icon=ft.icons.FOLDER_OPEN,
+        style=ft.ButtonStyle(
+            bgcolor=ft.colors.LIGHT_BLUE_ACCENT,
+            color=ft.colors.WHITE,
+        ),
     on_click=lambda _: file_picker2.pick_files(allow_multiple=False, allowed_extensions=["xlsx"]),
+
+
     )
-    modificar_button = ft.ElevatedButton("Modificar archivo", on_click=modificar_archivo)
+    modificar_button = ft.ElevatedButton(
+        "Modificar archivo",
+        icon=ft.icons.DRIVE_FILE_RENAME_OUTLINE_ROUNDED,
+        style=ft.ButtonStyle(
+            bgcolor=ft.colors.GREEN,
+            color=ft.colors.WHITE,
+        ),
+        on_click=modificar_archivo,
+        visible=False,
+    )
 
         # Función para cerrar el AlertDialog
     def close_alert2(e):
@@ -248,11 +303,11 @@ def main(page: ft.Page):
             archivo_seleccionado.value = ""
             status_text.value ="Selecciona un archivo Excel para comenzar"
             status_text.color = ft.colors.WHITE
+            modificar_button.visible = False 
         page.update()
     
 
 #:::::::::::::::::FIN DE EXCEL::::::::::::::::::::::::::::::::
-
 
     # Función para cambiar entre tema claro y oscuro
     def theme_changed(e):
@@ -303,7 +358,7 @@ def main(page: ft.Page):
                 tabs=[
                     ft.Tab(
                         text="DBF a Excel",
-                        icon=ft.icons.SETTINGS,
+                        icon=ft.icons.SYNC,
                         content=ft.Column(
                             [
                                 ft.Container(height=20),
@@ -318,14 +373,16 @@ def main(page: ft.Page):
                         ),
                     ),
                     ft.Tab(
-                        text="Config TFORMDET",
+                        text="Format TFORMDET",
+                        icon=ft.icons.FORMAT_SHAPES,
                         content=ft.Column(
                             [
                                 ft.Container(height=20),  # Espacio vacío entre título y contenido
                                 ft.Text(value="Dar formato a archivo excel de Tformdet", size=20),
-                                ft.Row([seleccionar_button, modificar_button], spacing=10),
-                                archivo_seleccionado,
+                                ft.Row([archivo_seleccionado, seleccionar_button], spacing=10),
+                                modificar_button,
                                 status_text,
+                                progress_bar,
                             ],
                             spacing=20  # Espaciado entre elementos de la columna
                         ),
@@ -346,7 +403,7 @@ def main(page: ft.Page):
         on_change=lambda e: update_content(e.control.selected_index),
         destinations=[
             ft.NavigationRailDestination(icon=ft.icons.HOME, padding=5, label="Inicio"),
-            ft.NavigationRailDestination(icon=ft.icons.MONITOR, padding=5, label="TFORMDET"),
+            ft.NavigationRailDestination(icon=ft.icons.SETTINGS_SUGGEST_ROUNDED, padding=5, label="Config ICI"),
             ft.NavigationRailDestination(icon=ft.icons.SETTINGS,padding=5, label="Configuración"),
             ],
 
@@ -394,8 +451,5 @@ def main(page: ft.Page):
     #         alignment=ft.MainAxisAlignment.CENTER,
     #     ),
     # )
-
-
-    
 # Ejecutar la aplicación
 ft.app(target=main)
