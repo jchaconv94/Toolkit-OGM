@@ -5,7 +5,8 @@ from dbfread import DBF
 from datetime import datetime
 import time  # Importa time para simular el progreso de la barra
 from openpyxl import load_workbook
-
+from datetime import datetime
+import locale
 
 def main(page: ft.Page):
     
@@ -145,17 +146,14 @@ def main(page: ft.Page):
     on_click=lambda _: file_picker.pick_files(allow_multiple=False, allowed_extensions=["dbf"]),
     )
 
-
     # Botón para cambiar ubicación de guardado
     change_save_location_button = ft.ElevatedButton(
         text="Cambiar ubicación de guardado",
         icon=ft.icons.DRIVE_FOLDER_UPLOAD,
         on_click=lambda _: save_picker.get_directory_path(),
     )
-
-#:::::::::::::::FIN CONVERTIR DBF A EXCEL::::::::::::::::::::::::::::::::
     
-#::::::::::::EXCEL Función: Selección de archivo XLXS:::::::::::::::
+#::::::::::::MODIFICAR EXCEL DE TFORMDET:::::::::::::::
     # Variables de la interfaz
     archivo_seleccionado = ft.TextField(label="Archivo seleccionado", read_only=True, expand=True)
     status_text = ft.Text(value="Selecciona un archivo Excel para comenzar", size=16)
@@ -165,8 +163,6 @@ def main(page: ft.Page):
         if file_picker2.result and file_picker2.result.files:
             archivo_seleccionado.value = file_picker2.result.files[0].path
             status_text.value = f"Archivo seleccionado: {archivo_seleccionado.value}" 
-
-
         else:
             status_text.value = "No se seleccionó ningún archivo."
             status_text.color = ft.colors.RED
@@ -174,78 +170,89 @@ def main(page: ft.Page):
 
     # Función para modificar el archivo
     def modificar_archivo(e):
-        nonlocal alert_dialog  # Asegurar que podemos modificar la variable global
 
-        # if not archivo_seleccionado.value:
-        #     status_text.value = "Por favor, selecciona un archivo primero."
-        #     status_text.color = ft.colors.RED
-        #     page.update()
-        #     return
-
-        # try:
+        # Inhabilitar los botones
+        modificar_button.visible = False
+        seleccionar_button.disabled = True
 
         # Mostrar mensaje de espera
-        status_text.value = "Espere, convirtiendo archivo..."
-        status_text.color = ft.colors.GREEN 
-        page.update()
+        status_text.value = f"Espere..., modificando archivo {file_name}"
+        status_text.color = ft.colors.GREEN
 
         # Mostrar la barra de progreso
         progress_bar.visible = True
         progress_bar.value = 0  # Iniciar en 0
+
+        # Actualizar la página solo una vez
         page.update()
+
 
         # Cargar el archivo seleccionado
         archivo = archivo_seleccionado.value
         workbook = load_workbook(archivo)
         sheet = workbook.active
+        
+        #verificar si es un archivo tformdet
 
-        # Insertar 2 columnas a partir de la posición 2
-        sheet.insert_cols(2, 2)
-        # Ejemplo: Eliminar columna D
-        #sheet.delete_cols(1,3,4)
-
-        # Guardar cambios en un nuevo archivo
-        nuevo_archivo = archivo.replace(".xlsx", "_modificado.xlsx")
-        workbook.save(nuevo_archivo)
-
-        # Simular el progreso de la arreglo de tformdet         
-        for i in range(0, 101):
-            progress_bar.value = i * 0.01
-            time.sleep(0.1)
+        cod = sheet["A1"].value
+        if cod != "CODIGO_EJE":
+            status_text.value = "El archivo seleccionado no es un TFORMDET.xlxs."
+            status_text.color = ft.colors.RED
+            modificar_button.visible = False
+            progress_bar.visible = False
+            seleccionar_button.disabled = False
             page.update()
-
-        # Finalizar la barra de progreso
-        progress_bar.value = 100
-        page.update()
-
-        status_text.value = f"Archivo modificado guardado como: {nuevo_archivo}"
-        status_text.color = ft.colors.GREEN
+            return
+        else:            
             
-        # except Exception as ex:
-        #     status_text.value = f"Error al modificar el archivo: No se selecciono ningún archivo"
-        #     status_text.color = ft.colors.RED
-        #     progress_bar.visible = False
-        #     page.update()
-        page.update()
+            #obtener el mes del archivo
+            locale.setlocale(locale.LC_TIME, "Spanish_Spain")   #Configurar el idioma para fechas en español
+            fecha = sheet["D2"].value
+            mes = int(fecha) % 100    # Los últimos 2 dígitos son el mes
+            fecha_completa = datetime(2000, mes, 1) # Crear una fecha con el día 1 para evitar problemas
+            texto_fecha = fecha_completa.strftime("%B").upper()# Convertir la fecha a texto en español
+                
+            #modificar la hoja activa
+            sheet.insert_cols(2, 2)
+            sheet.insert_cols(5, 1)# Insertar 1 columnas a partir de la posición 5
+            sheet.insert_cols(9, 2)
+            sheet["B1"] = "COD. UNICO MAS CONSUMO SIS"
+            sheet["C1"] = "COD UNICO"   
+            sheet["E1"] = "EESS"
+            sheet["I1"] = "DESCRIPCION MED"
+            sheet["J1"] = "FECHA EN NUMERO"           
 
-        # Crear y mostrar el AlertDialog
-        alert_dialog = ft.AlertDialog(
-            title=ft.Text("¡Se completó con Éxito!"),
-            content=ft.Text(f"El archivo se ha guardado en {nuevo_archivo}."),
-            actions=[ft.ElevatedButton("Aceptar", on_click=close_alert2)],
-            open=True,
-        )
-        #page.dialog = alert_dialog
-        page.overlay.append(alert_dialog)
-        page.update()
+            # Ejemplo: Eliminar columna D
+            #sheet.delete_cols(1,3,4)
 
-        # Ocultar la barra de progreso después de la conversión
-        progress_bar.visible = False
-        page.update()
+            # Guardar cambios en un nuevo archivo
+            nuevo_archivo = archivo.replace(".xlsx", f"-{texto_fecha}.xlsx")
+            workbook.save(nuevo_archivo)
 
+            # Simular el progreso de la arreglo de tformdet         
+            for i in range(0, 101):
+                progress_bar.value = i * 0.01
+                time.sleep(0.1)
+                page.update()
 
+            # Crear y mostrar el AlertDialog
+            nonlocal alert_dialog  # Asegurar que podemos modificar la variable global
+            alert_dialog = ft.AlertDialog(
+                title=ft.Text("¡Se completó con Éxito!"),
+                content=ft.Text(f"El archivo se ha guardado en {nuevo_archivo}."),
+                actions=[ft.ElevatedButton("Aceptar", on_click=close_alert2)],
+                open=True,
+            )
+            #page.dialog = alert_dialog
+            page.overlay.append(alert_dialog)
+            # Ocultar la barra de progreso después de la conversión
+            progress_bar.visible = False
+            seleccionar_button.disabled = False
+            page.update()
+            
     #para manejar las validaciones
     def on_xlsx_file_picked2(e):
+        global file_name
         if e.files:
             file_path = e.files[0].path
             if not file_path.lower().endswith(".xlsx"):
@@ -260,6 +267,7 @@ def main(page: ft.Page):
                 file_name = os.path.basename(file_path)
                 status_text.value = f"ARCHIVO A MODIFICAR: {file_name}"
                 status_text.color = ft.colors.GREEN
+                status_text.style = ft.TextStyle(weight=ft.FontWeight.BOLD)
                 modificar_button.visible = True  # Mostrar botón si el archivo es válido
 
         else:
@@ -287,7 +295,7 @@ def main(page: ft.Page):
         "Modificar archivo",
         icon=ft.icons.DRIVE_FILE_RENAME_OUTLINE_ROUNDED,
         style=ft.ButtonStyle(
-            bgcolor=ft.colors.GREEN,
+            bgcolor=ft.colors.GREEN_ACCENT_700,
             color=ft.colors.WHITE,
         ),
         on_click=modificar_archivo,
@@ -380,8 +388,9 @@ def main(page: ft.Page):
                                 ft.Container(height=20),  # Espacio vacío entre título y contenido
                                 ft.Text(value="Dar formato a archivo excel de Tformdet", size=20),
                                 ft.Row([archivo_seleccionado, seleccionar_button], spacing=10),
-                                modificar_button,
-                                status_text,
+                                ft.Row([status_text, modificar_button], spacing=10),
+                                #modificar_button,
+                                #status_text,
                                 progress_bar,
                             ],
                             spacing=20  # Espaciado entre elementos de la columna
