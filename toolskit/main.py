@@ -5,6 +5,8 @@ from dbfread import DBF
 from datetime import datetime
 import time  # Importa time para simular el progreso de la barra
 from openpyxl import load_workbook
+from openpyxl.styles import Font, Border, Side
+
 from datetime import datetime
 import locale
 
@@ -39,7 +41,6 @@ def main(page: ft.Page):
             save_location.value = ""
             result_label.value = "No se seleccionó ningún archivo."
             result_label.color = ft.colors.RED
-
         page.update()
 
     # Función: Cambiar ubicación de guardado
@@ -186,7 +187,6 @@ def main(page: ft.Page):
         # Actualizar la página solo una vez
         page.update()
 
-
         # Cargar el archivo seleccionado
         archivo = archivo_seleccionado.value
         workbook = load_workbook(archivo)
@@ -196,7 +196,7 @@ def main(page: ft.Page):
 
         cod = sheet["A1"].value
         if cod != "CODIGO_EJE":
-            status_text.value = "El archivo seleccionado no es un TFORMDET.xlxs."
+            status_text.value = "El archivo seleccionado no es un TFORMDET.xlsx."
             status_text.color = ft.colors.RED
             modificar_button.visible = False
             progress_bar.visible = False
@@ -212,28 +212,86 @@ def main(page: ft.Page):
             fecha_completa = datetime(2000, mes, 1) # Crear una fecha con el día 1 para evitar problemas
             texto_fecha = fecha_completa.strftime("%B").upper()# Convertir la fecha a texto en español
                 
-            #modificar la hoja activa
+            #MODIFICAR LA HOJA
+            bold_font = Font(bold=True) # Crear un estilo de fuente con negrita
+           
+            borde = Border(
+                left=Side(border_style="thin"),
+                right=Side(border_style="thin"),
+                top=Side(border_style="thin"),
+                bottom=Side(border_style="thin")
+            )#definir los bordes de celdas
+
+            #insertar columnas
             sheet.insert_cols(2, 2)
             sheet.insert_cols(5, 1)# Insertar 1 columnas a partir de la posición 5
-            sheet.insert_cols(9, 2)
-            sheet["B1"] = "COD. UNICO MAS CONSUMO SIS"
-            sheet["C1"] = "COD UNICO"   
-            sheet["E1"] = "EESS"
-            sheet["I1"] = "DESCRIPCION MED"
-            sheet["J1"] = "FECHA EN NUMERO"           
+            sheet.insert_cols(9, 1)
 
-            # Ejemplo: Eliminar columna D
-            #sheet.delete_cols(1,3,4)
+            headers = {
+                "B1": "COD. UNICO MAS CONSUMO SIS",
+                "C1": "COD UNICO",
+                "E1": "EESS",
+                "I1": "DESCRIPCION MED",
+            }
 
-            # Guardar cambios en un nuevo archivo
-            nuevo_archivo = archivo.replace(".xlsx", f"-{texto_fecha}.xlsx")
-            workbook.save(nuevo_archivo)
+            # Aplicar formato y valor a cada celda
+            for cell, value in headers.items():
+                sheet[cell] = value
+                # sheet[cell].font = bold_font
+                # sheet[cell].border = borde
+
+            #Eliminar columnas
+            sheet.delete_cols(37, 18)  # Empieza en la columna 38 y elimina 55 columnas consecutivas.
+            columnas_a_eliminar = [39,34,33,7,6,1]
+            for col in columnas_a_eliminar:
+                sheet.delete_cols(col) 
+
+            # Copiar datos de columna 34 a columna 7 (LOTE Y REGISTRO SANITARIO)
+            sheet.insert_cols(7, 2)
+            for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=34, max_col=35):
+                sheet.cell(row=row[0].row, column=7, value=row[0].value)
+                sheet.cell(row=row[0].row, column=8, value=row[1].value)
+            # Eliminar la columna K (si es necesario)
+            sheet.delete_cols(34,2)
+
+            sheet.insert_cols(9, 4)
+            for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=37, max_col=40):
+                sheet.cell(row=row[0].row, column=9, value=row[0].value)
+                sheet.cell(row=row[0].row, column=10, value=row[1].value)
+                sheet.cell(row=row[0].row, column=11, value=row[2].value)
+                sheet.cell(row=row[0].row, column=12, value=row[3].value)
+            sheet.delete_cols(37,4)
+
+            sheet.insert_cols(10, 1)
+            sheet.cell(row=1, column=10, value="FECHA CON NUMERO")
+            
+            
+            # Encontrar la última columna con datos en la fila especificada
+            # target_row = 1  # Fila donde buscar datos
+            # last_col = 0
+            # for col in range(1, sheet.max_column + 1):
+            #     if sheet.cell(row=target_row, column=col).value is not None:
+            #         last_col = col
+            
+            for col in [1, 36]:
+                sheet.cell(row=1, column=col).font = bold_font  # Poner en negrita las cabeceras
+                sheet.cell(row=1, column=col).border = borde
+            
+                
+
+            
 
             # Simular el progreso de la arreglo de tformdet         
             for i in range(0, 101):
                 progress_bar.value = i * 0.01
                 time.sleep(0.1)
                 page.update()
+
+            # Guardar cambios en un nuevo archivo
+            nuevo_archivo = archivo.replace(".xlsx", f"-{texto_fecha}.xlsx")
+            workbook.save(nuevo_archivo)
+
+           
 
             # Crear y mostrar el AlertDialog
             nonlocal alert_dialog  # Asegurar que podemos modificar la variable global
@@ -389,8 +447,6 @@ def main(page: ft.Page):
                                 ft.Text(value="Dar formato a archivo excel de Tformdet", size=20),
                                 ft.Row([archivo_seleccionado, seleccionar_button], spacing=10),
                                 ft.Row([status_text, modificar_button], spacing=10),
-                                #modificar_button,
-                                #status_text,
                                 progress_bar,
                             ],
                             spacing=20  # Espaciado entre elementos de la columna
