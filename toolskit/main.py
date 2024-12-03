@@ -237,8 +237,6 @@ def main(page: ft.Page):
             # Aplicar formato y valor a cada celda
             for cell, value in headers.items():
                 sheet[cell] = value
-                # sheet[cell].font = bold_font
-                # sheet[cell].border = borde
 
             #Eliminar columnas
             sheet.delete_cols(37, 18)  # Empieza en la columna 38 y elimina 55 columnas consecutivas.
@@ -266,18 +264,12 @@ def main(page: ft.Page):
             sheet.cell(row=1, column=10, value="FECHA CON NUMERO")
             
             
-            # Encontrar la última columna con datos en la fila especificada
-            # target_row = 1  # Fila donde buscar datos
-            # last_col = 0
-            # for col in range(1, sheet.max_column + 1):
-            #     if sheet.cell(row=target_row, column=col).value is not None:
-            #         last_col = col
-            
-            for col in [1, 36]:
-                sheet.cell(row=1, column=col).font = bold_font  # Poner en negrita las cabeceras
-                sheet.cell(row=1, column=col).border = borde
-            
-                
+            #porner en negrito y bordes a la cabecera
+            target_row = 1  # Fila donde buscar datos
+            for col in range(1, sheet.max_column + 1):
+                 if sheet.cell(row=target_row, column=col).value is not None:
+                    sheet.cell(row=1, column=col).font = bold_font  # Poner en negrita las cabeceras
+                    sheet.cell(row=1, column=col).border = borde            
 
             
 
