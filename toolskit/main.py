@@ -263,7 +263,6 @@ def main(page: ft.Page):
             sheet.insert_cols(10, 1)
             sheet.cell(row=1, column=10, value="FECHA CON NUMERO")
             
-            
             #porner en negrito y bordes a la cabecera
             target_row = 1  # Fila donde buscar datos
             for col in range(1, sheet.max_column + 1):
@@ -271,7 +270,34 @@ def main(page: ft.Page):
                     sheet.cell(row=1, column=col).font = bold_font  # Poner en negrita las cabeceras
                     sheet.cell(row=1, column=col).border = borde            
 
+            from openpyxl.styles import NamedStyle
+
+            #CREAR UN ESTILO DE FECHA
+            date_style = NamedStyle(name="datetime", number_format="DD/MM/YYYY")
+
+            # Aplicar formato de fecha a la columna I
+            for cell in sheet["I"]:  # Cambia "I" por la columna que deseas formatear
+                if cell.row == 1:  # Saltar la cabecera
+                    continue
+                try:
+                    if cell.value and isinstance(cell.value, str):
+                        cell.value = datetime.strptime(cell.value, "%Y-%m-%d")  # Ajusta el formato si es diferente
+                    cell.style = date_style
+                except Exception as e:
+                    status_text.value = f"Error al procesar la celda {cell.coordinate}: {e}"
+                    status_text.color = ft.colors.RED
+                    page.update()
             
+            # Agregar la fórmula para convertir la fecha de vencimiento en numero
+            formula = "=CONCATENATE(YEAR(I2), IF(MONTH(I2)<10, CONCATENATE(0, MONTH(I2)), MONTH(I2)), IF(DAY(I2)<10, CONCATENATE(0, DAY(I2)), DAY(I2)))"
+            formula2 = "=CONCATENATE(C2,E2)"
+            formula3 ="=CONCATENATE(C2,E2,R2,S2)"
+            last_row = sheet.max_row # Obtener el número de la última fila con datos en la columna I
+            for row in range(2, last_row + 1):  # Asignar la fórmula a todas las celdas de la columna J
+                sheet[f'J{row}'].value = formula.replace('I2', f'I{row}')
+                sheet[f'B{row}'].value = formula2
+                sheet[f'A{row}'].value = formula3
+
 
             # Simular el progreso de la arreglo de tformdet         
             for i in range(0, 101):
