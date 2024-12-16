@@ -407,8 +407,6 @@ def main(page: ft.Page):
 
     # Verificar el tema inicial
     cambia_modo = ft.Switch(thumb_icon=ft.icons.DARK_MODE, label="Oscuro", on_change=theme_changed)
-
-
     # Configurar la página inicial
     page.theme_mode = ft.ThemeMode.DARK  # Si quieres que el tema inicial sea oscuro
 
@@ -523,23 +521,4 @@ def main(page: ft.Page):
             expand=True,
         )
     )
-
-#---------------------------------------------
-    
-
-    # page.add(
-    #     ft.Column(
-    #         [
-    #             ft.Row([theme_toggle_button], alignment=ft.MainAxisAlignment.END),  # Coloca el botón en la parte superior derecha
-    #             ft.Row([selected_file, pick_file_button], spacing=10),
-    #             ft.Row([save_location, change_save_location_button], spacing=10),
-    #             convert_button,
-    #             result_label,
-    #             progress_bar,  # Agregar barra de progreso a la página
-    #         ],
-    #         spacing=20,
-    #         alignment=ft.MainAxisAlignment.CENTER,
-    #     ),
-    # )
-# Ejecutar la aplicación
 ft.app(target=main)
