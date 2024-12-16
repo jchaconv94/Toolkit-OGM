@@ -395,17 +395,22 @@ def main(page: ft.Page):
 
     # Función para cambiar entre tema claro y oscuro
     def theme_changed(e):
+        # Alternar entre los modos
         page.theme_mode = (
-            ft.ThemeMode.DARK
-            if page.theme_mode == ft.ThemeMode.LIGHT
-            else ft.ThemeMode.LIGHT
+            ft.ThemeMode.DARK if page.theme_mode == ft.ThemeMode.LIGHT else ft.ThemeMode.LIGHT
         )
-        cambia_modo.label = (
-            "Claro" if page.theme_mode == ft.ThemeMode.LIGHT else "Oscuro"
-        )
+        # Actualizar etiqueta del switch
+        cambia_modo.label = "Claro" if page.theme_mode == ft.ThemeMode.LIGHT else "Oscuro"
+        cambia_modo.thumb_icon = ft.icons.LIGHT_MODE if page.theme_mode == ft.ThemeMode.LIGHT else ft.icons.DARK_MODE
+        cambia_modo.update()
         page.update()
-    cambia_modo = ft.Switch(label="Claro", on_change=theme_changed)
-    page.theme_mode = ft.ThemeMode.DARK
+
+    # Verificar el tema inicial
+    cambia_modo = ft.Switch(thumb_icon=ft.icons.DARK_MODE, label="Oscuro", on_change=theme_changed)
+
+
+    # Configurar la página inicial
+    page.theme_mode = ft.ThemeMode.DARK  # Si quieres que el tema inicial sea oscuro
 
 
     # Configurar FilePickers
@@ -421,6 +426,8 @@ def main(page: ft.Page):
     page.title = "ToolKits OGM - By: Ing. Jordan Chacon Villacis"
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
     page.vertical_alignment = ft.MainAxisAlignment.START
+    page.window.width=1000
+    page.window.height=700
 
 
 
@@ -493,10 +500,10 @@ def main(page: ft.Page):
         # Coloca el botón de alternar tema en la parte inferior del menú
         trailing=ft.Column(
             [
-                ft.Row([cambia_modo], alignment=ft.MainAxisAlignment.CENTER),  # Coloca el botón en la parte inferior
+                ft.Row([cambia_modo], alignment=ft.MainAxisAlignment.END),  # Coloca el botón en la parte inferior
             ],
             alignment=ft.MainAxisAlignment.END,  # Alinea el contenido al final
-            height=420,  # Puedes ajustar la altura para tener más espacio abajo
+            height=400,  # Puedes ajustar la altura para tener más espacio abajo
         ),
     )
     
