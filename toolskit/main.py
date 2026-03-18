@@ -62,10 +62,16 @@ def set_startup(run: bool):
 def main(page: ft.Page):
     
     # Variables globales
-    selected_file = ft.TextField(label="Archivo seleccionado", read_only=True, expand=True)
-    save_location = ft.TextField(label="Ubicación de guardado", read_only=True, expand=True)
-    result_label = ft.Text(value="", size=16, color=ft.colors.RED)
-    progress_bar = ft.ProgressBar(width=400, visible=False)  # Barra de progreso
+    selected_file = ft.TextField(
+        label="Ruta DBF origen...", read_only=True, expand=True,
+        border_color=ft.colors.TEAL_400, border_radius=8, content_padding=15, prefix_icon=ft.icons.DATA_OBJECT_ROUNDED
+    )
+    save_location = ft.TextField(
+        label="Ubicación de destino XLSX...", read_only=True, expand=True,
+        border_color=ft.colors.TEAL_400, border_radius=8, content_padding=15, prefix_icon=ft.icons.FOLDER_SPECIAL_ROUNDED
+    )
+    result_label = ft.Text(value="", size=14, color=ft.colors.WHITE, weight=ft.FontWeight.W_600)
+    progress_bar = ft.ProgressBar(expand=True, visible=False, color=ft.colors.TEAL_400, bgcolor=ft.colors.WHITE24)
     alert_dialog = None  # Variable global para el AlertDialog
     
  #:::::::::::::::::CONVERTIR DBF A EXCEL:::::::::::::::::::::::::::::::::
@@ -105,73 +111,66 @@ def main(page: ft.Page):
 
     # Función: Convertir archivo DBF a XLSX
     def convert_file(e):
-        nonlocal alert_dialog  # Asegurar que podemos modificar la variable global
         if not selected_file.value:
-            result_label.value = "Por favor, selecciona un archivo primero."
-            result_label.color = ft.colors.RED
+            result_label.value = "Por favor, selecciona un DBF primero."
+            result_label.color = ft.colors.RED_400
             page.update()
             return
-
-        try:
-            # Mostrar mensaje de espera
-            result_label.value = "Espere, convirtiendo archivo..."
-            result_label.color = ft.colors.YELLOW  
-            page.update()
-
-            # Mostrar la barra de progreso
+            
+        def _process():
+            nonlocal alert_dialog
+            convert_button.disabled = True
+            pick_file_button.disabled = True
+            change_save_location_button.disabled = True
+            result_label.value = "Transformando datos (puede tardar unos segundos)..."
+            result_label.color = ft.colors.AMBER_400
             progress_bar.visible = True
-            progress_bar.value = 0  # Iniciar en 0
+            progress_bar.value = None # Spinner indeterminado de rendimiento
             page.update()
 
-            # Leer el archivo DBF y convertirlo a XLSX
             dbf_path = selected_file.value
             xlsx_path = save_location.value
 
-            # Leer el archivo DBF
-            table = DBF(dbf_path, encoding="latin1")
-            df = pd.DataFrame(iter(table))
+            try:
+                # Leer el archivo DBF (optimizado directo a marco de datos)
+                table = DBF(dbf_path, encoding="latin1")
+                df = pd.DataFrame(iter(table))
+                df.to_excel(xlsx_path, index=False, engine="openpyxl")
 
-            # Convertir y guardar el archivo como XLSX
-            df.to_excel(xlsx_path, index=False, engine="openpyxl")
-
-            # Simular el progreso de la conversión          
-            for i in range(0, 101):
-                progress_bar.value = i * 0.01
-                time.sleep(0.1)
+                result_label.value = "✔ Conversión completada."
+                result_label.color = ft.colors.GREEN_400
+                progress_bar.value = 1
                 page.update()
 
-            # Finalizar la barra de progreso
-            progress_bar.value = 100
-            page.update()
-
-            # Crear y mostrar el AlertDialog
-            alert_dialog = ft.AlertDialog(
-                title=ft.Text("¡Conversión Exitosa!"),
-                content=ft.Text(f"El archivo se ha guardado en {xlsx_path}."),
-                actions=[ft.ElevatedButton("Aceptar", on_click=close_alert)],
-                open=True,
-            )
-            #page.dialog = alert_dialog
-            page.overlay.append(alert_dialog)
-            page.update()
-
-        except PermissionError as e:
-            result_label.value = f"Error: {str(e)}"
-            result_label.color = ft.colors.RED
-        except Exception as ex:
-            result_label.value = f"Error: {str(ex)}"
-            result_label.color = ft.colors.RED
-
-        # Ocultar la barra de progreso después de la conversión
-        progress_bar.visible = False
-        page.update()
+                alert_dialog = ft.AlertDialog(
+                    title=ft.Row([ft.Icon(ft.icons.CHECK_CIRCLE_ROUNDED, color=ft.colors.GREEN_500), ft.Text("Conversión Exitosa", weight=ft.FontWeight.W_900)]),
+                    content=ft.Text(f"El archivo XLSX ha sido generado en:\n\n{xlsx_path}", size=13),
+                    actions=[ft.ElevatedButton("Entendido", on_click=close_alert)],
+                    open=True,
+                    shape=ft.RoundedRectangleBorder(radius=16)
+                )
+                page.overlay.append(alert_dialog)
+                
+            except PermissionError as err:
+                result_label.value = f"Error: Archivo en uso. Ciérralo primero. ({err})"
+                result_label.color = ft.colors.RED_400
+            except Exception as ex:
+                result_label.value = f"Error: {str(ex)}"
+                result_label.color = ft.colors.RED_400
+            finally:
+                progress_bar.visible = False
+                convert_button.disabled = False
+                pick_file_button.disabled = False
+                change_save_location_button.disabled = False
+                page.update()
+                
+        threading.Thread(target=_process, daemon=True).start()
 
     # Función para cerrar el AlertDialog
     def close_alert(e):
-        nonlocal alert_dialog  # Asegúrate de usar la variable global
+        nonlocal alert_dialog
         if alert_dialog:
-            alert_dialog.open = False  # Cerrar el diálogo
-             # Resetear campos
+            alert_dialog.open = False
             selected_file.value = ""
             save_location.value = ""
             result_label.value = ""
@@ -180,26 +179,32 @@ def main(page: ft.Page):
 
  # Botón para convertir archivo
     convert_button = ft.ElevatedButton(
-        text="Convertir a .XLSX",
-        icon=ft.icons.SAVE,
+        content=ft.Row([
+            ft.Icon(ft.icons.SAVE_ROUNDED, color=ft.colors.WHITE, size=20),
+            ft.Text("CONVERTIR A EXCEL", color=ft.colors.WHITE, weight=ft.FontWeight.BOLD, size=13),
+        ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
         style=ft.ButtonStyle(
-            bgcolor=ft.colors.LIGHT_BLUE,
-            color=ft.colors.WHITE,
+            bgcolor=ft.colors.TEAL_700,
+            shape=ft.RoundedRectangleBorder(radius=10),
         ),
+        height=45,
+        width=250,
         on_click=convert_file,
     )
 
     # Botón para seleccionar archivo DBF
     pick_file_button = ft.ElevatedButton(
-    text="Seleccionar archivo .DBF",
-    icon=ft.icons.FOLDER_OPEN,
-    on_click=lambda _: file_picker.pick_files(allow_multiple=False, allowed_extensions=["dbf"]),
+        content=ft.Row([ft.Icon(ft.icons.FILE_OPEN_ROUNDED, size=18, color=ft.colors.WHITE), ft.Text("Seleccionar DBF", weight=ft.FontWeight.BOLD, color=ft.colors.WHITE)]),
+        style=ft.ButtonStyle(bgcolor=ft.colors.BLUE_700, shape=ft.RoundedRectangleBorder(radius=10)),
+        height=45,
+        on_click=lambda _: file_picker.pick_files(allow_multiple=False, allowed_extensions=["dbf"]),
     )
 
     # Botón para cambiar ubicación de guardado
     change_save_location_button = ft.ElevatedButton(
-        text="Cambiar ubicación de guardado",
-        icon=ft.icons.DRIVE_FOLDER_UPLOAD,
+        content=ft.Row([ft.Icon(ft.icons.CREATE_NEW_FOLDER_ROUNDED, size=18, color=ft.colors.WHITE), ft.Text("Cambiar Destino", weight=ft.FontWeight.BOLD, color=ft.colors.WHITE)]),
+        style=ft.ButtonStyle(bgcolor=ft.colors.BLUE_700, shape=ft.RoundedRectangleBorder(radius=10)),
+        height=45,
         on_click=lambda _: save_picker.get_directory_path(),
     )
     
@@ -1647,24 +1652,62 @@ def main(page: ft.Page):
                 expand=True,
                 content=ft.Column(
                     [
+                        # Cabecera
                         ft.Row([
-                            ft.Icon(ft.icons.SYNC, size=38, color=ft.colors.TEAL_400),
-                            ft.Text("Convertidor DBF a Excel", size=24, weight=ft.FontWeight.W_900),
-                        ], alignment=ft.MainAxisAlignment.START, spacing=15),
-                        ft.Divider(height=20, color=ft.colors.TRANSPARENT),
+                            ft.Row([
+                                ft.Icon(ft.icons.SYNC_ROUNDED, size=38, color=ft.colors.TEAL_400),
+                                ft.Column([
+                                    ft.Text("Convertidor DBF a Excel", size=24, weight=ft.FontWeight.W_900),
+                                    ft.Text("Transformación rápida de datos estructurados", size=12, color=ft.colors.ON_SURFACE_VARIANT)
+                                ], spacing=2)
+                            ], spacing=15),
+                            ft.Container(expand=True),
+                            ft.ElevatedButton(
+                                content=ft.Row([ft.Icon(ft.icons.ARROW_BACK_ROUNDED, size=18), ft.Text("Volver a Herramientas", weight=ft.FontWeight.BOLD)]),
+                                style=ft.ButtonStyle(bgcolor=ft.colors.SURFACE_VARIANT, color=ft.colors.ON_SURFACE_VARIANT),
+                                on_click=lambda _: [update_sidebar_ui(2), update_content(2)]
+                            )
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                        ft.Divider(height=10, color=ft.colors.TRANSPARENT),
+
+                        # Panel central tipo tarjeta centrado horizontalmente
                         ft.Row([
-                            ft.IconButton(icon=ft.icons.ARROW_BACK_ROUNDED, on_click=lambda _: navigate(2), tooltip="Volver a Herramientas"),
-                            ft.Text("Volver", size=16, color=ft.colors.ON_SURFACE_VARIANT)
-                        ]),
-                        ft.Container(height=10),
-                        ft.Text(value="Convierte archivos .dbf a excel.", size=20),
-                        ft.Row([selected_file, pick_file_button], spacing=10),
-                        ft.Row([save_location, change_save_location_button], spacing=10),
-                        convert_button,
-                        result_label,
-                        progress_bar,  # Barra de progreso
+                            ft.Container(
+                                bgcolor=ft.colors.BLUE_GREY_900,
+                                padding=ft.padding.only(top=35, bottom=35, left=40, right=40),
+                                border_radius=16,
+                                width=800, # Un ancho suficiente para no agobiar los imputs
+                                content=ft.Column([
+                                    ft.Row([
+                                        ft.Icon(ft.icons.SETTINGS_ROUNDED, color=ft.colors.TEAL_400, size=24),
+                                        ft.Text("Parámetros de Conversión", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                                    ], spacing=10),
+                                    ft.Divider(color=ft.colors.WHITE24, height=15),
+                                    
+                                    ft.Text("Archivo DBF a procesar:", size=13, color=ft.colors.GREY_400),
+                                    ft.Row([selected_file, pick_file_button], spacing=15, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                    
+                                    ft.Container(height=10),
+                                    
+                                    ft.Text("Ruta de salida del archivo Excel (.xlsx):", size=13, color=ft.colors.GREY_400),
+                                    ft.Row([save_location, change_save_location_button], spacing=15, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                    
+                                    ft.Container(height=40),
+                                    
+                                    # Barra de progreso y resultados flotantes
+                                    progress_bar,
+                                    ft.Container(height=5),
+                                    
+                                    ft.Row([
+                                        result_label,
+                                        convert_button
+                                    ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+                                    
+                                ])
+                            )
+                        ], alignment=ft.MainAxisAlignment.CENTER)
                     ],
-                    spacing=20  # Espaciado entre elementos de la columna
+                    spacing=10
                 )
             )
             content.controls.append(dbf_view)
