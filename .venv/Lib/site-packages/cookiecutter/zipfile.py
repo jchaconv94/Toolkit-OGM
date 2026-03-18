@@ -1,9 +1,10 @@
 """Utility functions for handling and fetching repo archives in zip format."""
 
+from __future__ import annotations
+
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional
 from zipfile import BadZipFile, ZipFile
 
 import requests
@@ -16,10 +17,10 @@ from cookiecutter.utils import make_sure_path_exists
 def unzip(
     zip_uri: str,
     is_url: bool,
-    clone_to_dir: "os.PathLike[str]" = ".",
+    clone_to_dir: Path | str = ".",
     no_input: bool = False,
-    password: Optional[str] = None,
-):
+    password: str | None = None,
+) -> str:
     """Download and unpack a zipfile at a given URI.
 
     This will download the zipfile to the cookiecutter repository,
@@ -62,60 +63,63 @@ def unzip(
     # Now unpack the repository. The zipfile will be unpacked
     # into a temporary directory
     try:
-        zip_file = ZipFile(zip_path)
+        # Use context manager so the file descriptor is always released, even if
+        # an exception occurs while processing the archive. This prevents file
+        # handle leaks on operating systems that keep the underlying ZIP file
+        # locked until it is explicitly closed.
+        with ZipFile(zip_path) as zip_file:
+            if len(zip_file.namelist()) == 0:
+                msg = f'Zip repository {zip_uri} is empty'
+                raise InvalidZipRepository(msg)
 
-        if len(zip_file.namelist()) == 0:
-            raise InvalidZipRepository(f'Zip repository {zip_uri} is empty')
+            # The first record in the zipfile should be the directory entry for
+            # the archive. If it isn't a directory, there's a problem.
+            first_filename = zip_file.namelist()[0]
+            if not first_filename.endswith('/'):
+                msg = f"Zip repository {zip_uri} does not include a top-level directory"
+                raise InvalidZipRepository(msg)
 
-        # The first record in the zipfile should be the directory entry for
-        # the archive. If it isn't a directory, there's a problem.
-        first_filename = zip_file.namelist()[0]
-        if not first_filename.endswith('/'):
-            raise InvalidZipRepository(
-                f"Zip repository {zip_uri} does not include a top-level directory"
-            )
+            # Construct the final target directory
+            project_name = first_filename[:-1]
+            unzip_base = tempfile.mkdtemp()
+            unzip_path = os.path.join(unzip_base, project_name)
 
-        # Construct the final target directory
-        project_name = first_filename[:-1]
-        unzip_base = tempfile.mkdtemp()
-        unzip_path = os.path.join(unzip_base, project_name)
-
-        # Extract the zip file into the temporary directory
-        try:
-            zip_file.extractall(path=unzip_base)
-        except RuntimeError:
-            # File is password protected; try to get a password from the
-            # environment; if that doesn't work, ask the user.
-            if password is not None:
-                try:
-                    zip_file.extractall(path=unzip_base, pwd=password.encode('utf-8'))
-                except RuntimeError:
-                    raise InvalidZipRepository(
-                        'Invalid password provided for protected repository'
-                    )
-            elif no_input:
-                raise InvalidZipRepository(
-                    'Unable to unlock password protected repository'
-                )
-            else:
-                retry = 0
-                while retry is not None:
+            # Extract the zip file into the temporary directory
+            try:
+                zip_file.extractall(path=unzip_base)
+            except RuntimeError as runtime_err:
+                # File is password protected; try to get a password from the
+                # environment; if that doesn't work, ask the user.
+                if password is not None:
                     try:
-                        password = read_repo_password('Repo password')
                         zip_file.extractall(
                             path=unzip_base, pwd=password.encode('utf-8')
                         )
-                        retry = None
-                    except RuntimeError:
-                        retry += 1
-                        if retry == 3:
-                            raise InvalidZipRepository(
-                                'Invalid password provided for protected repository'
+                    except RuntimeError as e:
+                        msg = 'Invalid password provided for protected repository'
+                        raise InvalidZipRepository(msg) from e
+                elif no_input:
+                    msg = 'Unable to unlock password protected repository'
+                    raise InvalidZipRepository(msg) from runtime_err
+                else:
+                    retry: int | None = 0
+                    while retry is not None:
+                        try:
+                            password = read_repo_password('Repo password')
+                            zip_file.extractall(
+                                path=unzip_base, pwd=password.encode('utf-8')
                             )
+                            retry = None
+                        except RuntimeError as e:  # noqa: PERF203
+                            retry += 1  # type: ignore[operator]
+                            if retry == 3:
+                                msg = (
+                                    'Invalid password provided for protected repository'
+                                )
+                                raise InvalidZipRepository(msg) from e
 
-    except BadZipFile:
-        raise InvalidZipRepository(
-            f'Zip repository {zip_uri} is not a valid zip archive:'
-        )
+    except BadZipFile as e:
+        msg = f'Zip repository {zip_uri} is not a valid zip archive:'
+        raise InvalidZipRepository(msg) from e
 
     return unzip_path

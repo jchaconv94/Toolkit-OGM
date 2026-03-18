@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 import flet as ft
 import os
 import pandas as pd
@@ -19,6 +21,7 @@ from PIL import Image, ImageDraw
 import win32event
 import win32api
 import winerror
+from tformdet_report import TformdetManager
 from guia_report import GuiaReportManager
 
 # ==========================================
@@ -664,12 +667,20 @@ def main(page: ft.Page):
         content=ft.Column(expand=True, controls=[
             # Cabecera
             ft.Row([
-                ft.Icon(ft.icons.BAR_CHART_ROUNDED, size=38, color=ft.colors.ORANGE_400),
-                ft.Column([
-                    ft.Text("Reports SISMED", size=28, weight=ft.FontWeight.W_900),
-                    ft.Text("Generador de Reportes de Guías SISMED (Ingresos/Salidas)", color=ft.colors.ON_SURFACE_VARIANT, size=12)
-                ], spacing=0)
-            ]),
+                ft.Row([
+                    ft.Icon(ft.icons.BAR_CHART_ROUNDED, size=38, color=ft.colors.ORANGE_400),
+                    ft.Column([
+                        ft.Text("Reporte de Guías", size=28, weight=ft.FontWeight.W_900),
+                        ft.Text("Generador de Reportes de Guías SISMED (Ingresos/Salidas)", color=ft.colors.ON_SURFACE_VARIANT, size=12)
+                    ], spacing=0)
+                ], spacing=15),
+                ft.Container(expand=True),
+                ft.ElevatedButton(
+                    content=ft.Row([ft.Icon(ft.icons.ARROW_BACK_ROUNDED, size=18), ft.Text("Volver a Reports SISMED", weight=ft.FontWeight.BOLD)]),
+                    style=ft.ButtonStyle(bgcolor=ft.colors.SURFACE_VARIANT, color=ft.colors.ON_SURFACE_VARIANT),
+                    on_click=lambda _: [update_sidebar_ui(4), update_content(4)]
+                )
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
             ft.Divider(height=8, color=ft.colors.TRANSPARENT),
 
             # Cuerpo: Dos Columnas (izquierda filtros + derecha estado)
@@ -677,23 +688,15 @@ def main(page: ft.Page):
                 # ── COLUMNA IZQUIERDA: Filtros (ancho fijo como en la referencia) ──
                 ft.Container(
                     bgcolor=ft.colors.BLUE_GREY_900,
-                    padding=ft.padding.all(20),
+                    padding=ft.padding.only(top=35, bottom=35, left=30, right=30),
                     border_radius=16,
                     width=500,   # Ancho fijo como en la imagen referencia
                     content=ft.Column([
 
-                        # Título
-                        ft.Row([
-                            ft.Icon(ft.icons.SETTINGS_ROUNDED, color=ft.colors.AMBER_400, size=24),
-                            ft.Text("Configuración de Reportes", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
-                        ], spacing=8),
-
-                        ft.Container(height=10),
-
                         # Ubicación SISMED
                         input_report_sismed_dir,
 
-                        ft.Container(height=10),
+                        ft.Container(height=2),
 
                         # Fechas con flecha central
                         ft.Row([
@@ -702,7 +705,7 @@ def main(page: ft.Page):
                             fecha_fin,
                         ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER, expand=True),
 
-                        ft.Container(height=10),
+                        ft.Container(height=2),
 
                         # Tipo
                         ft.Text("Tipo de movimiento:", size=12, color=ft.colors.GREY_400),
@@ -1006,7 +1009,7 @@ def main(page: ft.Page):
                     controls=[
                         # Panel Izquierdo
                         ft.Container(
-                            col={"sm": 12, "md": 12, "lg": 5, "xl": 4},
+                            col={"sm": 12, "md": 12, "lg": 6, "xl": 5},
                             padding=ft.padding.only(top=38, bottom=40, left=40, right=40),
                             bgcolor=ft.colors.SURFACE_VARIANT,
                             border_radius=20,
@@ -1029,7 +1032,7 @@ def main(page: ft.Page):
                         
                         # Panel Derecho
                         ft.Container(
-                            col={"sm": 12, "md": 12, "lg": 7, "xl": 8},
+                            col={"sm": 12, "md": 12, "lg": 6, "xl": 7},
                             padding=30,
                             bgcolor=ft.colors.SURFACE_VARIANT,
                             border_radius=20,
@@ -1059,11 +1062,285 @@ def main(page: ft.Page):
                 )
             ],
             expand=True,
-            scroll=ft.ScrollMode.AUTO, # Añadimos scroll a la vista principal por si colapsa verticalmente
         )
     )
 
-    # Función para cambiar entre tema claro y oscuro
+    # ==========================================
+    # MÓDULO: CONSULTA TFORMDET
+    # ==========================================
+    
+    tformdet_log = ft.ListView(height=310, spacing=5, auto_scroll=True)
+    
+    def on_tformdet_log(msg):
+        tformdet_log.controls.append(ft.Text(msg, size=13, font_family="Consolas", color=ft.colors.GREEN_400))
+        page.update()
+
+    tformdet_mgr = TformdetManager("", log_callback=on_tformdet_log)
+
+    def on_tformdet_dir_picked(e: ft.FilePickerResultEvent):
+        if e.path:
+            input_sismed_dir_tf.value = e.path
+            input_sismed_dir_tf.update()
+
+    tformdet_dir_picker = ft.FilePicker(on_result=on_tformdet_dir_picked)
+    
+    def run_tformdet_query(e):
+        if not input_sismed_dir_tf.value:
+            page.snack_bar = ft.SnackBar(ft.Text("❌ Por favor, selecciona la ruta del SISMED."), bgcolor=ft.colors.RED_700)
+            page.snack_bar.open = True
+            page.update()
+            return
+            
+        periodo_ini = f"{input_anio_ini_tf.value}{dropdown_mes_ini_tf.value}"
+        
+        if checkbox_mas_periodos.value:
+            periodo_fin = f"{input_anio_fin_tf.value}{dropdown_mes_fin_tf.value}"
+            if periodo_ini > periodo_fin:
+                page.snack_bar = ft.SnackBar(ft.Text("❌ El Periodo Inicial no puede ser mayor al Periodo Final.", color=ft.colors.WHITE), bgcolor=ft.colors.RED_700)
+                page.snack_bar.open = True
+                page.update()
+                return
+            file_name_out = f"TFORMDET_Consulta_{periodo_ini}_al_{periodo_fin}.xlsx"
+        else:
+            periodo_fin = periodo_ini
+            file_name_out = f"TFORMDET_Consulta_{periodo_ini}.xlsx"
+
+        tformdet_mgr.sismed_dir = input_sismed_dir_tf.value
+        tformdet_log.controls.clear()
+
+        tformdet_save_picker.save_file(
+            dialog_title="Guardar archivo de Consulta TFORMDET",
+            file_name=file_name_out,
+            allowed_extensions=["xlsx"]
+        )
+
+    def on_tformdet_save_picked(e: ft.FilePickerResultEvent):
+        if e.path:
+            periodo_ini = f"{input_anio_ini_tf.value}{dropdown_mes_ini_tf.value}"
+            periodo_fin = f"{input_anio_fin_tf.value}{dropdown_mes_fin_tf.value}" if checkbox_mas_periodos.value else periodo_ini
+            
+            def process():
+                btn_run_tformdet.disabled = True
+                btn_run_tformdet.update()
+                
+                success = tformdet_mgr.generate_report(
+                    periodo_ini, 
+                    periodo_fin, 
+                    e.path, 
+                    incluir_formulas=checkbox_formulas_tformdet.value
+                )
+                
+                if success:
+                    page.snack_bar = ft.SnackBar(ft.Text("✅ Consulta exitosa! Archivo guardado.", color=ft.colors.WHITE), bgcolor=ft.colors.GREEN_700)
+                else:
+                    page.snack_bar = ft.SnackBar(ft.Text("⚠️ No se generó el archivo o no hubo resultados.", color=ft.colors.WHITE), bgcolor=ft.colors.ORANGE_700)
+                    
+                page.snack_bar.open = True
+                btn_run_tformdet.disabled = False
+                btn_run_tformdet.update()
+                page.update()
+
+            threading.Thread(target=process, daemon=True).start()
+
+    tformdet_save_picker = ft.FilePicker(on_result=on_tformdet_save_picked)
+
+    # Componentes UI TFORMDET
+    input_sismed_dir_tf = ft.TextField(
+        label="Ruta carpeta SISMED", 
+        value=saved_sismed_dir if saved_sismed_dir else "",
+        hint_text="Ej: C:\\SISMED", 
+        expand=True, 
+        dense=True,
+        read_only=True,
+        prefix_icon=ft.icons.FOLDER,
+        border_radius=4,
+        border_color=ft.colors.WHITE38,
+        focused_border_color=ft.colors.WHITE,
+        text_size=15,
+        suffix=ft.IconButton(icon=ft.icons.SEARCH_ROUNDED, on_click=lambda _: tformdet_dir_picker.get_directory_path(), icon_size=18),
+        content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8)
+    )
+
+    meses_opciones = [
+        ("01", "Enero"), ("02", "Febrero"), ("03", "Marzo"), ("04", "Abril"),
+        ("05", "Mayo"), ("06", "Junio"), ("07", "Julio"), ("08", "Agosto"),
+        ("09", "Septiembre"), ("10", "Octubre"), ("11", "Noviembre"), ("12", "Diciembre")
+    ]
+    
+    dropdown_mes_ini_tf = ft.Dropdown(
+        label="Mes Inicio",
+        options=[ft.dropdown.Option(k, f"{k} - {v}") for k, v in meses_opciones],
+        value=now.strftime("%m"),
+        expand=1,
+        dense=True,
+        border_radius=4,
+        border_color=ft.colors.WHITE38,
+        focused_border_color=ft.colors.WHITE,
+        text_size=15,
+        prefix_icon=ft.icons.CALENDAR_MONTH,
+        content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
+    )
+    
+    input_anio_ini_tf = ft.TextField(
+        label="Año Inicio",
+        value=now.strftime("%Y"),
+        expand=1,
+        dense=True,
+        border_radius=4,
+        border_color=ft.colors.WHITE38,
+        focused_border_color=ft.colors.WHITE,
+        text_size=15,
+        prefix_icon=ft.icons.DATE_RANGE_ROUNDED,
+        content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
+    )
+
+    
+
+    dropdown_mes_fin_tf = ft.Dropdown(
+        label="Mes Fin",
+        options=[ft.dropdown.Option(k, f"{k} - {v}") for k, v in meses_opciones],
+        value=now.strftime("%m"),
+        expand=1,
+        dense=True,
+        border_radius=4,
+        border_color=ft.colors.WHITE38,
+        focused_border_color=ft.colors.WHITE,
+        text_size=15,
+        prefix_icon=ft.icons.CALENDAR_MONTH,
+        content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
+        visible=False
+    )
+    
+    input_anio_fin_tf = ft.TextField(
+        label="Año Fin",
+        value=now.strftime("%Y"),
+        expand=1,
+        dense=True,
+        border_radius=4,
+        border_color=ft.colors.WHITE38,
+        focused_border_color=ft.colors.WHITE,
+        text_size=15,
+        prefix_icon=ft.icons.DATE_RANGE_ROUNDED,
+        content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
+        visible=False
+    )
+    
+    def on_multi_periodo_change(e):
+        show = checkbox_mas_periodos.value
+        dropdown_mes_fin_tf.visible = show
+        input_anio_fin_tf.visible = show
+        
+        # El nuevo checkbox de fórmulas solo se muestra si NO hay rango
+        if show:
+            checkbox_formulas_tformdet.value = False
+            checkbox_formulas_tformdet.visible = False
+        else:
+            checkbox_formulas_tformdet.visible = True
+            
+        dropdown_mes_fin_tf.update()
+        input_anio_fin_tf.update()
+        checkbox_formulas_tformdet.update()
+
+    checkbox_mas_periodos = ft.Checkbox(
+        label="Incluir rango de periodos",
+        value=False,
+        on_change=on_multi_periodo_change
+    )
+
+    checkbox_formulas_tformdet = ft.Checkbox(
+        label="AÑADIR COLUMNAS Y FÓRMULAS DE CÓDIGO ÚNICO",
+        value=False,
+        visible=True
+    )
+
+    btn_run_tformdet = ft.ElevatedButton(
+        content=ft.Row([
+            ft.Icon(ft.icons.DOWNLOAD_ROUNDED, color=ft.colors.WHITE, size=20),
+            ft.Text("CONSULTAR Y DESCARGAR EXCEL", color=ft.colors.WHITE, weight=ft.FontWeight.BOLD, size=13),
+        ], alignment=ft.MainAxisAlignment.CENTER),
+        style=ft.ButtonStyle(
+            bgcolor=ft.colors.BLUE_700,
+            color=ft.colors.WHITE,
+            shape=ft.RoundedRectangleBorder(radius=4),
+            padding=ft.padding.all(15)
+        ),
+        on_click=run_tformdet_query,
+        height=50
+    )
+
+    tformdet_view = ft.Container(
+        padding=40,
+        expand=True,
+        content=ft.Column([
+            ft.Row([
+                ft.Row([
+                    ft.Icon(ft.icons.SEARCH_ROUNDED, size=38, color=ft.colors.BLUE_400),
+                    ft.Column([
+                        ft.Text("Consulta TFORMDET Avanzada", size=24, weight=ft.FontWeight.W_900),
+                        ft.Text("Consulta detallada de movimientos SISMED", color=ft.colors.ON_SURFACE_VARIANT, size=12)
+                    ], spacing=2)
+                ], spacing=15),
+                ft.Container(expand=True),
+                ft.ElevatedButton(
+                    content=ft.Row([ft.Icon(ft.icons.ARROW_BACK_ROUNDED, size=18), ft.Text("Volver a Reports SISMED", weight=ft.FontWeight.BOLD)]),
+                    style=ft.ButtonStyle(bgcolor=ft.colors.SURFACE_VARIANT, color=ft.colors.ON_SURFACE_VARIANT),
+                    on_click=lambda _: [update_sidebar_ui(4), update_content(4)]
+                )
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Divider(height=8, color=ft.colors.TRANSPARENT),
+
+            ft.Row([
+                ft.Container(
+                    expand=7,
+                    bgcolor=ft.colors.BLUE_GREY_900,
+                    border_radius=12,
+                    padding=20,
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.icons.SETTINGS_ROUNDED, color=ft.colors.BLUE_400, size=24),
+                            ft.Text("Configuración de Consulta", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                        ], spacing=10),
+                        ft.Divider(color=ft.colors.WHITE24, height=15),
+                        
+                        ft.Row([input_sismed_dir_tf]),
+                        ft.Row([
+                            checkbox_mas_periodos
+                        ]),
+                        ft.Row([
+                            dropdown_mes_ini_tf,
+                            input_anio_ini_tf
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        ft.Row([
+                            dropdown_mes_fin_tf,
+                            input_anio_fin_tf
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        ft.Row([
+                            checkbox_formulas_tformdet
+                        ]),
+                        
+                        ft.Container(height=5),
+                        ft.Row([btn_run_tformdet], alignment=ft.MainAxisAlignment.CENTER)
+                    ], spacing=15)
+                ),
+
+                ft.Container(
+                    expand=5,
+                    bgcolor=ft.colors.BLACK,
+                    border_radius=12,
+                    padding=20,
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.icons.TERMINAL_ROUNDED, color=ft.colors.BLUE_400, size=22),
+                            ft.Text("Consola de Consulta", color=ft.colors.WHITE, size=18, weight=ft.FontWeight.BOLD)
+                        ], spacing=10),
+                        ft.Divider(color=ft.colors.GREY_900, height=20),
+                        tformdet_log
+                    ], spacing=10)
+                )
+            ], spacing=20, alignment=ft.MainAxisAlignment.START, vertical_alignment=ft.CrossAxisAlignment.START)
+        ])
+    )
+
     def theme_changed(e):
         # Alternar entre los modos
         page.theme_mode = (
@@ -1089,6 +1366,8 @@ def main(page: ft.Page):
     page.overlay.append(file_picker2)
     page.overlay.append(save_picker)
     page.overlay.append(sismed_dir_picker)
+    page.overlay.append(tformdet_dir_picker)
+    page.overlay.append(tformdet_save_picker)
 
 # CONSTRUCCION DE LA PAGINA ----- Agregar elementos a la página
 
@@ -1198,7 +1477,7 @@ def main(page: ft.Page):
     )
     
     # Restringir tamaño mínimo de la ventana
-    page.window.min_width = 950
+    page.window.min_width = 1290
     page.window.min_height = 680
 
 
@@ -1212,35 +1491,35 @@ def main(page: ft.Page):
         # Limpiar el contenido anterior
         content.controls.clear()
         
-        if index == 0:
-            def navigate(view_idx):
-                # Ahora que están en el sidebar, sí los seleccionamos
-                update_sidebar_ui(view_idx)
-                update_content(view_idx)
-            
-            def create_card(title, desc, icon, color, idx):
-                return ft.Card(
-                    elevation=5,
-                    shape=ft.RoundedRectangleBorder(radius=20),
-                    content=ft.Container(
-                        padding=20,
-                        width=250,
-                        height=200,
-                        ink=True,
-                        on_click=lambda e, i=idx: navigate(i),
-                        content=ft.Column(
-                            controls=[
-                                ft.Icon(icon, size=55, color=color),
-                                ft.Container(height=5),
-                                ft.Text(title, size=20, weight=ft.FontWeight.W_900, text_align=ft.TextAlign.CENTER),
-                                ft.Text(desc, size=13, color=ft.colors.ON_SURFACE_VARIANT, text_align=ft.TextAlign.CENTER)
-                            ],
-                            alignment=ft.MainAxisAlignment.CENTER,
-                            horizontal_alignment=ft.CrossAxisAlignment.CENTER
-                        )
+        def navigate(view_idx):
+            # Ahora que están en el sidebar, sí los seleccionamos. Si el view_idx no es visualmente un tooltip lateral (como los index 6 y 7, mantendrá visualmente la categoría principal si existe)
+            update_sidebar_ui(view_idx)
+            update_content(view_idx)
+        
+        def create_card(title, desc, icon, color, idx):
+            return ft.Card(
+                elevation=5,
+                shape=ft.RoundedRectangleBorder(radius=20),
+                content=ft.Container(
+                    padding=20,
+                    width=250,
+                    height=200,
+                    ink=True,
+                    on_click=lambda e, i=idx: navigate(i),
+                    content=ft.Column(
+                        controls=[
+                            ft.Icon(icon, size=55, color=color),
+                            ft.Container(height=5),
+                            ft.Text(title, size=20, weight=ft.FontWeight.W_900, text_align=ft.TextAlign.CENTER),
+                            ft.Text(desc, size=13, color=ft.colors.ON_SURFACE_VARIANT, text_align=ft.TextAlign.CENTER)
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER
                     )
                 )
+            )
 
+        if index == 0:
             home_ui = ft.Container(
                 padding=40,
                 expand=True,
@@ -1254,12 +1533,15 @@ def main(page: ft.Page):
                         ft.Divider(height=40, color=ft.colors.TRANSPARENT),
                         ft.Row(
                             controls=[
-                                create_card("Herram. SISMED", "Conversión a Excel y Procesos TFORMDET", ft.icons.DATA_OBJECT_ROUNDED, ft.colors.BLUE_400, 2), # Índice de vista interno 2
-                                create_card("Reports SISMED", "Reportes de Guías SISMED por Fecha e Item", ft.icons.BAR_CHART_ROUNDED, ft.colors.ORANGE_400, 4), # Nuevo módulo de reportes
-                                create_card("Sync SISMED", "Sincronizador Automático a Google Sheets", ft.icons.CLOUD_SYNC_ROUNDED, ft.colors.CYAN_500, 3) # Índice de vista interno 3
+                                create_card("Consul. TFORMDET", "Consulta detallada de movimientos SISMED", ft.icons.SEARCH_ROUNDED, ft.colors.BLUE_400, 5),
+                                create_card("Reporte Guías", "Reportes de Guías SISMED por Fecha e Item", ft.icons.FACT_CHECK_ROUNDED, ft.colors.AMBER_400, 8),
+                                create_card("DBF a EXCEL", "Convierte archivos .dbf a formato Excel", ft.icons.SYNC, ft.colors.TEAL_400, 6),
+                                create_card("Format TFORMDET", "Dar formato a archivo excel de Tformdet", ft.icons.FORMAT_SHAPES, ft.colors.INDIGO_400, 7),
+                                create_card("Sync SISMED", "Sincronizador Automático a Google Sheets", ft.icons.CLOUD_SYNC_ROUNDED, ft.colors.CYAN_500, 3)
                             ],
                             wrap=True,
-                            spacing=40
+                            spacing=15,
+                            run_spacing=15
                         )
                     ]
                 )
@@ -1295,52 +1577,124 @@ def main(page: ft.Page):
             )
             content.controls.append(settings_view)
 
-
         # VISTAS OCULTAS DEL MENÚ LATERAL (Accesibles mediante las tarjetas de inicio)
         elif index == 2:
-            # Agregar pestañas tabs
-            tabs = ft.Tabs(
-                tabs=[
-                    ft.Tab(
-                        text="DBF a Excel",
-                        icon=ft.icons.SYNC,
-                        content=ft.Column(
-                            [
-                                ft.Container(height=20),
-                                ft.Text(value="Convierte archivos .dbf a excel.", size=20),
-                                ft.Row([selected_file, pick_file_button], spacing=10),
-                                ft.Row([save_location, change_save_location_button], spacing=10),
-                                convert_button,
-                                result_label,
-                                progress_bar,  # Barra de progreso
+            herramientas_ui = ft.Container(
+                padding=40,
+                expand=True,
+                content=ft.Column(
+                    controls=[
+                        ft.Row([
+                            ft.Icon(ft.icons.HOME_REPAIR_SERVICE_ROUNDED, size=45, color=ft.colors.BLUE_400),
+                            ft.Text("Herramientas SISMED", size=36, weight=ft.FontWeight.W_900),
+                        ], alignment=ft.MainAxisAlignment.START, spacing=15),
+                        ft.Text("Seleccione una sub-herramienta para trabajar:", size=18, color=ft.colors.ON_SURFACE_VARIANT),
+                        ft.Divider(height=40, color=ft.colors.TRANSPARENT),
+                        ft.Row(
+                            controls=[
+                                create_card("DBF a EXCEL", "Convierte archivos .dbf a formato Excel", ft.icons.SYNC, ft.colors.TEAL_400, 6),
+                                create_card("Format TFORMDET", "Dar formato a archivo excel de Tformdet", ft.icons.FORMAT_SHAPES, ft.colors.INDIGO_400, 7)
                             ],
-                            spacing=20  # Espaciado entre elementos de la columna
-                        ),
-                    ),
-                    ft.Tab(
-                        text="Format TFORMDET",
-                        icon=ft.icons.FORMAT_SHAPES,
-                        content=ft.Column(
-                            [
-                                ft.Container(height=20),  # Espacio vacío entre título y contenido
-                                ft.Text(value="Dar formato a archivo excel de Tformdet", size=20),
-                                ft.Row([archivo_seleccionado, seleccionar_button], spacing=10),
-                                ft.Row([status_text, modificar_button], spacing=10),
-                                progress_bar,
-                            ],
-                            spacing=20  # Espaciado entre elementos de la columna
-                        ),
-                    ),
-                ]
-            )          
-            #content.controls.append(column_content)  # Agregar el nuevo Column
-            content.controls.append(tabs)
+                            wrap=True,
+                            spacing=15,
+                            run_spacing=15
+                        )
+                    ]
+                )
+            )
+            content.controls.append(herramientas_ui)
 
         elif index == 3:
             content.controls.append(aura_sync_view)
         
         elif index == 4:
+            # Nuevo Dashboard de Reports SISMED
+            reports_ui = ft.Container(
+                padding=40,
+                expand=True,
+                content=ft.Column(
+                    controls=[
+                        ft.Row([
+                            ft.Icon(ft.icons.BAR_CHART_ROUNDED, size=45, color=ft.colors.ORANGE_400),
+                            ft.Text("Reports SISMED", size=36, weight=ft.FontWeight.W_900),
+                        ], alignment=ft.MainAxisAlignment.START, spacing=15),
+                        ft.Text("Seleccione un reporte para visualizar:", size=18, color=ft.colors.ON_SURFACE_VARIANT),
+                        ft.Divider(height=40, color=ft.colors.TRANSPARENT),
+                        ft.Row(
+                            controls=[
+                                create_card("Consul. TFORMDET", "Consulta detallada de movimientos SISMED", ft.icons.SEARCH_ROUNDED, ft.colors.BLUE_400, 5),
+                                create_card("Reporte Guías", "Reportes de Guías SISMED por Fecha e Item", ft.icons.FACT_CHECK_ROUNDED, ft.colors.AMBER_400, 8)
+                            ],
+                            wrap=True,
+                            spacing=15,
+                            run_spacing=15
+                        )
+                    ]
+                )
+            )
+            content.controls.append(reports_ui)
+            
+        elif index == 5:
+            content.controls.append(tformdet_view)
+            
+        elif index == 8:
             content.controls.append(report_view)
+            
+        elif index == 6:
+            # DBF a Excel View
+            dbf_view = ft.Container(
+                padding=40,
+                expand=True,
+                content=ft.Column(
+                    [
+                        ft.Row([
+                            ft.Icon(ft.icons.SYNC, size=38, color=ft.colors.TEAL_400),
+                            ft.Text("Convertidor DBF a Excel", size=24, weight=ft.FontWeight.W_900),
+                        ], alignment=ft.MainAxisAlignment.START, spacing=15),
+                        ft.Divider(height=20, color=ft.colors.TRANSPARENT),
+                        ft.Row([
+                            ft.IconButton(icon=ft.icons.ARROW_BACK_ROUNDED, on_click=lambda _: navigate(2), tooltip="Volver a Herramientas"),
+                            ft.Text("Volver", size=16, color=ft.colors.ON_SURFACE_VARIANT)
+                        ]),
+                        ft.Container(height=10),
+                        ft.Text(value="Convierte archivos .dbf a excel.", size=20),
+                        ft.Row([selected_file, pick_file_button], spacing=10),
+                        ft.Row([save_location, change_save_location_button], spacing=10),
+                        convert_button,
+                        result_label,
+                        progress_bar,  # Barra de progreso
+                    ],
+                    spacing=20  # Espaciado entre elementos de la columna
+                )
+            )
+            content.controls.append(dbf_view)
+            
+        elif index == 7:
+            # Format TFORMDET View
+            formattf_view = ft.Container(
+                padding=40,
+                expand=True,
+                content=ft.Column(
+                    [
+                        ft.Row([
+                            ft.Icon(ft.icons.FORMAT_SHAPES, size=38, color=ft.colors.INDIGO_400),
+                            ft.Text("Format TFORMDET Excel", size=24, weight=ft.FontWeight.W_900),
+                        ], alignment=ft.MainAxisAlignment.START, spacing=15),
+                        ft.Divider(height=20, color=ft.colors.TRANSPARENT),
+                        ft.Row([
+                            ft.IconButton(icon=ft.icons.ARROW_BACK_ROUNDED, on_click=lambda _: navigate(2), tooltip="Volver a Herramientas"),
+                            ft.Text("Volver", size=16, color=ft.colors.ON_SURFACE_VARIANT)
+                        ]),
+                        ft.Container(height=10),
+                        ft.Text(value="Dar formato a archivo excel de Tformdet", size=20),
+                        ft.Row([archivo_seleccionado, seleccionar_button], spacing=10),
+                        ft.Row([status_text, modificar_button], spacing=10),
+                        progress_bar,
+                    ],
+                    spacing=20  # Espaciado entre elementos de la columna
+                )
+            )
+            content.controls.append(formattf_view)
             
         page.update()  # Actualiza la página
 
@@ -1404,7 +1758,7 @@ def main(page: ft.Page):
 
     nav_items_list = [
         create_nav_item(ft.icons.HOME_ROUNDED, "Inicio", 0),
-        create_nav_item(ft.icons.DATA_OBJECT_ROUNDED, "Herram. SISMED", 2),
+        create_nav_item(ft.icons.HOME_REPAIR_SERVICE_ROUNDED, "Herramientas", 2),
         create_nav_item(ft.icons.BAR_CHART_ROUNDED, "Reports SISMED", 4),
         create_nav_item(ft.icons.CLOUD_SYNC_ROUNDED, "Sync SISMED", 3),
         create_nav_item(ft.icons.SETTINGS_ROUNDED, "Configuración", 1),

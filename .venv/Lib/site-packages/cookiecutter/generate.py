@@ -1,5 +1,7 @@
 """Functions for generating a project from a project template."""
 
+from __future__ import annotations
+
 import fnmatch
 import json
 import logging
@@ -8,18 +10,22 @@ import shutil
 import warnings
 from collections import OrderedDict
 from pathlib import Path
+from typing import Any
 
 from binaryornot.check import is_binary
 from jinja2 import Environment, FileSystemLoader
 from jinja2.exceptions import TemplateSyntaxError, UndefinedError
+from rich.prompt import InvalidResponse
 
 from cookiecutter.exceptions import (
     ContextDecodingException,
+    EmptyDirNameException,
     OutputDirExistsException,
     UndefinedVariableInTemplate,
 )
 from cookiecutter.find import find_template
 from cookiecutter.hooks import run_hook_from_repo_dir
+from cookiecutter.prompt import YesNoPrompt
 from cookiecutter.utils import (
     create_env_with_context,
     make_sure_path_exists,
@@ -30,7 +36,7 @@ from cookiecutter.utils import (
 logger = logging.getLogger(__name__)
 
 
-def is_copy_only_path(path, context):
+def is_copy_only_path(path: str, context: dict[str, Any]) -> bool:
     """Check whether the given `path` should only be copied and not rendered.
 
     Returns True if `path` matches a pattern in the given `context` dict,
@@ -51,8 +57,11 @@ def is_copy_only_path(path, context):
 
 
 def apply_overwrites_to_context(
-    context, overwrite_context, *, in_dictionary_variable=False
-):
+    context: dict[str, Any],
+    overwrite_context: dict[str, Any],
+    *,
+    in_dictionary_variable: bool = False,
+) -> None:
     """Modify the given context in place based on the overwrite_context."""
     for variable, overwrite in overwrite_context.items():
         if variable not in context:
@@ -73,10 +82,11 @@ def apply_overwrites_to_context(
                 if set(overwrite).issubset(set(context_value)):
                     context[variable] = overwrite
                 else:
-                    raise ValueError(
+                    msg = (
                         f"{overwrite} provided for multi-choice variable "
                         f"{variable}, but valid choices are {context_value}"
                     )
+                    raise ValueError(msg)
             else:
                 # We are dealing with a choice variable
                 if overwrite in context_value:
@@ -86,24 +96,38 @@ def apply_overwrites_to_context(
                     context_value.remove(overwrite)
                     context_value.insert(0, overwrite)
                 else:
-                    raise ValueError(
+                    msg = (
                         f"{overwrite} provided for choice variable "
                         f"{variable}, but the choices are {context_value}."
                     )
+                    raise ValueError(msg)
         elif isinstance(context_value, dict) and isinstance(overwrite, dict):
             # Partially overwrite some keys in original dict
             apply_overwrites_to_context(
                 context_value, overwrite, in_dictionary_variable=True
             )
             context[variable] = context_value
+        elif isinstance(context_value, bool) and isinstance(overwrite, str):
+            # We are dealing with a boolean variable
+            # Convert overwrite to its boolean counterpart
+            try:
+                context[variable] = YesNoPrompt().process_response(overwrite)
+            except InvalidResponse as err:
+                msg = (
+                    f"{overwrite} provided for variable "
+                    f"{variable} could not be converted to a boolean."
+                )
+                raise ValueError(msg) from err
         else:
             # Simply overwrite the value for this variable
             context[variable] = overwrite
 
 
 def generate_context(
-    context_file='cookiecutter.json', default_context=None, extra_context=None
-):
+    context_file: str = 'cookiecutter.json',
+    default_context: dict[str, Any] | None = None,
+    extra_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Generate the context for a Cookiecutter project template.
 
     Loads the JSON file as a Python object, with key being the JSON filename.
@@ -148,7 +172,13 @@ def generate_context(
     return context
 
 
-def generate_file(project_dir, infile, context, env, skip_if_file_exists=False):
+def generate_file(
+    project_dir: str,
+    infile: str,
+    context: dict[str, Any],
+    env: Environment,
+    skip_if_file_exists: bool = False,
+) -> None:
     """Render filename of infile as name of outfile, handle infile correctly.
 
     Dealing with infile appropriately:
@@ -232,12 +262,16 @@ def generate_file(project_dir, infile, context, env, skip_if_file_exists=False):
 
 def render_and_create_dir(
     dirname: str,
-    context: dict,
-    output_dir: "os.PathLike[str]",
+    context: dict[str, Any],
+    output_dir: Path | str,
     environment: Environment,
     overwrite_if_exists: bool = False,
-):
+) -> tuple[Path, bool]:
     """Render name of a directory, create the directory, return its path."""
+    if not dirname or dirname == "":
+        msg = 'Error: directory name is empty'
+        raise EmptyDirNameException(msg)
+
     name_tmpl = environment.from_string(dirname)
     rendered_dirname = name_tmpl.render(**context)
 
@@ -264,8 +298,12 @@ def render_and_create_dir(
 
 
 def _run_hook_from_repo_dir(
-    repo_dir, hook_name, project_dir, context, delete_project_on_failure
-):
+    repo_dir: str,
+    hook_name: str,
+    project_dir: Path | str,
+    context: dict[str, Any],
+    delete_project_on_failure: bool,
+) -> None:
     """Run hook from repo directory, clean project directory if hook fails.
 
     :param repo_dir: Project template input directory.
@@ -287,14 +325,14 @@ def _run_hook_from_repo_dir(
 
 
 def generate_files(
-    repo_dir,
-    context=None,
-    output_dir='.',
-    overwrite_if_exists=False,
-    skip_if_file_exists=False,
-    accept_hooks=True,
-    keep_project_on_failure=False,
-):
+    repo_dir: Path | str,
+    context: dict[str, Any] | None = None,
+    output_dir: Path | str = '.',
+    overwrite_if_exists: bool = False,
+    skip_if_file_exists: bool = False,
+    accept_hooks: bool = True,
+    keep_project_on_failure: bool = False,
+) -> str:
     """Render the templates and saves them to files.
 
     :param repo_dir: Project template input directory.
@@ -317,6 +355,7 @@ def generate_files(
 
     unrendered_dir = os.path.split(template_dir)[1]
     try:
+        project_dir: Path | str
         project_dir, output_directory_created = render_and_create_dir(
             unrendered_dir, context, output_dir, env, overwrite_if_exists
         )
@@ -353,7 +392,7 @@ def generate_files(
             copy_dirs = []
             render_dirs = []
 
-            for d in dirs:
+            for d in sorted(dirs):
                 d_ = os.path.normpath(os.path.join(root, d))
                 # We check the full path, because that's how it can be
                 # specified in the ``_copy_without_render`` setting, but
@@ -393,7 +432,7 @@ def generate_files(
                     msg = f"Unable to create directory '{_dir}'"
                     raise UndefinedVariableInTemplate(msg, err, context) from err
 
-            for f in files:
+            for f in sorted(files):
                 infile = os.path.normpath(os.path.join(root, f))
                 if is_copy_only_path(infile, context):
                     outfile_tmpl = env.from_string(infile)

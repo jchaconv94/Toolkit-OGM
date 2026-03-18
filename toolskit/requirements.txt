@@ -1,1 +1,8 @@
 flet==0.22.*
+dbfread==0.9.1
+pandas==2.2.2
+openpyxl==3.1.5
+win32gui==224
+win32con==224
+pywin32==306
+pyinstaller==6.13.0
