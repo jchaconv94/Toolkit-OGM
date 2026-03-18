@@ -19,6 +19,7 @@ from PIL import Image, ImageDraw
 import win32event
 import win32api
 import winerror
+from guia_report import GuiaReportManager
 
 # ==========================================
 # PREVENCIÓN DE MULTI-CLONACIÓN (MUTEX)
@@ -436,11 +437,341 @@ def main(page: ft.Page):
         page.update()
     
 
-#:::::::::::::::::FIN DE EXCEL::::::::::::::::::::::::::::::::
+# ::::::::::::::::: FIN DE EXCEL ::::::::::::::::::::::::::::::::
 
 # ======================================================================
-# AURA SYNC - Sincronizador de SISMED
+# AURA REPORTS - Reportes de Guías SISMED
 # ======================================================================
+    
+    # --- Selectores de Fecha (Diseño Pro + Manual) ---
+    now = datetime.now()
+    first_day = now.replace(day=1)
+    
+    def on_change_picker_ini(e):
+        if e.control.value:
+            fecha_ini.value = e.control.value.strftime("%d/%m/%Y")
+            fecha_ini.update()
+
+    def on_change_picker_fin(e):
+        if e.control.value:
+            fecha_fin.value = e.control.value.strftime("%d/%m/%Y")
+            fecha_fin.update()
+
+    datepicker_ini = ft.DatePicker(
+        on_change=on_change_picker_ini,
+        first_date=datetime(2020, 1, 1),
+        last_date=datetime(2030, 12, 31),
+    )
+    datepicker_fin = ft.DatePicker(
+        on_change=on_change_picker_fin,
+        first_date=datetime(2020, 1, 1),
+        last_date=datetime(2030, 12, 31),
+    )
+    page.overlay.extend([datepicker_ini, datepicker_fin])
+
+    fecha_ini = ft.TextField(
+        label="Fecha Inicio", 
+        value=first_day.strftime("%d/%m/%Y"), 
+        hint_text="DD/MM/AAAA",
+        expand=1,
+        dense=True,
+        border_radius=4,
+        border_color=ft.colors.WHITE38,
+        focused_border_color=ft.colors.WHITE,
+        text_size=15,
+        prefix_icon=ft.icons.CALENDAR_MONTH,
+        content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
+    )
+    
+    fecha_fin = ft.TextField(
+        label="Fecha Fin", 
+        value=now.strftime("%d/%m/%Y"), 
+        hint_text="DD/MM/AAAA",
+        expand=1,
+        dense=True,
+        border_radius=4,
+        border_color=ft.colors.WHITE38,
+        focused_border_color=ft.colors.WHITE,
+        text_size=15,
+        prefix_icon=ft.icons.CALENDAR_MONTH,
+        content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
+    )
+
+    # ── Botones Toggle Custom (full-width, rectangular, premium) ──
+    tipo_selected = {"value": "S"}
+    modo_selected = {"value": "det"}
+
+    COLOR_SEL   = ft.colors.BLUE_GREY_700  # Seleccionado: fondo sólido gris oscuro
+    COLOR_UNSEL = ft.colors.TRANSPARENT    # No seleccionado: sin fondo
+
+    def _toggle_btn(label, icon_name, key, state_dict, row_ref_list, rebuild_fn):
+        is_sel = state_dict["value"] == key
+        def _on_tap(e, k=key):
+            state_dict["value"] = k
+            row_ref_list[0].controls = rebuild_fn()
+            row_ref_list[0].update()
+        return ft.GestureDetector(
+            mouse_cursor=ft.MouseCursor.CLICK,
+            on_tap=_on_tap,
+            expand=True,
+            content=ft.Container(
+                expand=True,
+                height=48,
+                bgcolor=COLOR_SEL if is_sel else COLOR_UNSEL,
+                border_radius=6,
+                border=ft.border.all(1, ft.colors.BLUE_GREY_600 if is_sel else ft.colors.BLUE_GREY_800),
+                padding=ft.padding.symmetric(horizontal=12),
+                content=ft.Row([
+                    ft.Icon(icon_name, size=17, color=ft.colors.WHITE if is_sel else ft.colors.GREY_500),
+                    ft.Text(label, size=12,
+                            weight=ft.FontWeight.W_600 if is_sel else ft.FontWeight.NORMAL,
+                            color=ft.colors.WHITE if is_sel else ft.colors.GREY_500,
+                            expand=True, text_align=ft.TextAlign.CENTER),
+                    ft.Icon(ft.icons.CHECK_ROUNDED, size=15,
+                            color=ft.colors.WHITE if is_sel else ft.colors.TRANSPARENT),
+                ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            )
+        )
+
+    # Tipo de Reporte
+    tipo_row_ref = [None]
+    def _build_tipo():
+        return [
+            _toggle_btn("Guías de Salida (S)",  ft.icons.OUTBOX_ROUNDED, "S",   tipo_selected, tipo_row_ref, _build_tipo),
+            ft.Container(width=4),
+            _toggle_btn("Guías de Ingreso (E)", ft.icons.INBOX_ROUNDED,  "E",   tipo_selected, tipo_row_ref, _build_tipo),
+        ]
+    tipo_row_widget = ft.Row(controls=_build_tipo(), spacing=0, expand=True)
+    tipo_row_ref[0] = tipo_row_widget
+
+    # Modo de Detalle
+    modo_row_ref = [None]
+    def _build_modo():
+        return [
+            _toggle_btn("Guías detallado por lotes",  ft.icons.LIST_ALT_ROUNDED,  "det", modo_selected, modo_row_ref, _build_modo),
+            ft.Container(width=4),
+            _toggle_btn("Reporte guías consolidado", ft.icons.SUMMARIZE_ROUNDED, "con", modo_selected, modo_row_ref, _build_modo),
+        ]
+    modo_row_widget = ft.Row(controls=_build_modo(), spacing=0, expand=True)
+    modo_row_ref[0] = modo_row_widget
+
+    # Objeto proxy para compatibilidad con run_report_gen que lee .selected
+    class _FakeSeg:
+        def __init__(self, s): self._s = s
+        @property
+        def selected(self): return {self._s["value"]}
+    tipo_reporte = _FakeSeg(tipo_selected)
+    modo_detalle = _FakeSeg(modo_selected)
+
+    chk_omitir_anulados = ft.Checkbox(label="Omitir guías anuladas", value=True, label_style=ft.TextStyle(size=12))
+
+    def on_report_dir_picked(e: ft.FilePickerResultEvent):
+        if e.path:
+            input_report_sismed_dir.value = e.path
+            # Guardamos para que el sincronizador también lo sepa si desea
+            page.client_storage.set("sismed_dir", e.path)
+            input_report_sismed_dir.update()
+
+    report_dir_picker = ft.FilePicker(on_result=on_report_dir_picked)
+    page.overlay.append(report_dir_picker)
+
+    input_report_sismed_dir = ft.TextField(
+        label="Ubicación SISMED actual",
+        value=page.client_storage.get("sismed_dir") or "C:\\SISMEDV2",
+        expand=True,
+        dense=False,
+        text_size=15,
+        text_align=ft.TextAlign.LEFT,
+        prefix_icon=ft.icons.FOLDER,
+        border_radius=4,
+        border_color=ft.colors.WHITE38,
+        focused_border_color=ft.colors.WHITE,
+        content_padding=11,  # Padding uniforme para forzar centrado vertical real
+        suffix=ft.IconButton(icon=ft.icons.SEARCH_ROUNDED, on_click=lambda _: report_dir_picker.get_directory_path(), icon_size=18),
+    )
+
+    report_log = ft.ListView(expand=True, spacing=5, height=200)
+
+    def log_report(msg):
+        report_log.controls.append(ft.Text(f"• {msg}", size=13))
+        if len(report_log.controls) > 50: report_log.controls.pop(0)
+        page.update()
+
+    def run_report_gen(output_path):
+        try:
+            d_start = datetime.strptime(fecha_ini.value, "%d/%m/%Y")
+            d_end = datetime.strptime(fecha_fin.value, "%d/%m/%Y")
+            
+            # Validación de Cronología
+            if d_start > d_end:
+                log_report("❌ Error: La Fecha Inicio no puede ser posterior a la Fecha Fin.")
+                page.snack_bar = ft.SnackBar(ft.Text("⚠️ Revisa el rango de fechas."), bgcolor=ft.colors.AMBER_800)
+                page.snack_bar.open = True
+                page.update()
+                return
+
+            t_mov = list(tipo_reporte.selected)[0]
+            is_det = "det" in modo_detalle.selected
+            omit_anul = chk_omitir_anulados.value
+            
+            # Obtener el directorio SISMED del input actual
+            s_dir = input_report_sismed_dir.value.strip()
+            
+            mgr = GuiaReportManager(s_dir, log_callback=log_report)
+            report_log.controls.clear()
+            
+            success = mgr.generate_report(d_start, d_end, t_mov, is_det, output_path, exclude_annulled=omit_anul)
+            
+            if success:
+                sismed_banner = """
+  ____ ___ ____  __  __ _____ ____  
+ / ___|_ _/ ___||  \/  | ____|  _ \\ 
+ \\___ \\| |\\___ \\| |\\/| |  _| | | | |
+  ___) | | ___) | |  | | |___| |_| |
+ |____/___|____/|_|  |_|_____|____/ 
+                """
+                report_log.controls.append(
+                    ft.Text(
+                        sismed_banner,
+                        size=10,
+                        font_family="Consolas",
+                        color=ft.colors.GREEN_400,
+                        weight=ft.FontWeight.W_500
+                    )
+                )
+                page.snack_bar = ft.SnackBar(ft.Text(f"✅ Reporte guardado en: {output_path}"))
+                page.snack_bar.open = True
+            else:
+                page.snack_bar = ft.SnackBar(ft.Text("❌ Hubo un error al generar el reporte."))
+                page.snack_bar.open = True
+        except ValueError:
+            log_report("❌ Error: Formato de fecha inválido. Use DD/MM/AAAA")
+        except Exception as ex:
+            log_report(f"❌ Error crítico: {str(ex)}")
+        page.update()
+
+    def on_report_save_result(e: ft.FilePickerResultEvent):
+        if e.path:
+            # Asegurar que el archivo siempre tenga la extensión .xlsx
+            report_path = e.path if e.path.lower().endswith(".xlsx") else f"{e.path}.xlsx"
+            run_report_gen(report_path)
+
+    report_save_picker = ft.FilePicker(on_result=on_report_save_result)
+    page.overlay.append(report_save_picker)
+
+    report_view = ft.Container(
+        padding=ft.padding.all(20), expand=True,
+        content=ft.Column(expand=True, controls=[
+            # Cabecera
+            ft.Row([
+                ft.Icon(ft.icons.BAR_CHART_ROUNDED, size=38, color=ft.colors.ORANGE_400),
+                ft.Column([
+                    ft.Text("Reports SISMED", size=28, weight=ft.FontWeight.W_900),
+                    ft.Text("Generador de Reportes de Guías SISMED (Ingresos/Salidas)", color=ft.colors.ON_SURFACE_VARIANT, size=12)
+                ], spacing=0)
+            ]),
+            ft.Divider(height=8, color=ft.colors.TRANSPARENT),
+
+            # Cuerpo: Dos Columnas (izquierda filtros + derecha estado)
+            ft.Row([
+                # ── COLUMNA IZQUIERDA: Filtros (ancho fijo como en la referencia) ──
+                ft.Container(
+                    bgcolor=ft.colors.BLUE_GREY_900,
+                    padding=ft.padding.all(20),
+                    border_radius=16,
+                    width=500,   # Ancho fijo como en la imagen referencia
+                    content=ft.Column([
+
+                        # Título
+                        ft.Row([
+                            ft.Icon(ft.icons.SETTINGS_ROUNDED, color=ft.colors.AMBER_400, size=24),
+                            ft.Text("Configuración de Reportes", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                        ], spacing=8),
+
+                        ft.Container(height=10),
+
+                        # Ubicación SISMED
+                        input_report_sismed_dir,
+
+                        ft.Container(height=10),
+
+                        # Fechas con flecha central
+                        ft.Row([
+                            fecha_ini,
+                            ft.Text("→", size=16, color=ft.colors.GREY_500),
+                            fecha_fin,
+                        ], spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER, expand=True),
+
+                        ft.Container(height=10),
+
+                        # Tipo
+                        ft.Text("Tipo de movimiento:", size=12, color=ft.colors.GREY_400),
+                        tipo_row_widget,
+
+                        ft.Container(height=8),
+
+                        # Modo
+                        ft.Text("Modo de reporte:", size=12, color=ft.colors.GREY_400),
+                        modo_row_widget,
+
+                        ft.Container(height=5),
+
+                        # Checkbox barra (alineado a la derecha)
+                        ft.Row([
+                            chk_omitir_anulados
+                        ], alignment=ft.MainAxisAlignment.END),
+
+                        ft.Container(height=12),
+
+                        # Botón Generar (Elegante y Centrado)
+                        ft.Row([
+                            ft.ElevatedButton(
+                                content=ft.Row([
+                                    ft.Icon(ft.icons.CHECK_CIRCLE_OUTLINE_ROUNDED, color=ft.colors.WHITE, size=20),
+                                    ft.Text("GENERAR REPORTE EN EXCEL", color=ft.colors.WHITE, weight=ft.FontWeight.BOLD, size=13),
+                                ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
+                                style=ft.ButtonStyle(
+                                    bgcolor=ft.colors.GREEN_700,
+                                    color=ft.colors.WHITE,
+                                    shape=ft.RoundedRectangleBorder(radius=10),
+                                    elevation=4,
+                                ),
+                                height=55,
+                                width=350,
+                                on_click=lambda _: report_save_picker.save_file(
+                                    file_name=(
+                                        f"Reporte_Guias_de_{'Salida' if tipo_selected['value'] == 'S' else 'Ingreso'}_"
+                                        f"{'por_Lote' if modo_selected['value'] == 'det' else 'consolidado'}_"
+                                        f"{datetime.now().strftime('%Y%m%d')}.xlsx"
+                                    ),
+                                    allowed_extensions=["xlsx"]
+                                )
+                            )
+                        ], alignment=ft.MainAxisAlignment.CENTER),
+
+                    ], spacing=4, tight=True)
+                ),
+
+                # ── COLUMNA DERECHA: Estado del Proceso (ocupa el resto) ──
+                ft.Container(
+                    bgcolor=ft.colors.BLACK,
+                    padding=ft.padding.all(22),
+                    border_radius=20,
+                    expand=True,   # Llena todo el espacio restante
+                    content=ft.Column([
+                        ft.Row([
+                            ft.Icon(ft.icons.TERMINAL_ROUNDED, color=ft.colors.GREEN_400, size=22),
+                            ft.Text("Estado del Proceso", color=ft.colors.WHITE, size=18, weight=ft.FontWeight.BOLD)
+                        ], spacing=8),
+                        ft.Divider(color=ft.colors.GREY_900, height=20),
+                        report_log
+                    ], spacing=4, expand=True)
+                )
+
+            ], spacing=16, expand=True, vertical_alignment=ft.CrossAxisAlignment.STRETCH)
+
+        ])
+    )
     try:
         from sismed_sync import SismedSyncManager
     except ImportError:
@@ -661,7 +992,7 @@ def main(page: ft.Page):
                     controls=[
                         ft.Icon(ft.icons.CLOUD_SYNC_ROUNDED, size=50, color=ft.colors.CYAN_500),
                         ft.Column([
-                            ft.Text("Aura Sync SISMED", size=36, weight=ft.FontWeight.W_900),
+                            ft.Text("Sync SISMED", size=36, weight=ft.FontWeight.W_900),
                             ft.Text("Sincronización Inteligente de stock del SISMED a Google Sheets", size=16, color=ft.colors.ON_SURFACE_VARIANT)
                         ], spacing=2)
                     ],
@@ -766,6 +1097,8 @@ def main(page: ft.Page):
     page.vertical_alignment = ft.MainAxisAlignment.START
     page.window.width = 1200
     page.window.height = 800
+    page.padding = 0 # Eliminar márgenes de la ventana para que el menú pegue a los bordes
+    page.spacing = 0 # Sin espacios automáticos entre elementos raíz
     
     # Restringir cambiar tamaño de la ventana
     page.window.resizable = False
@@ -817,7 +1150,29 @@ def main(page: ft.Page):
 
     # Función para expandir/colapsar el menú lateral
     def toggle_nav_rail(e):
-        menu.extended = not menu.extended
+        is_expanded = menu.width > 100
+        new_width = 70 if is_expanded else 200
+        menu.width = new_width
+        
+        for item in nav_items_list:
+            item.width = 190 if not is_expanded else 50 # El ancho que tú definiste
+            # Capa 2 (Contenido) en el Stack
+            inner_container = item.content.controls[1]
+            row = inner_container.content
+            
+            if not is_expanded: # Se va a expandir
+                row.alignment = ft.MainAxisAlignment.START
+                inner_container.alignment = ft.alignment.center_left
+                inner_container.padding = ft.padding.only(left=15)
+                row.controls[1].visible = True
+            else: # Se va a colapsar
+                row.alignment = ft.MainAxisAlignment.CENTER
+                inner_container.alignment = ft.alignment.center
+                inner_container.padding = ft.padding.only(left=0)
+                row.controls[1].visible = False
+            
+            item.update()
+        
         menu.update()
 
     # AppBar Superior (Estilo Docker Desktop)
@@ -826,7 +1181,7 @@ def main(page: ft.Page):
         leading_width=50,
         title=ft.Row([
             ft.Icon(ft.icons.LAYERS_ROUNDED, color=ft.colors.CYAN_500, size=24),
-            ft.Text("ToolKit OGM", size=18, weight=ft.FontWeight.W_800)
+            ft.Text("ToolKit SISMED", size=18, weight=ft.FontWeight.W_800)
         ], spacing=10),
         bgcolor=ft.colors.SURFACE_VARIANT,
         actions=[
@@ -859,10 +1214,8 @@ def main(page: ft.Page):
         
         if index == 0:
             def navigate(view_idx):
-                # Deseleccionamos todo en el menú lateral porque las opciones 
-                # internas no están en el sidebar.
-                menu.selected_index = None 
-                menu.update()
+                # Ahora que están en el sidebar, sí los seleccionamos
+                update_sidebar_ui(view_idx)
                 update_content(view_idx)
             
             def create_card(title, desc, icon, color, idx):
@@ -895,14 +1248,15 @@ def main(page: ft.Page):
                     controls=[
                         ft.Row([
                             ft.Icon(ft.icons.HOME_ROUNDED, size=45, color=ft.colors.BLUE_400),
-                            ft.Text("ToolKit OGM Dashboard", size=36, weight=ft.FontWeight.W_900),
+                            ft.Text("ToolKit SISMED Dashboard", size=36, weight=ft.FontWeight.W_900),
                         ], alignment=ft.MainAxisAlignment.START, spacing=15),
                         ft.Text("Seleccione una herramienta para comenzar:", size=18, color=ft.colors.ON_SURFACE_VARIANT),
                         ft.Divider(height=40, color=ft.colors.TRANSPARENT),
                         ft.Row(
                             controls=[
                                 create_card("Herram. SISMED", "Conversión a Excel y Procesos TFORMDET", ft.icons.DATA_OBJECT_ROUNDED, ft.colors.BLUE_400, 2), # Índice de vista interno 2
-                                create_card("Aura Sync", "Sincronizador Automático a Google Sheets", ft.icons.CLOUD_SYNC_ROUNDED, ft.colors.CYAN_500, 3) # Índice de vista interno 3
+                                create_card("Reports SISMED", "Reportes de Guías SISMED por Fecha e Item", ft.icons.BAR_CHART_ROUNDED, ft.colors.ORANGE_400, 4), # Nuevo módulo de reportes
+                                create_card("Sync SISMED", "Sincronizador Automático a Google Sheets", ft.icons.CLOUD_SYNC_ROUNDED, ft.colors.CYAN_500, 3) # Índice de vista interno 3
                             ],
                             wrap=True,
                             spacing=40
@@ -984,24 +1338,87 @@ def main(page: ft.Page):
 
         elif index == 3:
             content.controls.append(aura_sync_view)
+        
+        elif index == 4:
+            content.controls.append(report_view)
             
         page.update()  # Actualiza la página
 
-    # Barra de menú lateral (Estilo Colapsable)
-    menu = ft.NavigationRail(
-        selected_index=0,
-        extended=False,  # Inicialmente colapsado
-        min_width=70,
-        min_extended_width=200,
-        label_type=ft.NavigationRailLabelType.NONE, # Oculta texto al colapsar
-        on_change=lambda e: update_content(e.control.selected_index),
-        destinations=[
-            ft.NavigationRailDestination(icon=ft.icons.HOME_OUTLINED, selected_icon=ft.icons.HOME_ROUNDED, padding=5, label="Inicio"),
-            ft.NavigationRailDestination(icon=ft.icons.SETTINGS_OUTLINED, selected_icon=ft.icons.SETTINGS_ROUNDED, padding=5, label="Configuración"),
-        ]
+    # ── DISEÑO PREMIUM: Menú Lateral Personalizado con Tooltips ──
+    selected_nav_idx = [0] # Índice de navegación actual
+
+    def update_sidebar_ui(idx):
+        selected_nav_idx[0] = idx
+        for item in nav_items_list:
+            is_selected = (idx == item.data)
+            stack = item.content
+            # Indicador (control 0 del Stack)
+            stack.controls[0].visible = is_selected
+            # Row interno (dentro del control 1 del Stack)
+            row = stack.controls[1].content
+            # Icono (control 0 del Row)
+            row.controls[0].color = ft.colors.BLUE_400 if is_selected else ft.colors.GREY_500
+            # Texto (control 1 del Row)
+            row.controls[1].color = ft.colors.BLUE_400 if is_selected else ft.colors.GREY_500
+            row.controls[1].weight = ft.FontWeight.W_800 if is_selected else ft.FontWeight.NORMAL
+            # Fondo sutil del contenedor
+            item.bgcolor = ft.colors.with_opacity(0.1, ft.colors.WHITE) if is_selected else ft.colors.TRANSPARENT
+            item.update()
+
+    def create_nav_item(icon_name, label, index):
+        def _on_click(e):
+            update_sidebar_ui(index)
+            update_content(index)
+
+        # Centrado MILIMÉTRICO con SOMBREADO REDUCIDO
+        return ft.Container(
+            width=50, # Ancho reducido para que no pegue a los bordes
+            height=48,
+            border_radius=12,
+            tooltip=label,
+            data=index, # Guardamos el índice real para identificarlo luego
+            on_click=_on_click,
+            bgcolor=ft.colors.with_opacity(0.1, ft.colors.WHITE) if index==0 else ft.colors.TRANSPARENT,
+            animate=ft.Animation(300, ft.AnimationCurve.DECELERATE),
+            content=ft.Stack([
+                # Capa 1: Indicador (Se sale un poco del contenedor reducido para tocar el borde)
+                ft.Container(
+                    width=4, height=48, 
+                    bgcolor=ft.colors.BLUE_400, 
+                    border_radius=10, 
+                    visible=(index==0),
+                    alignment=ft.alignment.center_left,
+                    offset=ft.Offset(-0.4, 0) # Lo movemos a la izquierda hacia el borde del menú
+                ),
+                # Capa 2: Contenido
+                ft.Container(
+                    content=ft.Row([
+                        ft.Icon(icon_name, color=ft.colors.BLUE_400 if index==0 else ft.colors.GREY_500, size=24),
+                        ft.Text(label, visible=False, size=14, color=ft.colors.GREY_500, no_wrap=True),
+                    ], alignment=ft.MainAxisAlignment.CENTER, vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=15),
+                    alignment=ft.alignment.center 
+                )
+            ]),
+            on_hover=lambda e: setattr(e.control, "bgcolor", ft.colors.with_opacity(0.15, ft.colors.WHITE) if e.data == "true" or selected_nav_idx[0] == index else ft.colors.TRANSPARENT) or e.control.update()
+        )
+
+    nav_items_list = [
+        create_nav_item(ft.icons.HOME_ROUNDED, "Inicio", 0),
+        create_nav_item(ft.icons.DATA_OBJECT_ROUNDED, "Herram. SISMED", 2),
+        create_nav_item(ft.icons.BAR_CHART_ROUNDED, "Reports SISMED", 4),
+        create_nav_item(ft.icons.CLOUD_SYNC_ROUNDED, "Sync SISMED", 3),
+        create_nav_item(ft.icons.SETTINGS_ROUNDED, "Configuración", 1),
+    ]
+
+    menu = ft.Container(
+        content=ft.Column(nav_items_list, spacing=15, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+        width=70,  # Inicialmente colapsado
+        padding=ft.padding.only(top=30),
+        bgcolor="#0D0F11", # Un tono casi negro muy profundo para resaltar el contraste
+        animate=ft.Animation(300, ft.AnimationCurve.DECELERATE),
     )
     # Contenedor de contenido principal inicializando en Inicio
-    content = ft.Column([ft.Text(value="")])
+    content = ft.Column([ft.Text(value="")], expand=True)
     update_content(0)
     
     content_container = ft.Container(content=content, expand=True, padding=ft.padding.only(top=0, right=20, left=20, bottom=20))
@@ -1010,13 +1427,14 @@ def main(page: ft.Page):
     page.add(
         ft.Row(
             [
-                menu,  # Menú lateral colapsable
+                menu,  # Menú lateral colapsable ya con su bgcolor oscuro
                 ft.VerticalDivider(width=1, color=ft.colors.OUTLINE_VARIANT),  # Divisor visual sutil
                 content_container,  # Contenido dinámico expandible acorde al layout
                 
             ],
             expand=True,
             spacing=0, # Eliminar espacio extra entre la barra y el contenido
+            vertical_alignment=ft.CrossAxisAlignment.STRETCH # ESTO lo hace ocupar todo el alto
         )
     )
 

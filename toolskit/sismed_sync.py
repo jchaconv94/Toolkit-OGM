@@ -31,7 +31,7 @@ class SismedSyncManager:
         if self.is_running:
             return
         self.is_running = True
-        self.log("▶ Iniciando sincronizador AURA SYNC...")
+        self.log("▶ Iniciando sincronizador SISMED SYNC...")
         self.log(f"  Modo Consolidado: {'ACTIVADO' if self.modo_consolidado else 'DESACTIVADO (Detallado)'}")
         self.log(f"  Intervalo: {self.intervalo_minutos} minutos")
         self.log("="*50)
