@@ -269,7 +269,7 @@ def main(page: ft.Page):
 
 # CONSTRUCCION DE LA PAGINA ----- Agregar elementos a la página
 
-    page.title = "ToolKits OGM - By: Ing. Jordan Chacon Villacis"
+    page.title = "ToolKits SISMED - By: Ing. Jordan Chacon Villacis"
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
     page.vertical_alignment = ft.MainAxisAlignment.START
 
