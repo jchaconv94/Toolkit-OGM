@@ -1,4 +1,4 @@
-﻿import warnings
+import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 import flet as ft
 import os
@@ -227,12 +227,13 @@ def main(page: ft.Page):
         
         # Mapa: nombre de herramienta (metadata.nombre) → índice de navegación
         TOOL_NAV_INDEX = {
-            "Consul. TFORMDET":  5,
-            "Reporte Guías":     8,
-            "DBF a EXCEL":       6,
-            "Format TFORMDET":   7,
-            "Sync SISMED":       3,
-            "Stock SISMED":      9,
+            "Consul. TFORMDET":        5,
+            "Reporte Guías":           8,
+            "DBF a EXCEL":             6,
+            "Format TFORMDET":         7,
+            "Sync SISMED":             3,
+            "Stock SISMED":            9,
+            "Disponibilidad TFORMDET": 10,
         }
 
         # ── Colores de acento por categoría ──
@@ -584,6 +585,7 @@ def main(page: ft.Page):
                                 make_tool_card(get_tool_by_name("Consul. TFORMDET")),
                                 make_tool_card(get_tool_by_name("Reporte Guías")),
                                 make_tool_card(get_tool_by_name("Stock SISMED")),
+                                make_tool_card(get_tool_by_name("Disponibilidad TFORMDET")),
                             ],
                             wrap=True,
                             spacing=16,
@@ -623,6 +625,12 @@ def main(page: ft.Page):
             stock_tool = get_tool_by_name("Stock SISMED")
             if stock_tool:
                 content.controls.append(stock_tool.build_view(page, navigate))
+
+        elif index == 10:
+            # Disponibilidad TFORMDET → delegado al objeto DisponibilidadReportTool (POO)
+            disp_tool = get_tool_by_name("Disponibilidad TFORMDET")
+            if disp_tool:
+                content.controls.append(disp_tool.build_view(page, navigate))
 
         page.update()  # Actualiza la página
 

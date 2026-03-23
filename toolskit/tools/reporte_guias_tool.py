@@ -278,13 +278,16 @@ class ReporteGuiasTool(SismedTool):
                 bgcolor=ft.colors.GREEN_700, color=ft.colors.WHITE,
                 shape=ft.RoundedRectangleBorder(radius=10), elevation=4,
             ),
-            height=55, width=350, on_click=_generar,
+            height=52, width=320, on_click=_generar,
         )
 
         # ── Layout ────────────────────────────────────────────────────────────
         return ft.Container(
-            padding=ft.padding.all(20), expand=True,
-            content=ft.Column(expand=True, controls=[
+            padding=ft.padding.all(20),
+            expand=True,
+            content=ft.Column(
+                scroll=ft.ScrollMode.AUTO,
+                controls=[
                 # Cabecera Premium
                 self._section_header(
                     self.metadata.icono,
@@ -293,62 +296,76 @@ class ReporteGuiasTool(SismedTool):
                     "Generador de Reportes de Guías SISMED (Ingresos/Salidas)",
                     right_content=self._back_button("Volver a Reports SISMED", navigate_fn, 4)
                 ),
-                ft.Divider(height=8, color=ft.colors.TRANSPARENT),
+                ft.Divider(height=20, color=ft.colors.TRANSPARENT),
 
-                # Cuerpo: dos columnas
-                ft.Row([
-                    # ── Panel de filtros ──────────────────────────────────
+                # Cuerpo: Grid Responsivo
+                ft.ResponsiveRow([
+                    # ── PANEL IZQUIERDO: Filtros ──────────────────────────────
                     ft.Container(
+                        col={"sm": 12, "lg": 6, "xl": 5},
                         bgcolor=ft.colors.BLUE_GREY_900,
-                        padding=ft.padding.only(
-                            top=35, bottom=35, left=30, right=30
-                        ),
-                        border_radius=16, width=500,
+                        padding=ft.padding.all(30),
+                        border_radius=16,
                         content=ft.Column([
-                            input_sismed_dir,
-                            ft.Container(height=2),
-                            ft.Row([
-                                fecha_ini,
-                                ft.Text("→", size=16, color=ft.colors.GREY_500),
-                                fecha_fin,
-                            ], spacing=6,
-                               vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                               expand=True),
-                            ft.Container(height=2),
-                            ft.Text("Tipo de movimiento:", size=12,
-                                    color=ft.colors.GREY_400),
-                            tipo_row_widget,
+                            
+                            ft.Column([
+                                input_sismed_dir,
+                            ], spacing=6),
+
                             ft.Container(height=8),
-                            ft.Text("Modo de reporte:", size=12,
-                                    color=ft.colors.GREY_400),
-                            modo_row_widget,
-                            ft.Container(height=5),
-                            ft.Row([chk_omitir_anulados],
-                                   alignment=ft.MainAxisAlignment.END),
-                            ft.Container(height=12),
-                            ft.Row([btn_generar],
-                                   alignment=ft.MainAxisAlignment.CENTER),
-                        ], spacing=4, tight=True),
+                            
+                            ft.Row([
+                                ft.Column([
+                                    fecha_ini
+                                ], spacing=6, expand=True),
+                                ft.Container(content=ft.Text("→", size=18, color=ft.colors.GREY_600), 
+                                           margin=ft.margin.only(top=20)),
+                                ft.Column([
+                                    fecha_fin
+                                ], spacing=6, expand=True),
+                            ], spacing=12),
+
+                            ft.Container(height=8),
+                            
+                            ft.Column([
+                                ft.Text("Tipo de movimiento:", size=12, color=ft.colors.GREY_400),
+                                tipo_row_widget,
+                            ], spacing=6),
+                            
+                            ft.Container(height=8),
+                            
+                            ft.Column([
+                                ft.Text("Modo de reporte:", size=12, color=ft.colors.GREY_400),
+                                modo_row_widget,
+                            ], spacing=6),
+                            
+                            ft.Row([chk_omitir_anulados], alignment=ft.MainAxisAlignment.END),
+                            
+                            ft.Container(height=15),
+                            
+                            ft.Row([btn_generar], alignment=ft.MainAxisAlignment.CENTER),
+                        ], spacing=12),
                     ),
 
-                    # ── Consola de estado ─────────────────────────────────
+                    # ── PANEL DERECHO: Consola/Actividad ──────────────────────
                     ft.Container(
+                        col={"sm": 12, "lg": 6, "xl": 7},
                         bgcolor=ft.colors.BLACK,
                         padding=ft.padding.all(22),
-                        border_radius=20, expand=True,
+                        border_radius=20, 
+                        height=510,
                         content=ft.Column([
                             ft.Row([
                                 ft.Icon(ft.icons.TERMINAL_ROUNDED,
-                                        color=ft.colors.GREEN_400, size=22),
-                                ft.Text("Estado del Proceso",
-                                        color=ft.colors.WHITE, size=18,
+                                        color=ft.colors.GREEN_400, size=20),
+                                ft.Text("Consola de Actividad",
+                                        color=ft.colors.WHITE, size=16,
                                         weight=ft.FontWeight.BOLD),
                             ], spacing=8),
                             ft.Divider(color=ft.colors.GREY_900, height=20),
                             report_log,
                         ], spacing=4, expand=True),
                     ),
-                ], spacing=16, expand=True,
-                   vertical_alignment=ft.CrossAxisAlignment.STRETCH),
-            ]),
+                ], spacing=20),
+            ], spacing=0),
         )

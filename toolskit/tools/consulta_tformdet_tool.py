@@ -243,7 +243,9 @@ class ConsultaTformdetTool(SismedTool):
         # ── Layout ────────────────────────────────────────────────────────────
         return ft.Container(
             padding=40, expand=True,
-            content=ft.Column([
+            content=ft.Column(
+                scroll=ft.ScrollMode.AUTO,
+                controls=[
                 # Cabecera Premium
                 self._section_header(
                     self.metadata.icono,
@@ -254,11 +256,11 @@ class ConsultaTformdetTool(SismedTool):
                 ),
                 ft.Divider(height=8, color=ft.colors.TRANSPARENT),
 
-                # Dos columnas: izquierda configuración | derecha consola
-                ft.Row([
-                    # ── Panel de configuración ────────────────────────────
+                # Cuerpo: Grid Responsivo
+                ft.ResponsiveRow([
+                    # ── PANEL IZQUIERDO: configuración ────────────────────
                     ft.Container(
-                        expand=7,
+                        col={"sm": 12, "lg": 6, "xl": 6},
                         bgcolor=ft.colors.BLUE_GREY_900,
                         border_radius=12, padding=20,
                         content=ft.Column([
@@ -286,11 +288,12 @@ class ConsultaTformdetTool(SismedTool):
                         ], spacing=15),
                     ),
 
-                    # ── Consola de actividad ──────────────────────────────
+                    # ── PANEL DERECHO: consola ──────────────────────────────
                     ft.Container(
-                        expand=5,
+                        col={"sm": 12, "lg": 6, "xl": 6},
                         bgcolor=ft.colors.BLACK,
                         border_radius=12, padding=20,
+                        height=412,
                         content=ft.Column([
                             ft.Row([
                                 ft.Icon(ft.icons.TERMINAL_ROUNDED,
@@ -303,8 +306,6 @@ class ConsultaTformdetTool(SismedTool):
                             tformdet_log,
                         ], spacing=10),
                     ),
-                ], spacing=20,
-                   alignment=ft.MainAxisAlignment.START,
-                   vertical_alignment=ft.CrossAxisAlignment.START),
+                ], spacing=20),
             ]),
         )

@@ -282,7 +282,9 @@ class StockReportTool(SismedTool):
         return ft.Container(
             padding=ft.padding.all(30),
             expand=True,
-            content=ft.Column([
+            content=ft.Column(
+                scroll=ft.ScrollMode.AUTO,
+                controls=[
                 # Encabezado premium (heredado de SismedTool)
                 self._section_header(
                     self.metadata.icono,
@@ -295,12 +297,12 @@ class StockReportTool(SismedTool):
                 ),
                 ft.Divider(height=10, color=ft.colors.TRANSPARENT),
 
-                # Cuerpo: dos columnas
-                ft.Row([
+                # Cuerpo: Grid Responsivo
+                ft.ResponsiveRow([
 
                     # ── Panel izquierdo: configuración ────────────────────────
                     ft.Container(
-                        width=480,
+                        col={"sm": 12, "lg": 6, "xl": 5},
                         bgcolor=ft.colors.BLUE_GREY_900,
                         border_radius=16,
                         padding=ft.padding.only(top=32, bottom=32, left=32, right=32),
@@ -346,7 +348,8 @@ class StockReportTool(SismedTool):
 
                     # ── Panel derecho: consola ─────────────────────────────────
                     ft.Container(
-                        expand=True,
+                        col={"sm": 12, "lg": 6, "xl": 7},
+                        height=422,
                         bgcolor=ft.colors.BLACK,
                         border_radius=16,
                         padding=ft.padding.all(22),
@@ -363,7 +366,6 @@ class StockReportTool(SismedTool):
                         ], spacing=4, expand=True),
                     ),
 
-                ], spacing=20, expand=True,
-                   vertical_alignment=ft.CrossAxisAlignment.STRETCH),
+                ], spacing=20),
             ]),
         )

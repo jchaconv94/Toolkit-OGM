@@ -291,7 +291,9 @@ class FormatTformdetTool(SismedTool):
         return ft.Container(
             padding=40,
             expand=True,
-            content=ft.Column([
+            content=ft.Column(
+                scroll=ft.ScrollMode.AUTO,
+                controls=[
                 # Cabecera Premium
                 self._section_header(
                     self.metadata.icono,

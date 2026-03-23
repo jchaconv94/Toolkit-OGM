@@ -258,7 +258,9 @@ class SyncSismedTool(SismedTool):
         self._view = ft.Container(
             padding=ft.padding.only(top=10, left=40, right=40, bottom=40),
             expand=True,
-            content=ft.Column([
+            content=ft.Column(
+                scroll=ft.ScrollMode.AUTO,
+                controls=[
                 # Cabecera Premium
                 self._section_header(
                     self.metadata.icono, self.metadata.color,
@@ -292,13 +294,19 @@ class SyncSismedTool(SismedTool):
                         col={"sm": 12, "md": 12, "lg": 6, "xl": 7},
                         padding=30, bgcolor=ft.colors.SURFACE_VARIANT, border_radius=20,
                         content=ft.Column([
-                            ft.Row([
-                                ft.Row([
-                                    ft.Icon(ft.icons.TERMINAL_ROUNDED, color=ft.colors.GREEN_400),
-                                    ft.Text("Consola de Actividad", size=18, weight=ft.FontWeight.BOLD)
-                                ]),
-                                self.btn_toggle_sync
-                            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+                            ft.ResponsiveRow([
+                                ft.Container(
+                                    content=ft.Row([
+                                        ft.Icon(ft.icons.TERMINAL_ROUNDED, color=ft.colors.GREEN_400),
+                                        ft.Text("Consola de Actividad", size=18, weight=ft.FontWeight.BOLD)
+                                    ]),
+                                    col={"sm": 12, "md": 12, "lg": 6, "xl": 7}
+                                ),
+                                ft.Container(
+                                    content=ft.Row([self.btn_toggle_sync], alignment=ft.MainAxisAlignment.END),
+                                    col={"sm": 12, "md": 12, "lg": 6, "xl": 5}
+                                )
+                            ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
                             ft.Divider(height=20, color=ft.colors.TRANSPARENT),
                             ft.Container(
                                 content=self.sync_logs,

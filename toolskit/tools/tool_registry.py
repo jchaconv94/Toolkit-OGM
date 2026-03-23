@@ -16,6 +16,7 @@ from tools.consulta_tformdet_tool import ConsultaTformdetTool
 from tools.reporte_guias_tool import ReporteGuiasTool
 from tools.sync_sismed_tool import SyncSismedTool
 from tools.stock_report_tool import StockReportTool
+from tools.disponibilidad_report_tool import DisponibilidadReportTool
 
 
 # ── Instancias únicas (Singleton por herramienta) ──────────────────────────────────────────────────────
@@ -26,6 +27,7 @@ TOOLS_REGISTRY: list = [
     ConsultaTformdetTool(),
     ReporteGuiasTool(),
     StockReportTool(),
+    DisponibilidadReportTool(),
     SyncSismedTool(),
 ]
 
