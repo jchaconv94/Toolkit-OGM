@@ -1,0 +1,8 @@
+flet==0.27.6
+pandas==3.0.1
+openpyxl==3.1.5
+dbfread==2.0.7
+python-dateutil==2.9.0.post0
+pillow==12.1.1
+pystray==0.19.5
+pywin32==311

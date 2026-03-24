@@ -99,8 +99,8 @@ class ConsultaTformdetTool(SismedTool):
         page.update()
 
         # ── Controles de UI ───────────────────────────────────────────────────
-        saved_dir = page.client_storage.get("sismed_dir_consulta") or ""
-
+        saved_dir = r"C:\SISMEDV2"
+ 
         input_sismed_dir = ft.TextField(
             label="Ruta carpeta SISMED",
             value=saved_dir,
@@ -113,8 +113,8 @@ class ConsultaTformdetTool(SismedTool):
             text_size=15,
             suffix=ft.IconButton(
                 icon=ft.icons.SEARCH_ROUNDED,
+                icon_size=18,
                 on_click=lambda _: dir_picker.get_directory_path(),
-                icon_size=18
             ),
             content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
         )

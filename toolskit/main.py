@@ -60,10 +60,9 @@ def set_startup(run: bool):
 
 def main(page: ft.Page):
     
-    saved_auto_startup = page.client_storage.get("auto_startup") or False
+    saved_auto_startup = False
 
     def _on_startup_change(e):
-        page.client_storage.set("auto_startup", e.control.value)
         set_startup(e.control.value)
 
     chk_auto_startup = ft.Checkbox(
@@ -234,6 +233,7 @@ def main(page: ft.Page):
             "Sync SISMED":             3,
             "Stock SISMED":            9,
             "Disponibilidad TFORMDET": 10,
+            "Cambiar Estado Med.":     12,
         }
 
         # ── Colores de acento por categoría ──
@@ -241,6 +241,7 @@ def main(page: ft.Page):
             "Herramientas":    ft.colors.TEAL_400,
             "Reports SISMED":  ft.colors.BLUE_400,
             "Sync":            ft.colors.GREEN_500,
+            "Edit SISMED":     ft.colors.ORANGE_400,
         }
 
         # ── Generador dinámico de tarjetas PREMIUM ──
@@ -632,6 +633,39 @@ def main(page: ft.Page):
             if disp_tool:
                 content.controls.append(disp_tool.build_view(page, navigate))
 
+        elif index == 11:
+            # Nuevo Dashboard de Edit SISMED
+            edit_ui = ft.Container(
+                padding=40,
+                expand=True,
+                content=ft.Column(
+                    controls=[
+                        build_premium_header(
+                            ft.icons.EDIT_NOTE, 
+                            CATEGORY_COLORS["Edit SISMED"], 
+                            "Edit SISMED", 
+                            "Edición directa de bases de datos SISMED:"
+                        ),
+                        ft.Divider(height=20, color=ft.colors.TRANSPARENT),
+                        ft.Row(
+                            controls=[
+                                make_tool_card(get_tool_by_name("Cambiar Estado Med.")),
+                            ],
+                            wrap=True,
+                            spacing=16,
+                            run_spacing=16
+                        )
+                    ]
+                )
+            )
+            content.controls.append(edit_ui)
+
+        elif index == 12:
+            # Cambiar Estado Med. → delegado al objeto ChangeMedestTool (POO)
+            edit_state_tool = get_tool_by_name("Cambiar Estado Med.")
+            if edit_state_tool:
+                content.controls.append(edit_state_tool.build_view(page, navigate))
+
         page.update()  # Actualiza la página
 
     # ── DISEÑO PREMIUM: Menú Lateral Personalizado con Tooltips ──
@@ -696,6 +730,7 @@ def main(page: ft.Page):
         create_nav_item(ft.icons.HOME_ROUNDED, "Inicio", 0),
         create_nav_item(ft.icons.HOME_REPAIR_SERVICE_ROUNDED, "Herramientas", 2),
         create_nav_item(ft.icons.BAR_CHART_ROUNDED, "Reports SISMED", 4),
+        create_nav_item(ft.icons.EDIT_NOTE, "Edit SISMED", 11),
         create_nav_item(ft.icons.CLOUD_SYNC_ROUNDED, "Sync SISMED", 3),
         create_nav_item(ft.icons.SETTINGS_ROUNDED, "Configuración", 1),
     ]

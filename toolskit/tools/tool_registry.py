@@ -17,8 +17,9 @@ from tools.reporte_guias_tool import ReporteGuiasTool
 from tools.sync_sismed_tool import SyncSismedTool
 from tools.stock_report_tool import StockReportTool
 from tools.disponibilidad_report_tool import DisponibilidadReportTool
-
-
+from tools.change_medest_tool import ChangeMedestTool
+ 
+ 
 # ── Instancias únicas (Singleton por herramienta) ──────────────────────────────────────────────────────
 # Añade más herramientas aquí a medida que las vayas migrando a OOP.
 TOOLS_REGISTRY: list = [
@@ -28,6 +29,7 @@ TOOLS_REGISTRY: list = [
     ReporteGuiasTool(),
     StockReportTool(),
     DisponibilidadReportTool(),
+    ChangeMedestTool(),
     SyncSismedTool(),
 ]
 

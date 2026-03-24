@@ -78,17 +78,10 @@ class SyncSismedTool(SismedTool):
         )
 
         # Cargar Preferencias
-        saved_sismed_dir = page.client_storage.get("sismed_dir_sync")
-        if saved_sismed_dir: self.sync_manager.base_dir = saved_sismed_dir
-        
-        saved_interval = page.client_storage.get("sync_interval")
-        if saved_interval: self.sync_manager.intervalo_minutos = int(saved_interval)
-        
-        saved_consolidado = page.client_storage.get("consolidado")
-        if saved_consolidado is not None: self.sync_manager.modo_consolidado = saved_consolidado
-        
-        saved_url = page.client_storage.get("apps_script_url")
-        if saved_url: self.sync_manager.apps_script_url = saved_url
+        self.sync_manager.base_dir = r"C:\SISMEDV2"
+        self.sync_manager.intervalo_minutos = 5
+        self.sync_manager.modo_consolidado = False
+        self.sync_manager.apps_script_url = ""
 
         self._initialized = True
 
@@ -99,14 +92,13 @@ class SyncSismedTool(SismedTool):
         if self._view:
             return self._view
 
-        saved_auto_sync    = page.client_storage.get("auto_sync") or False
+        saved_auto_sync    = False
         chk_auto_sync = ft.Checkbox(
             label="Iniciar Sincronización al encender la app",
             value=saved_auto_sync,
             fill_color={ft.ControlState.SELECTED: ft.colors.GREEN_500, ft.ControlState.DEFAULT: ft.colors.TRANSPARENT},
             check_color=ft.colors.WHITE,
             label_style=ft.TextStyle(size=13, color=ft.colors.CYAN_500, weight=ft.FontWeight.W_800),
-            on_change=lambda e: page.client_storage.set("auto_sync", e.control.value)
         )
 
         switch_consolidado = ft.Checkbox(
@@ -200,11 +192,6 @@ class SyncSismedTool(SismedTool):
                 self.sync_manager.modo_consolidado = switch_consolidado.value
                 self.sync_manager.apps_script_url = input_apps_script.value.strip()
                 self.sync_manager.base_dir = input_sismed_dir.value.strip()
-                
-                page.client_storage.set("sismed_dir_sync", self.sync_manager.base_dir)
-                page.client_storage.set("sync_interval", str(self.sync_manager.intervalo_minutos))
-                page.client_storage.set("consolidado", self.sync_manager.modo_consolidado)
-                page.client_storage.set("apps_script_url", self.sync_manager.apps_script_url)
 
                 self.btn_toggle_sync.content = ft.Row([
                     ft.Icon(ft.icons.STOP_ROUNDED, size=24, color=ft.colors.WHITE),

@@ -60,12 +60,11 @@ class StockReportTool(SismedTool):
             page.update()
 
         # ── Directorio SISMED ─────────────────────────────────────────────────
-        saved_dir = page.client_storage.get("sismed_dir_stock") or r"C:\SISMEDV2"
-
+        saved_dir = r"C:\SISMEDV2"
+ 
         def _on_dir_picked(e: ft.FilePickerResultEvent):
             if e.path:
                 input_dir.value = e.path
-                page.client_storage.set("sismed_dir_stock", e.path)
                 input_dir.update()
 
         dir_picker = ft.FilePicker(on_result=_on_dir_picked)
@@ -116,12 +115,12 @@ class StockReportTool(SismedTool):
         chk_general = ft.Checkbox(
             label="Stock General (MSTKALM)",
             value=False,
-            label_style=ft.TextStyle(size=13, weight=ft.FontWeight.W_500),
+            
         )
         chk_detalle = ft.Checkbox(
             label="Stock Detallado (MSTKALMDE)",
             value=False,
-            label_style=ft.TextStyle(size=13, weight=ft.FontWeight.W_500),
+            
         )
 
         # Exclusión mutua: marcar uno desmarca el otro

@@ -94,16 +94,15 @@ class ReporteGuiasTool(SismedTool):
         def _on_dir_picked(e: ft.FilePickerResultEvent):
             if e.path:
                 input_sismed_dir.value = e.path
-                page.client_storage.set("sismed_dir_guias", e.path)
                 input_sismed_dir.update()
-
+ 
         report_dir_picker = ft.FilePicker(on_result=_on_dir_picked)
         page.overlay.append(report_dir_picker)
         page.update()
-
+ 
         input_sismed_dir = ft.TextField(
             label="Ubicación SISMED actual",
-            value=page.client_storage.get("sismed_dir_guias") or "C:\\SISMEDV2",
+            value="C:\\SISMEDV2",
             expand=True, dense=False, text_size=15,
             text_align=ft.TextAlign.LEFT,
             prefix_icon=ft.icons.FOLDER,

@@ -33,7 +33,7 @@ class DisponibilidadReportTool(SismedTool):
     def metadata(self) -> ToolMetadata:
         return ToolMetadata(
             nombre="Disponibilidad TFORMDET",
-            descripcion="Reporte pivot de consumo y stock desde TFORMDET",
+            descripcion="Reporte de consumos y stock desde TFORMDET",
             icono=ft.icons.PIVOT_TABLE_CHART_ROUNDED,
             color=ft.colors.INDIGO_400,
             categoria="Reports SISMED",
@@ -65,12 +65,11 @@ class DisponibilidadReportTool(SismedTool):
         modo_state = {"value": "farmacias"}
 
         # ── Directorio SISMED ─────────────────────────────────────────────────
-        saved_dir = page.client_storage.get("sismed_dir_disp") or r"C:\SISMEDV2"
-
+        saved_dir = r"C:\SISMEDV2"
+ 
         def _on_dir_picked(e: ft.FilePickerResultEvent):
             if e.path:
                 input_dir.value = e.path
-                page.client_storage.set("sismed_dir_disp", e.path)
                 input_dir.update()
 
         dir_picker = ft.FilePicker(on_result=_on_dir_picked)
@@ -191,15 +190,15 @@ class DisponibilidadReportTool(SismedTool):
         )
 
         # ── Excluir con Chips ─────────────────────────────────────────────────
-        saved_excluir = page.client_storage.get("sismed_disp_excluir") or ""
+        saved_excluir = ""
         excluir_chips = [c.strip() for c in saved_excluir.split(",") if c.strip()]
         
         chips_wrap = ft.Row(wrap=True, spacing=6, run_spacing=6)
-
+ 
         chk_recordar = ft.Checkbox(
             label="Recordar estas exclusiones",
-            value=bool(saved_excluir),
-            label_style=ft.TextStyle(size=11, color=ft.colors.GREY_400),
+            value=False,
+            
             active_color=ft.colors.INDIGO_600,
             visible=len(excluir_chips) > 0,
         )
@@ -363,15 +362,7 @@ class DisponibilidadReportTool(SismedTool):
 
                 mes_stock = f"{anio_ref[0]}{mes_ref[0]:02d}"
                 excluir_lista = excluir_chips.copy()
-
-                if chk_recordar.value:
-                    if excluir_lista:
-                        page.client_storage.set("sismed_disp_excluir", ",".join(excluir_lista))
-                    else:
-                        page.client_storage.remove("sismed_disp_excluir")
-                else:
-                    page.client_storage.remove("sismed_disp_excluir")
-
+ 
                 mgr = DisponibilidadReportManager(
                     sismed_dir=input_dir.value.strip(),
                     log_callback=_log,
@@ -434,7 +425,7 @@ class DisponibilidadReportTool(SismedTool):
                     self.metadata.icono,
                     self.metadata.color,
                     "Disponibilidad TFORMDET",
-                    "Reporte pivot de consumo, stock y precio por mes desde TFORMDET",
+                    "Reporte de consumo, stock y precio por mes desde TFORMDET",
                     right_content=self._back_button(
                         "Volver a Reports SISMED", navigate_fn, 4
                     ),

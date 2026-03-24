@@ -12,33 +12,34 @@ import os
 import threading
 import flet as ft
 import pandas as pd
+import xlsxwriter
 from dbfread import DBF
-
+ 
 from tools.base_tool import SismedTool, ToolMetadata
-
-
+ 
+ 
 class DbfExcelTool(SismedTool):
     """Convierte archivos .dbf de SISMED al formato Excel (.xlsx)."""
-
+ 
     # ─── Metadata (tarjeta del Dashboard) ──────────────────────────────────────
     @property
     def metadata(self) -> ToolMetadata:
         return ToolMetadata(
             nombre="DBF a EXCEL",
-            descripcion="Convierte archivos .dbf a formato Excel",
+            descripcion="Convierte archivos .dbf a formato Excel (Optimizado)",
             icono=ft.icons.SYNC_ROUNDED,
             color=ft.colors.TEAL_400,
             categoria="Herramientas",
-            etiquetas=["dbf", "excel", "xlsx", "convertir", "herramientas"],
+            etiquetas=["dbf", "excel", "xlsx", "convertir", "herramientas", "fast"],
         )
-
+ 
     # ─── Vista completa ─────────────────────────────────────────────────────────
     def build_view(self, page: ft.Page, navigate_fn) -> ft.Control:
         """Construye y devuelve la vista completa del convertidor."""
-
+ 
         # ── Controles de estado ───────────────────────────────────────────────
         _alert_dialog = None
-
+ 
         selected_file = ft.TextField(
             label="Ruta DBF origen...", read_only=True, expand=True,
             border_color=ft.colors.TEAL_400, border_radius=8,
@@ -49,14 +50,14 @@ class DbfExcelTool(SismedTool):
             border_color=ft.colors.TEAL_400, border_radius=8,
             content_padding=15, prefix_icon=ft.icons.FOLDER_SPECIAL_ROUNDED
         )
-        result_label = ft.Text(value="", size=14, color=ft.colors.WHITE,
-                               weight=ft.FontWeight.W_600)
+        result_label = ft.Text(value="", size=13, color=ft.colors.WHITE,
+                               weight=ft.FontWeight.W_600, italic=True)
         progress_bar = ft.ProgressBar(
             expand=True, visible=False,
             color=ft.colors.TEAL_400, bgcolor=ft.colors.WHITE24
         )
-
-        # ── FilePicke rs ──────────────────────────────────────────────────────
+ 
+        # ── FilePicker s ──────────────────────────────────────────────────────
         def _on_file_picked(e):
             if e.files:
                 fp = e.files[0].path
@@ -75,7 +76,7 @@ class DbfExcelTool(SismedTool):
                 result_label.value = "No se seleccionó ningún archivo."
                 result_label.color = ft.colors.RED_400
             page.update()
-
+ 
         def _on_save_picked(e):
             if e.path:
                 base = os.path.basename(save_location.value) if save_location.value.endswith(".xlsx") else "output.xlsx"
@@ -83,12 +84,12 @@ class DbfExcelTool(SismedTool):
                 result_label.value = f"Destino actualizado: {save_location.value}"
                 result_label.color = ft.colors.BLUE_300
             page.update()
-
+ 
         file_picker = ft.FilePicker(on_result=_on_file_picked)
         save_picker = ft.FilePicker(on_result=_on_save_picked)
         page.overlay.extend([file_picker, save_picker])
         page.update()
-
+ 
         # ── Lógica de conversión (en hilo separado) ───────────────────────────
         def _close_alert(e):
             nonlocal _alert_dialog
@@ -99,7 +100,7 @@ class DbfExcelTool(SismedTool):
                 result_label.value = ""
                 progress_bar.value = 0
                 page.update()
-
+ 
         def _convert(e):
             nonlocal _alert_dialog
             if not selected_file.value:
@@ -107,37 +108,64 @@ class DbfExcelTool(SismedTool):
                 result_label.color = ft.colors.RED_400
                 page.update()
                 return
-
+ 
             def _process():
                 nonlocal _alert_dialog
                 btn_convert.disabled = True
                 btn_pick.disabled    = True
                 btn_dest.disabled    = True
-                result_label.value  = "Transformando datos (puede tardar unos segundos)..."
+                result_label.value  = "Optimizando y convirtiendo datos (Modo Streaming)..."
                 result_label.color  = ft.colors.AMBER_400
                 progress_bar.visible = True
                 progress_bar.value  = None
                 page.update()
-
+ 
                 dbf_path  = selected_file.value
                 xlsx_path = save_location.value
                 try:
+                    # Cargamos DBF de forma perezosa (sin cargar todo en memoria)
                     table = DBF(dbf_path, encoding="latin1")
-                    df    = pd.DataFrame(iter(table))
-                    df.to_excel(xlsx_path, index=False, engine="openpyxl")
-
-                    result_label.value = "✔ Conversión completada."
+                    
+                    # Escritura Directa con XlsxWriter (Memoria Constante)
+                    # Esta es la forma más rápida de escribir archivos Excel masivos en Python.
+                    workbook = xlsxwriter.Workbook(xlsx_path, {
+                        'constant_memory': True,
+                        'default_date_format': 'dd/mm/yyyy'
+                    })
+                    worksheet = workbook.add_worksheet("Datos")
+                    
+                    # Escribir Cabecera
+                    for col_idx, field_name in enumerate(table.field_names):
+                        worksheet.write(0, col_idx, field_name)
+                    
+                    # Escribir Registros Fila por Fila (Streaming)
+                    count = 0
+                    for row_idx, record in enumerate(table, start=1):
+                        for col_idx, field_name in enumerate(table.field_names):
+                            val = record[field_name]
+                            worksheet.write(row_idx, col_idx, val)
+                        count += 1
+                        
+                        # Actualizar progreso cada 10,000 registros (opcional)
+                        if count % 10000 == 0:
+                            result_label.value = f"✔ Procesados {count:,} registros..."
+                            page.update()
+                            
+                    workbook.close()
+ 
+                    result_label.value = "✔ Conversión completada exitosamente (Modo Fast)."
                     result_label.color = ft.colors.GREEN_400
                     progress_bar.value = 1
                     page.update()
-
+ 
                     _alert_dialog = ft.AlertDialog(
                         title=ft.Row([
-                            ft.Icon(ft.icons.CHECK_CIRCLE_ROUNDED, color=ft.colors.GREEN_500),
-                            ft.Text("Conversión Exitosa", weight=ft.FontWeight.W_900)
+                            ft.Icon(ft.icons.BOLT, color=ft.colors.AMBER_500),
+                            ft.Text("Alta Velocidad Completada", weight=ft.FontWeight.W_900)
                         ]),
                         content=ft.Text(
-                            f"El archivo XLSX ha sido generado en:\n\n{xlsx_path}", size=13
+                            f"Se procesaron {count:,} registros rápidamente.\n\nUbicación: {xlsx_path}",
+                            size=13
                         ),
                         actions=[ft.ElevatedButton("Entendido", on_click=_close_alert)],
                         open=True,
@@ -163,7 +191,7 @@ class DbfExcelTool(SismedTool):
         # ── Botones ──────────────────────────────────────────────────────────
         btn_convert = ft.ElevatedButton(
             content=ft.Row([
-                ft.Icon(ft.icons.SAVE_ROUNDED, color=ft.colors.WHITE, size=20),
+                ft.Icon(ft.icons.SAVE, color=ft.colors.WHITE, size=20),
                 ft.Text("CONVERTIR A EXCEL", color=ft.colors.WHITE,
                         weight=ft.FontWeight.BOLD, size=13),
             ], alignment=ft.MainAxisAlignment.CENTER, spacing=10),
@@ -175,7 +203,7 @@ class DbfExcelTool(SismedTool):
         )
         btn_pick = ft.ElevatedButton(
             content=ft.Row([
-                ft.Icon(ft.icons.FILE_OPEN_ROUNDED, size=18, color=ft.colors.WHITE),
+                ft.Icon(ft.icons.FOLDER_OPEN, size=18, color=ft.colors.WHITE),
                 ft.Text("Seleccionar DBF", weight=ft.FontWeight.BOLD, color=ft.colors.WHITE)
             ]),
             style=ft.ButtonStyle(bgcolor=ft.colors.BLUE_700,
@@ -187,7 +215,7 @@ class DbfExcelTool(SismedTool):
         )
         btn_dest = ft.ElevatedButton(
             content=ft.Row([
-                ft.Icon(ft.icons.CREATE_NEW_FOLDER_ROUNDED, size=18, color=ft.colors.WHITE),
+                ft.Icon(ft.icons.CREATE_NEW_FOLDER, size=18, color=ft.colors.WHITE),
                 ft.Text("Cambiar Destino", weight=ft.FontWeight.BOLD, color=ft.colors.WHITE)
             ]),
             style=ft.ButtonStyle(bgcolor=ft.colors.BLUE_700,
@@ -223,7 +251,7 @@ class DbfExcelTool(SismedTool):
                         width=800,
                         content=ft.Column([
                             ft.Row([
-                                ft.Icon(ft.icons.SETTINGS_ROUNDED,
+                                ft.Icon(ft.icons.SETTINGS,
                                         color=ft.colors.TEAL_400, size=24),
                                 ft.Text("Parámetros de Conversión", size=16,
                                         weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
@@ -241,12 +269,13 @@ class DbfExcelTool(SismedTool):
                             ft.Row([save_location, btn_dest], spacing=15,
                                    vertical_alignment=ft.CrossAxisAlignment.CENTER),
 
-                            ft.Container(height=40),
+                            ft.Container(height=20),
                             progress_bar,
-                            ft.Container(height=5),
-                            ft.Row([result_label, btn_convert],
-                                   alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                            ft.Container(height=10),
+                            ft.Column([
+                                result_label,
+                                ft.Row([btn_convert], alignment=ft.MainAxisAlignment.END)
+                            ], spacing=15),
                         ])
                     )
                 ], alignment=ft.MainAxisAlignment.CENTER),
