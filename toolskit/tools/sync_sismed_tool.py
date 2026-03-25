@@ -15,6 +15,7 @@ import flet as ft
 
 from sismed_sync import SismedSyncManager
 from tools.base_tool import SismedTool, ToolMetadata
+from tools.app_config import get as cfg_get, set as cfg_set
 
 class SyncSismedTool(SismedTool):
     """Sincroniza el inventario en tiempo real con Google Sheets."""
@@ -158,6 +159,7 @@ class SyncSismedTool(SismedTool):
         def _on_sismed_dir(e: ft.FilePickerResultEvent):
             if e.path:
                 input_sismed_dir.value = e.path
+                cfg_set("sync_sismed_dir", e.path)
                 input_sismed_dir.update()
 
         sismed_dir_picker = ft.FilePicker(on_result=_on_sismed_dir)
@@ -166,7 +168,7 @@ class SyncSismedTool(SismedTool):
 
         input_sismed_dir = ft.TextField(
             label="Directorio SISMED",
-            value=self.sync_manager.base_dir,
+            value=cfg_get("sync_sismed_dir"),
             expand=True, border_radius=8, filled=True,
             border_color=ft.colors.OUTLINE_VARIANT,
             prefix_icon=ft.icons.FOLDER_ROUNDED,

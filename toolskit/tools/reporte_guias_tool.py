@@ -14,6 +14,7 @@ from datetime import datetime
 
 from guia_report import GuiaReportManager
 from tools.base_tool import SismedTool, ToolMetadata
+from tools.app_config import get as cfg_get, set as cfg_set
 
 
 class ReporteGuiasTool(SismedTool):
@@ -94,6 +95,7 @@ class ReporteGuiasTool(SismedTool):
         def _on_dir_picked(e: ft.FilePickerResultEvent):
             if e.path:
                 input_sismed_dir.value = e.path
+                cfg_set("guias_sismed_dir", e.path)
                 input_sismed_dir.update()
  
         report_dir_picker = ft.FilePicker(on_result=_on_dir_picked)
@@ -102,7 +104,7 @@ class ReporteGuiasTool(SismedTool):
  
         input_sismed_dir = ft.TextField(
             label="Ubicación SISMED actual",
-            value="C:\\SISMEDV2",
+            value=cfg_get("guias_sismed_dir"),
             expand=True, dense=False, text_size=15,
             text_align=ft.TextAlign.LEFT,
             prefix_icon=ft.icons.FOLDER,
@@ -179,7 +181,7 @@ class ReporteGuiasTool(SismedTool):
                 _toggle_btn("Guías detallado por lotes", ft.icons.LIST_ALT_ROUNDED,
                             "det", modo_selected, modo_row_ref, _build_modo),
                 ft.Container(width=4),
-                _toggle_btn("Reporte guías consolidado", ft.icons.SUMMARIZE_ROUNDED,
+                _toggle_btn("Reporte valorizado de guías", ft.icons.SUMMARIZE_ROUNDED,
                             "con", modo_selected, modo_row_ref, _build_modo),
             ]
         modo_row_widget = ft.Row(controls=_build_modo(), spacing=0, expand=True)

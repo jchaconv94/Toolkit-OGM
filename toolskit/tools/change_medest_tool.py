@@ -4,6 +4,7 @@ import re
 import time
 from edit_sismed_manager import EditSismedManager
 from tools.base_tool import SismedTool, ToolMetadata
+from tools.app_config import get as cfg_get, set as cfg_set
 
 class ChangeMedestTool(SismedTool):
     """Herramienta para modificar el estado (MEDEST) de medicamentos en MMEDICAM.DBF."""
@@ -22,7 +23,7 @@ class ChangeMedestTool(SismedTool):
     def build_view(self, page: ft.Page, navigate_fn) -> ft.Control:
         # --- Variables de Estado ---
         sismed_dir_field = ft.TextField(
-            value=r"C:\SISMEDV2", label="Ruta SISMED", read_only=True,
+            value=cfg_get("medest_sismed_dir"), label="Ruta SISMED", read_only=True,
             prefix_icon=ft.icons.FOLDER, border_radius=12, text_size=12, expand=True,
             border_color=ft.colors.WHITE24,
         )
@@ -33,6 +34,7 @@ class ChangeMedestTool(SismedTool):
         def folder_picker_result(e):
             if e.path:
                 sismed_dir_field.value = e.path
+                cfg_set("medest_sismed_dir", e.path)
                 sismed_dir_field.update()
 
         dir_picker = ft.FilePicker(on_result=folder_picker_result)
@@ -83,7 +85,7 @@ class ChangeMedestTool(SismedTool):
             hint_text="Código o Nombre del Producto...",
             border_radius=12,
             text_size=14,
-            expand=True,
+            width=370,
             on_submit=lambda _: _do_search(),
             border_color=ft.colors.WHITE24,
             focused_border_color=ft.colors.ORANGE_400,
@@ -248,14 +250,18 @@ class ChangeMedestTool(SismedTool):
 
         # --- UI LAYOUT ---
         sidebar = ft.Container(
-            width=420,
+            width=430,
             padding=25,
             bgcolor=ft.colors.BLACK26,
             border_radius=15,
             content=ft.Column([
-                ft.Text("CONFIGURACIÓN", weight="bold", size=16, color=ft.colors.WHITE),
+                ft.Row([
+                    ft.Icon(ft.icons.TUNE_ROUNDED, color=ft.colors.ORANGE_400, size=20),
+                    ft.Text("CONFIGURACIÓN", weight="bold", size=16, color=ft.colors.WHITE),
+                ], spacing=8),
                 ft.Divider(height=1, color=ft.colors.WHITE10),
-                
+                ft.Container(height=6),
+
                 ft.Row([
                     sismed_dir_field,
                     ft.IconButton(ft.icons.FOLDER_OPEN, on_click=lambda _: dir_picker.get_directory_path())
@@ -278,14 +284,14 @@ class ChangeMedestTool(SismedTool):
                     style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10))
                 ),
                 
-                ft.Container(expand=True),
+                ft.Container(height=16),
                 ft.Container(
                     content=log_text,
                     padding=10,
                     bgcolor=ft.colors.BLACK12,
                     border_radius=8
                 )
-            ])
+            ], scroll=ft.ScrollMode.AUTO)
         )
 
         main_content = ft.Container(
@@ -298,8 +304,8 @@ class ChangeMedestTool(SismedTool):
                     btn_edit
                 ]),
                 ft.Divider(height=1, color=ft.colors.WHITE10),
-                ft.ListView(controls=[results_table], expand=True)
-            ])
+                ft.ListView(controls=[results_table], expand=True),
+            ]),
         )
 
         return ft.Container(
@@ -307,11 +313,11 @@ class ChangeMedestTool(SismedTool):
             expand=True,
             content=ft.Column([
                 self._section_header(
-                    ft.icons.EDIT_SQUARE, ft.colors.ORANGE_400, 
+                    ft.icons.EDIT_SQUARE, ft.colors.ORANGE_400,
                     "Editor de Estados (MEDEST)", "Modifica el campo MEDEST de medicamentos en MMEDICAM.DBF",
-                    self._back_button("Cerrar", navigate_fn, 0)
+                    self._back_button("Volver a Edit SISMED", navigate_fn, 11)
                 ),
-                ft.Row([sidebar, main_content], expand=True, spacing=20),
-                dir_picker
-            ], expand=True)
+                ft.Row([sidebar, main_content], expand=True, spacing=20, vertical_alignment=ft.CrossAxisAlignment.STRETCH),
+                dir_picker,
+            ], expand=True),
         )

@@ -22,6 +22,7 @@ import flet as ft
 
 from stock_report_manager import StockReportManager
 from tools.base_tool import SismedTool, ToolMetadata
+from tools.app_config import get as cfg_get, set as cfg_set
 
 
 class StockReportTool(SismedTool):
@@ -60,11 +61,12 @@ class StockReportTool(SismedTool):
             page.update()
 
         # ── Directorio SISMED ─────────────────────────────────────────────────
-        saved_dir = r"C:\SISMEDV2"
+        saved_dir = cfg_get("stock_sismed_dir")
  
         def _on_dir_picked(e: ft.FilePickerResultEvent):
             if e.path:
                 input_dir.value = e.path
+                cfg_set("stock_sismed_dir", e.path)
                 input_dir.update()
 
         dir_picker = ft.FilePicker(on_result=_on_dir_picked)

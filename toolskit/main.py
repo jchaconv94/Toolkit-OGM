@@ -234,6 +234,7 @@ def main(page: ft.Page):
             "Stock SISMED":            9,
             "Disponibilidad TFORMDET": 10,
             "Cambiar Estado Med.":     12,
+            "Habilitar Guías":   13,
         }
 
         # ── Colores de acento por categoría ──
@@ -650,6 +651,7 @@ def main(page: ft.Page):
                         ft.Row(
                             controls=[
                                 make_tool_card(get_tool_by_name("Cambiar Estado Med.")),
+                                make_tool_card(get_tool_by_name("Habilitar Guías")),
                             ],
                             wrap=True,
                             spacing=16,
@@ -665,6 +667,12 @@ def main(page: ft.Page):
             edit_state_tool = get_tool_by_name("Cambiar Estado Med.")
             if edit_state_tool:
                 content.controls.append(edit_state_tool.build_view(page, navigate))
+
+        elif index == 13:
+            # Editar Guías (TMOVIM) → delegado al objeto EditTmovimTool (POO)
+            tmovim_tool = get_tool_by_name("Habilitar Guías")
+            if tmovim_tool:
+                content.controls.append(tmovim_tool.build_view(page, navigate))
 
         page.update()  # Actualiza la página
 

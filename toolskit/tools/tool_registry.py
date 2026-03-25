@@ -18,6 +18,7 @@ from tools.sync_sismed_tool import SyncSismedTool
 from tools.stock_report_tool import StockReportTool
 from tools.disponibilidad_report_tool import DisponibilidadReportTool
 from tools.change_medest_tool import ChangeMedestTool
+from tools.edit_tmovim_tool import EditTmovimTool
  
  
 # ── Instancias únicas (Singleton por herramienta) ──────────────────────────────────────────────────────
@@ -30,6 +31,7 @@ TOOLS_REGISTRY: list = [
     StockReportTool(),
     DisponibilidadReportTool(),
     ChangeMedestTool(),
+    EditTmovimTool(),
     SyncSismedTool(),
 ]
 

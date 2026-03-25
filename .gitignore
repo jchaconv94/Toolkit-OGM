@@ -1,0 +1,23 @@
+﻿# Entorno virtual
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Build / dist
+dist/
+build/
+*.egg-info/
+
+# VS Code
+.vscode/
+
+# Sistema
+Thumbs.db
+desktop.ini
+.DS_Store

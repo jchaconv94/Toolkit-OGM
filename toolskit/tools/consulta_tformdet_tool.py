@@ -12,6 +12,7 @@ Depende de: tformdet_report.TformdetManager
 
 import threading
 import flet as ft
+from tools.app_config import get as cfg_get, set as cfg_set
 from datetime import datetime
 
 from tformdet_report import TformdetManager
@@ -57,6 +58,7 @@ class ConsultaTformdetTool(SismedTool):
         def _on_dir_picked(e: ft.FilePickerResultEvent):
             if e.path:
                 input_sismed_dir.value = e.path
+                cfg_set("tformdet_sismed_dir", e.path)
                 input_sismed_dir.update()
 
         def _on_save_picked(e: ft.FilePickerResultEvent):
@@ -99,7 +101,7 @@ class ConsultaTformdetTool(SismedTool):
         page.update()
 
         # ── Controles de UI ───────────────────────────────────────────────────
-        saved_dir = r"C:\SISMEDV2"
+        saved_dir = cfg_get("tformdet_sismed_dir")
  
         input_sismed_dir = ft.TextField(
             label="Ruta carpeta SISMED",
