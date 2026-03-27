@@ -12,6 +12,7 @@ El resto del sistema (Dashboard, buscador, menú) lo recoge automáticamente.
 
 from tools.dbf_tool import DbfExcelTool
 from tools.format_tformdet_tool import FormatTformdetTool
+from tools.pdf_tool import PdfTool
 from tools.consulta_tformdet_tool import ConsultaTformdetTool
 from tools.reporte_guias_tool import ReporteGuiasTool
 from tools.sync_sismed_tool import SyncSismedTool
@@ -26,6 +27,7 @@ from tools.edit_tmovim_tool import EditTmovimTool
 TOOLS_REGISTRY: list = [
     DbfExcelTool(),
     FormatTformdetTool(),
+    PdfTool(),
     ConsultaTformdetTool(),
     ReporteGuiasTool(),
     StockReportTool(),

@@ -234,7 +234,8 @@ def main(page: ft.Page):
             "Stock SISMED":            9,
             "Disponibilidad TFORMDET": 10,
             "Cambiar Estado Med.":     12,
-            "Habilitar Guías":   13,
+            "Habilitar Guías":          13,
+            "Editor PDF":               14,
         }
 
         # ── Colores de acento por categoría ──
@@ -551,7 +552,8 @@ def main(page: ft.Page):
                         ft.Row(
                             controls=[
                                 make_tool_card(get_tool_by_name("DBF a EXCEL")),
-                                make_tool_card(get_tool_by_name("Format TFORMDET"))
+                                make_tool_card(get_tool_by_name("Format TFORMDET")),
+                                make_tool_card(get_tool_by_name("Editor PDF"))
                             ],
                             wrap=True,
                             spacing=16,
@@ -673,6 +675,12 @@ def main(page: ft.Page):
             tmovim_tool = get_tool_by_name("Habilitar Guías")
             if tmovim_tool:
                 content.controls.append(tmovim_tool.build_view(page, navigate))
+
+        elif index == 14:
+            # Editor PDF → delegado al objeto PdfTool (POO)
+            pdf_tool = get_tool_by_name("Editor PDF")
+            if pdf_tool:
+                content.controls.append(pdf_tool.build_view(page, navigate))
 
         page.update()  # Actualiza la página
 
