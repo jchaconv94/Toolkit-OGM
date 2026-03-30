@@ -9,7 +9,6 @@ Sus controles principales son stateful (singleton) para mantener
 la conexión y logs aunque el usuario cambie de pestaña.
 """
 
-import sys
 import os
 import flet as ft
 
@@ -23,12 +22,80 @@ class SyncSismedTool(SismedTool):
     def __init__(self):
         super().__init__()
         self._initialized = False
+        self._startup_attempted = False
         self.sync_manager = None
         
         # UI controls that need to persist state
         self.sync_logs = None
         self.btn_toggle_sync = None
         self._view = None
+
+    def _cfg_bool(self, key: str, default: bool = False) -> bool:
+        value = cfg_get(key)
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "si", "sí", "yes", "on")
+        return default
+
+    def _cfg_int(self, key: str, default: int) -> int:
+        try:
+            return int(cfg_get(key))
+        except Exception:
+            return default
+
+    def _load_saved_preferences(self):
+        if not self.sync_manager:
+            return
+        self.sync_manager.base_dir = (cfg_get("sync_sismed_dir") or r"C:\SISMEDV2").strip()
+        self.sync_manager.intervalo_minutos = max(1, self._cfg_int("sync_interval_minutes", 5))
+        self.sync_manager.modo_consolidado = self._cfg_bool("sync_modo_consolidado", False)
+        self.sync_manager.apps_script_url = (cfg_get("sync_apps_script_url") or "").strip()
+
+    def _validate_sync_settings(self):
+        if not self.sync_manager:
+            return "No se pudo inicializar el sincronizador."
+
+        url = (self.sync_manager.apps_script_url or "").strip()
+        base_dir = (self.sync_manager.base_dir or "").strip()
+
+        if not url:
+            return "No se puede iniciar Sync SISMED automáticamente: falta la URL de integración guardada."
+        if not url.lower().startswith(("http://", "https://")):
+            return "No se puede iniciar Sync SISMED: la URL de integración no es válida."
+        if not base_dir:
+            return "No se puede iniciar Sync SISMED: falta el directorio SISMED."
+        if not os.path.isdir(base_dir):
+            return f"No se puede iniciar Sync SISMED: el directorio SISMED no existe: {base_dir}"
+        return None
+
+    def _start_sync_if_valid(self, page: ft.Page = None) -> bool:
+        error = self._validate_sync_settings()
+        if error:
+            if self.sync_manager:
+                self.sync_manager.log(f"⚠ {error}")
+            if page:
+                try:
+                    page.snack_bar = ft.SnackBar(content=ft.Text(error))
+                    page.snack_bar.open = True
+                    page.update()
+                except Exception:
+                    pass
+            return False
+        self.sync_manager.start_sync()
+        return True
+
+    def start_from_saved(self, page: ft.Page):
+        self._init_components(page)
+        self._load_saved_preferences()
+        self._startup_attempted = True
+        if self.sync_manager.is_running or not self._cfg_bool("sync_auto_start", False):
+            return False
+        return self._start_sync_if_valid(page)
 
     @property
     def metadata(self) -> ToolMetadata:
@@ -78,11 +145,7 @@ class SyncSismedTool(SismedTool):
             on_stop_callback=_on_sync_stopped
         )
 
-        # Cargar Preferencias
-        self.sync_manager.base_dir = r"C:\SISMEDV2"
-        self.sync_manager.intervalo_minutos = 5
-        self.sync_manager.modo_consolidado = False
-        self.sync_manager.apps_script_url = ""
+        self._load_saved_preferences()
 
         self._initialized = True
 
@@ -93,13 +156,14 @@ class SyncSismedTool(SismedTool):
         if self._view:
             return self._view
 
-        saved_auto_sync    = False
+        saved_auto_sync = self._cfg_bool("sync_auto_start", False)
         chk_auto_sync = ft.Checkbox(
             label="Iniciar Sincronización al encender la app",
             value=saved_auto_sync,
             fill_color={ft.ControlState.SELECTED: ft.colors.GREEN_500, ft.ControlState.DEFAULT: ft.colors.TRANSPARENT},
             check_color=ft.colors.WHITE,
             label_style=ft.TextStyle(size=13, color=ft.colors.CYAN_500, weight=ft.FontWeight.W_800),
+            on_change=lambda e: cfg_set("sync_auto_start", bool(e.control.value)),
         )
 
         switch_consolidado = ft.Checkbox(
@@ -107,7 +171,11 @@ class SyncSismedTool(SismedTool):
             value=self.sync_manager.modo_consolidado,
             fill_color={ft.ControlState.SELECTED: ft.colors.CYAN_500, ft.ControlState.DEFAULT: ft.colors.TRANSPARENT},
             check_color=ft.colors.WHITE,
-            label_style=ft.TextStyle(size=13, color=ft.colors.ON_SURFACE)
+            label_style=ft.TextStyle(size=13, color=ft.colors.ON_SURFACE),
+            on_change=lambda e: (
+                setattr(self.sync_manager, "modo_consolidado", bool(e.control.value)),
+                cfg_set("sync_modo_consolidado", bool(e.control.value))
+            )
         )
 
         opciones_intervalo = [ft.dropdown.Option(str(i)) for i in range(5, 65, 5)]
@@ -122,7 +190,11 @@ class SyncSismedTool(SismedTool):
             width=250, border_radius=8, filled=True,
             border_color=ft.colors.OUTLINE_VARIANT,
             prefix_icon=ft.icons.TIMER_ROUNDED,
-            content_padding=10, text_size=14, menu_height=200
+            content_padding=10, text_size=14, menu_height=200,
+            on_change=lambda e: (
+                setattr(self.sync_manager, "intervalo_minutos", max(1, int(e.control.value or 5))),
+                cfg_set("sync_interval_minutes", max(1, int(e.control.value or 5)))
+            )
         )
 
         def _toggle_url_lock(e):
@@ -148,6 +220,10 @@ class SyncSismedTool(SismedTool):
             border_color=ft.colors.OUTLINE_VARIANT,
             prefix_icon=ft.icons.LINK_ROUNDED,
             read_only=True, password=True, can_reveal_password=False,
+            on_change=lambda e: (
+                setattr(self.sync_manager, "apps_script_url", e.control.value.strip()),
+                cfg_set("sync_apps_script_url", e.control.value.strip())
+            ),
             suffix=ft.IconButton(
                 icon=ft.icons.LOCK_ROUNDED,
                 tooltip="Desbloquear URL para editar",
@@ -159,6 +235,7 @@ class SyncSismedTool(SismedTool):
         def _on_sismed_dir(e: ft.FilePickerResultEvent):
             if e.path:
                 input_sismed_dir.value = e.path
+                self.sync_manager.base_dir = e.path
                 cfg_set("sync_sismed_dir", e.path)
                 input_sismed_dir.update()
 
@@ -172,6 +249,10 @@ class SyncSismedTool(SismedTool):
             expand=True, border_radius=8, filled=True,
             border_color=ft.colors.OUTLINE_VARIANT,
             prefix_icon=ft.icons.FOLDER_ROUNDED,
+            on_change=lambda e: (
+                setattr(self.sync_manager, "base_dir", e.control.value.strip()),
+                cfg_set("sync_sismed_dir", e.control.value.strip())
+            ),
             suffix=ft.IconButton(
                 icon=ft.icons.FOLDER_OPEN_ROUNDED,
                 icon_color=ft.colors.CYAN_500,
@@ -194,6 +275,14 @@ class SyncSismedTool(SismedTool):
                 self.sync_manager.modo_consolidado = switch_consolidado.value
                 self.sync_manager.apps_script_url = input_apps_script.value.strip()
                 self.sync_manager.base_dir = input_sismed_dir.value.strip()
+                cfg_set("sync_interval_minutes", self.sync_manager.intervalo_minutos)
+                cfg_set("sync_modo_consolidado", bool(self.sync_manager.modo_consolidado))
+                cfg_set("sync_apps_script_url", self.sync_manager.apps_script_url)
+                cfg_set("sync_sismed_dir", self.sync_manager.base_dir)
+                cfg_set("sync_auto_start", bool(chk_auto_sync.value))
+
+                if not self._start_sync_if_valid(page):
+                    return
 
                 self.btn_toggle_sync.content = ft.Row([
                     ft.Icon(ft.icons.STOP_ROUNDED, size=24, color=ft.colors.WHITE),
@@ -203,8 +292,6 @@ class SyncSismedTool(SismedTool):
                     ft.ControlState.DEFAULT: ft.colors.ERROR,
                     ft.ControlState.HOVERED: ft.colors.RED_700
                 }
-                
-                self.sync_manager.start_sync()
             else:
                 # Detener
                 self.sync_manager.stop_sync()
@@ -308,8 +395,7 @@ class SyncSismedTool(SismedTool):
             ], expand=True)
         )
 
-        # ── Auto start feature (solicitud transparente en base a checkbox) ──
-        if saved_auto_sync and not self.sync_manager.is_running:
-            _toggle_sync(None)
+        if saved_auto_sync and not self.sync_manager.is_running and not self._startup_attempted:
+            self.start_from_saved(page)
 
         return self._view

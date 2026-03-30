@@ -23,6 +23,7 @@ import win32api
 import winerror
 from tformdet_report import TformdetManager
 from guia_report import GuiaReportManager
+from tools.app_config import get_config_log_path
 from tools.tool_registry import TOOLS_REGISTRY, get_tool_by_name
 
 # ==========================================
@@ -34,19 +35,29 @@ if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
     sys.exit(0) # Si ya hay uno abierto, esta instancia fantasma se suicida inmediatamente
 
 
+def _expected_startup_command() -> str:
+    if getattr(sys, 'frozen', False):
+        return f'"{sys.executable}" --autorun'
+
+    python_exe = sys.executable
+    pythonw_exe = os.path.join(os.path.dirname(python_exe), "pythonw.exe")
+    if not os.path.exists(pythonw_exe):
+        pythonw_exe = python_exe
+    script_path = os.path.abspath(__file__)
+    return f'"{pythonw_exe}" "{script_path}" --autorun'
+
+
+def _normalize_startup_command(command: str) -> str:
+    return os.path.normcase(" ".join(str(command or "").strip().split()))
+
+
 def set_startup(run: bool):
     try:
         key_name = "ToolkitOGM_Sync"
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         key = reg.OpenKey(reg.HKEY_CURRENT_USER, key_path, 0, reg.KEY_ALL_ACCESS)
         if run:
-            if getattr(sys, 'frozen', False):
-                cmd = f'"{sys.executable}" --autorun'
-            else:
-                python_exe = sys.executable
-                pythonw_exe = python_exe.replace("python.exe", "pythonw.exe")
-                script_path = os.path.abspath(sys.argv[0])
-                cmd = f'"{pythonw_exe}" "{script_path}" --autorun'
+            cmd = _expected_startup_command()
             reg.SetValueEx(key, key_name, 0, reg.REG_SZ, cmd)
         else:
             try:
@@ -58,12 +69,43 @@ def set_startup(run: bool):
         pass
 
 
+def is_startup_enabled() -> bool:
+    try:
+        key_name = "ToolkitOGM_Sync"
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        key = reg.OpenKey(reg.HKEY_CURRENT_USER, key_path, 0, reg.KEY_READ)
+        value, _ = reg.QueryValueEx(key, key_name)
+        reg.CloseKey(key)
+        return _normalize_startup_command(value) == _normalize_startup_command(_expected_startup_command())
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
 def main(page: ft.Page):
     
-    saved_auto_startup = False
+    saved_auto_startup = is_startup_enabled()
 
     def _on_startup_change(e):
         set_startup(e.control.value)
+        chk_auto_startup.value = is_startup_enabled()
+        chk_auto_startup.update()
+
+    def _show_message(message: str):
+        page.snack_bar = ft.SnackBar(content=ft.Text(message))
+        page.snack_bar.open = True
+        page.update()
+
+    def _open_config_log(e=None):
+        log_path = get_config_log_path()
+        if not os.path.exists(log_path):
+            _show_message("El log de configuración aún no existe. Se creará automáticamente cuando ocurra un error de persistencia.")
+            return
+        try:
+            os.startfile(log_path)
+        except Exception as exc:
+            _show_message(f"No se pudo abrir el log de configuración: {exc}")
 
     chk_auto_startup = ft.Checkbox(
         label="Abrir esta aplicación al encender Windows",
@@ -154,6 +196,13 @@ def main(page: ft.Page):
             page.update()
             
     page.window.on_event = window_event
+
+    sync_tool = get_tool_by_name("Sync SISMED")
+    if sync_tool and hasattr(sync_tool, "start_from_saved"):
+        try:
+            sync_tool.start_from_saved(page)
+        except Exception:
+            pass
 
     # Función para expandir/colapsar el menú lateral
     def toggle_nav_rail(e):
@@ -529,6 +578,42 @@ def main(page: ft.Page):
                                 ft.Icon(ft.icons.INFO_OUTLINE_ROUNDED, size=16, color=ft.colors.ON_SURFACE_VARIANT),
                                 ft.Text("Si se activa, el programa se registrará para arrancar en segundo plano automáticamente al iniciar Windows.", size=13, color=ft.colors.ON_SURFACE_VARIANT)
                             ])
+                        ])
+                    ),
+                    ft.Container(
+                        bgcolor=ft.colors.SURFACE_VARIANT,
+                        border_radius=20,
+                        padding=30,
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Icon(ft.icons.DESCRIPTION_ROUNDED, color=ft.colors.CYAN_400),
+                                ft.Text("Diagnóstico de Configuración", size=20, weight=ft.FontWeight.W_800)
+                            ]),
+                            ft.Divider(height=25, color=ft.colors.OUTLINE_VARIANT),
+                            ft.Text(
+                                "Abre el log de configuración para revisar errores de lectura o escritura cuando la persistencia falle.",
+                                size=13,
+                                color=ft.colors.ON_SURFACE_VARIANT,
+                            ),
+                            ft.Container(height=12),
+                            ft.ElevatedButton(
+                                "Abrir log de configuración",
+                                icon=ft.icons.OPEN_IN_NEW_ROUNDED,
+                                on_click=_open_config_log,
+                                style=ft.ButtonStyle(
+                                    bgcolor={ft.ControlState.DEFAULT: ft.colors.CYAN_600, ft.ControlState.HOVERED: ft.colors.CYAN_800},
+                                    color=ft.colors.WHITE,
+                                    padding=ft.padding.symmetric(horizontal=18, vertical=14),
+                                    shape=ft.RoundedRectangleBorder(radius=10),
+                                ),
+                            ),
+                            ft.Container(height=8),
+                            ft.Text(
+                                f"Ruta del log: {get_config_log_path()}",
+                                size=12,
+                                color=ft.colors.GREY_500,
+                                selectable=True,
+                            ),
                         ])
                     )
                 ])
