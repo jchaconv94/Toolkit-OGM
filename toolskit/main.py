@@ -1,18 +1,9 @@
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
+import ctypes
 import flet as ft
 import os
-import pandas as pd
-from dbfread import DBF
-from datetime import datetime
-import time  # Importa time para simular el progreso de la barra
-from openpyxl import load_workbook
-from openpyxl.styles import Font, Border, Side
-
-from datetime import datetime
-import locale
 import sys
-import os
 import winreg as reg
 import threading
 import pystray
@@ -21,18 +12,81 @@ from PIL import Image, ImageDraw
 import win32event
 import win32api
 import winerror
-from tformdet_report import TformdetManager
-from guia_report import GuiaReportManager
 from tools.app_config import get_config_log_path
 from tools.tool_registry import TOOLS_REGISTRY, get_tool_by_name
 
 # ==========================================
 # PREVENCIÓN DE MULTI-CLONACIÓN (MUTEX)
 # ==========================================
-mutex_name = "ToolkitOGM_SingleInstanceMutex_v1"
-mutex = win32event.CreateMutex(None, False, mutex_name)
-if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
-    sys.exit(0) # Si ya hay uno abierto, esta instancia fantasma se suicida inmediatamente
+SINGLE_INSTANCE_MUTEX_NAME = "ToolkitOGM_SingleInstanceMutex_v1"
+RESTORE_WINDOW_EVENT_NAME = "ToolkitOGM_RestoreWindow_v1"
+RESTORE_WINDOW_ACK_EVENT_NAME = "ToolkitOGM_RestoreWindowAck_v1"
+SECOND_INSTANCE_TIMEOUT_MS = 3000
+single_instance_mutex = None
+restore_window_event = None
+restore_window_ack_event = None
+
+
+def _close_handle_safely(handle):
+    if not handle:
+        return
+    try:
+        win32api.CloseHandle(handle)
+    except Exception:
+        pass
+
+
+def _show_existing_instance_warning():
+    try:
+        ctypes.windll.user32.MessageBoxW(
+            0,
+            "ToolKit SISMED ya se esta ejecutando. Se intento restaurar la ventana existente, pero no respondio a tiempo. Revise la bandeja del sistema o cierre el proceso bloqueado desde el Administrador de tareas.",
+            "ToolKit SISMED",
+            0x00000030,
+        )
+    except Exception:
+        pass
+
+
+def _signal_restore_request(timeout_ms: int = SECOND_INSTANCE_TIMEOUT_MS) -> bool:
+    request_handle = None
+    ack_handle = None
+    try:
+        request_handle = win32event.OpenEvent(win32event.EVENT_ALL_ACCESS, False, RESTORE_WINDOW_EVENT_NAME)
+        ack_handle = win32event.OpenEvent(win32event.EVENT_ALL_ACCESS, False, RESTORE_WINDOW_ACK_EVENT_NAME)
+        win32event.ResetEvent(ack_handle)
+        win32event.SetEvent(request_handle)
+        return win32event.WaitForSingleObject(ack_handle, timeout_ms) == win32event.WAIT_OBJECT_0
+    except Exception:
+        return False
+    finally:
+        _close_handle_safely(request_handle)
+        _close_handle_safely(ack_handle)
+
+
+def _release_single_instance_resources():
+    global single_instance_mutex, restore_window_event, restore_window_ack_event
+    _close_handle_safely(restore_window_ack_event)
+    _close_handle_safely(restore_window_event)
+    _close_handle_safely(single_instance_mutex)
+    restore_window_ack_event = None
+    restore_window_event = None
+    single_instance_mutex = None
+
+
+def _acquire_single_instance() -> bool:
+    global single_instance_mutex, restore_window_event, restore_window_ack_event
+
+    single_instance_mutex = win32event.CreateMutex(None, False, SINGLE_INSTANCE_MUTEX_NAME)
+    mutex_last_error = win32api.GetLastError()
+    if mutex_last_error == winerror.ERROR_ALREADY_EXISTS:
+        if not _signal_restore_request():
+            _show_existing_instance_warning()
+        return False
+
+    restore_window_event = win32event.CreateEvent(None, False, False, RESTORE_WINDOW_EVENT_NAME)
+    restore_window_ack_event = win32event.CreateEvent(None, False, False, RESTORE_WINDOW_ACK_EVENT_NAME)
+    return True
 
 
 def _expected_startup_command() -> str:
@@ -97,6 +151,34 @@ def main(page: ft.Page):
         page.snack_bar.open = True
         page.update()
 
+    def _restore_main_window():
+        try:
+            page.window.visible = True
+            page.window.minimized = False
+            page.window.focused = True
+            page.window.to_front()
+            page.update()
+        except Exception:
+            pass
+
+    def _listen_for_restore_requests():
+        if not restore_window_event:
+            return
+
+        while True:
+            try:
+                result = win32event.WaitForSingleObject(restore_window_event, 1000)
+            except Exception:
+                break
+
+            if result == win32event.WAIT_OBJECT_0:
+                _restore_main_window()
+                if restore_window_ack_event:
+                    try:
+                        win32event.SetEvent(restore_window_ack_event)
+                    except Exception:
+                        pass
+
     def _open_config_log(e=None):
         log_path = get_config_log_path()
         if not os.path.exists(log_path):
@@ -151,6 +233,8 @@ def main(page: ft.Page):
     page.window.resizable = True
     page.window.maximizable = True
     page.window.prevent_close = True # Evita que se cierre de verdad
+
+    threading.Thread(target=_listen_for_restore_requests, daemon=True).start()
     
     # Boot silencioso
     if "--autorun" in sys.argv:
@@ -167,14 +251,14 @@ def main(page: ft.Page):
         return image
 
     def on_show_window(icon, item):
-        page.window.visible = True
-        page.update()
+        _restore_main_window()
 
     def on_quit(icon, item):
         sync_tool = get_tool_by_name("Sync SISMED")
         if sync_tool and sync_tool.sync_manager:
             sync_tool.sync_manager.stop_sync()
         icon.stop()
+        _release_single_instance_resources()
         page.window.destroy()
 
     def setup_tray():
@@ -869,4 +953,9 @@ def main(page: ft.Page):
     if sync_tool:
         sync_tool.build_view(page, lambda idx: None)
 
-ft.app(target=main)
+if __name__ == "__main__":
+    if _acquire_single_instance():
+        try:
+            ft.app(target=main)
+        finally:
+            _release_single_instance_resources()

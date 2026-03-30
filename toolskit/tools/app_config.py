@@ -6,11 +6,14 @@ Guarda/lee un JSON en %APPDATA%/ToolkitOGM/config.json
 """
 import os
 import json
+import threading
 from datetime import datetime
 
 _CONFIG_DIR  = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "ToolkitOGM")
 _CONFIG_FILE = os.path.join(_CONFIG_DIR, "config.json")
+_CONFIG_BACKUP_FILE = os.path.join(_CONFIG_DIR, "config.bak")
 _CONFIG_LOG_FILE = os.path.join(_CONFIG_DIR, "config.log")
+_CONFIG_LOCK = threading.RLock()
 
 _DEFAULTS = {
     "medest_sismed_dir":       r"C:\SISMEDV2",
@@ -37,23 +40,51 @@ def _log_config_error(action: str, exc: Exception):
         pass
 
 
+def _load_json_file(path: str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("El archivo de configuración no contiene un objeto JSON válido.")
+    return data
+
+
+def _write_json_atomic(path: str, data: dict):
+    temp_path = f"{path}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(temp_path, path)
+
+
 def _load() -> dict:
     try:
-        with open(_CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            raise ValueError("El archivo de configuración no contiene un objeto JSON válido.")
-        return {**_DEFAULTS, **data}
+        with _CONFIG_LOCK:
+            if not os.path.exists(_CONFIG_FILE):
+                return dict(_DEFAULTS)
+
+            data = _load_json_file(_CONFIG_FILE)
+            return {**_DEFAULTS, **data}
     except Exception as exc:
-        _log_config_error("Error cargando configuración", exc)
-        return dict(_DEFAULTS)
+        _log_config_error("Error cargando configuración principal", exc)
+
+        try:
+            with _CONFIG_LOCK:
+                if not os.path.exists(_CONFIG_BACKUP_FILE):
+                    return dict(_DEFAULTS)
+
+                backup_data = _load_json_file(_CONFIG_BACKUP_FILE)
+                _write_json_atomic(_CONFIG_FILE, backup_data)
+                return {**_DEFAULTS, **backup_data}
+        except Exception as backup_exc:
+            _log_config_error("Error recuperando configuración desde respaldo", backup_exc)
+            return dict(_DEFAULTS)
 
 
 def _save(data: dict):
     try:
-        os.makedirs(_CONFIG_DIR, exist_ok=True)
-        with open(_CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with _CONFIG_LOCK:
+            os.makedirs(_CONFIG_DIR, exist_ok=True)
+            _write_json_atomic(_CONFIG_FILE, data)
+            _write_json_atomic(_CONFIG_BACKUP_FILE, data)
     except Exception as exc:
         _log_config_error("Error guardando configuración", exc)
 
@@ -70,3 +101,11 @@ def set(key: str, value):
 
 def get_config_log_path() -> str:
     return _CONFIG_LOG_FILE
+
+
+def get_config_file_path() -> str:
+    return _CONFIG_FILE
+
+
+def get_config_backup_path() -> str:
+    return _CONFIG_BACKUP_FILE
