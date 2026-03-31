@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import flet_desktop
+from PyInstaller.building.datastruct import Tree
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
@@ -10,6 +12,8 @@ REPO_ROOT = SPEC_DIR.parents[1]
 TOOLKIT_DIR = REPO_ROOT / "toolskit"
 ICON_FILE = SPEC_DIR / "ToolkitOGM.ico"
 VERSION_FILE = SPEC_DIR / "ToolkitOGM.version.txt"
+FLET_DESKTOP_DIR = Path(flet_desktop.__file__).resolve().parent
+FLET_DESKTOP_TREE = Tree(str(FLET_DESKTOP_DIR / "app"), prefix="flet_desktop/app")
 
 datas = [
     (str(TOOLKIT_DIR / "assets"), "assets"),
@@ -81,6 +85,7 @@ coll = COLLECT(
     exe,
     a.binaries,
     a.datas,
+    FLET_DESKTOP_TREE,
     strip=False,
     upx=True,
     upx_exclude=[],
