@@ -4,6 +4,8 @@ import ctypes
 import flet as ft
 import os
 import sys
+import subprocess
+import traceback
 import winreg as reg
 import threading
 import pystray
@@ -12,7 +14,22 @@ from PIL import Image, ImageDraw
 import win32event
 import win32api
 import winerror
-from tools.app_config import get_config_log_path
+
+
+def _bootstrap_runtime_directory():
+    try:
+        runtime_dir = os.path.dirname(
+            sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
+        )
+        if runtime_dir and os.path.isdir(runtime_dir):
+            os.chdir(runtime_dir)
+    except Exception:
+        pass
+
+
+_bootstrap_runtime_directory()
+
+from tools.app_config import append_runtime_log, get_config_log_path, get_startup_log_path, update_runtime_status
 from tools.tool_registry import TOOLS_REGISTRY, get_tool_by_name
 
 # ==========================================
@@ -22,6 +39,10 @@ SINGLE_INSTANCE_MUTEX_NAME = "ToolkitOGM_SingleInstanceMutex_v1"
 RESTORE_WINDOW_EVENT_NAME = "ToolkitOGM_RestoreWindow_v1"
 RESTORE_WINDOW_ACK_EVENT_NAME = "ToolkitOGM_RestoreWindowAck_v1"
 SECOND_INSTANCE_TIMEOUT_MS = 3000
+AUTORUN_READY_TIMEOUT_MS = 5000
+STARTUP_REGISTRY_VALUE_NAME = "ToolkitOGM_Sync"
+STARTUP_TASK_NAME = "ToolkitOGM_Autorun"
+STARTUP_TASK_DELAY = "0000:30"
 single_instance_mutex = None
 restore_window_event = None
 restore_window_ack_event = None
@@ -105,46 +126,242 @@ def _normalize_startup_command(command: str) -> str:
     return os.path.normcase(" ".join(str(command or "").strip().split()))
 
 
-def set_startup(run: bool):
+def _log_startup_registration(message: str):
     try:
-        key_name = "ToolkitOGM_Sync"
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        key = reg.OpenKey(reg.HKEY_CURRENT_USER, key_path, 0, reg.KEY_ALL_ACCESS)
-        if run:
-            cmd = _expected_startup_command()
-            reg.SetValueEx(key, key_name, 0, reg.REG_SZ, cmd)
-        else:
-            try:
-                reg.DeleteValue(key, key_name)
-            except FileNotFoundError:
-                pass
-        reg.CloseKey(key)
+        append_runtime_log("startup", message)
     except Exception:
         pass
 
 
-def is_startup_enabled() -> bool:
+def _run_schtasks(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+    startupinfo = None
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if os.name == "nt" and hasattr(subprocess, "STARTUPINFO"):
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+    return subprocess.run(
+        ["schtasks", *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+        startupinfo=startupinfo,
+        creationflags=creationflags,
+    )
+
+
+def _query_startup_registry_command() -> str | None:
     try:
-        key_name = "ToolkitOGM_Sync"
         key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
         key = reg.OpenKey(reg.HKEY_CURRENT_USER, key_path, 0, reg.KEY_READ)
-        value, _ = reg.QueryValueEx(key, key_name)
+        value, _ = reg.QueryValueEx(key, STARTUP_REGISTRY_VALUE_NAME)
         reg.CloseKey(key)
-        return _normalize_startup_command(value) == _normalize_startup_command(_expected_startup_command())
+        return value
     except FileNotFoundError:
+        return None
+    except Exception as exc:
+        _log_startup_registration(f"startup_registry_query_error={type(exc).__name__}: {exc}")
+        return None
+
+
+def _set_startup_registry_command(command: str) -> tuple[bool, str]:
+    try:
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        key = reg.OpenKey(reg.HKEY_CURRENT_USER, key_path, 0, reg.KEY_SET_VALUE)
+        reg.SetValueEx(key, STARTUP_REGISTRY_VALUE_NAME, 0, reg.REG_SZ, command)
+        reg.CloseKey(key)
+        return True, "Registro HKCU Run actualizado."
+    except Exception as exc:
+        return False, f"No se pudo escribir la clave Run: {type(exc).__name__}: {exc}"
+
+
+def _delete_startup_registry_command() -> tuple[bool, str]:
+    try:
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        key = reg.OpenKey(reg.HKEY_CURRENT_USER, key_path, 0, reg.KEY_SET_VALUE)
+        try:
+            reg.DeleteValue(key, STARTUP_REGISTRY_VALUE_NAME)
+            message = "Clave Run eliminada."
+        except FileNotFoundError:
+            message = "La clave Run ya no existía."
+        reg.CloseKey(key)
+        return True, message
+    except Exception as exc:
+        return False, f"No se pudo eliminar la clave Run: {type(exc).__name__}: {exc}"
+
+
+def _startup_task_exists() -> bool:
+    try:
+        result = _run_schtasks(["/Query", "/TN", STARTUP_TASK_NAME])
+        return result.returncode == 0
+    except Exception as exc:
+        _log_startup_registration(f"startup_task_query_error={type(exc).__name__}: {exc}")
         return False
-    except Exception:
-        return False
+
+
+def _create_startup_task(command: str) -> tuple[bool, str]:
+    try:
+        result = _run_schtasks([
+            "/Create",
+            "/TN", STARTUP_TASK_NAME,
+            "/TR", command,
+            "/SC", "ONLOGON",
+            "/RL", "LIMITED",
+            "/IT",
+            "/DELAY", STARTUP_TASK_DELAY,
+            "/F",
+        ])
+        output = (result.stdout or result.stderr or "").strip()
+        if result.returncode == 0:
+            return True, output or "Tarea programada de autoarranque creada."
+        return False, output or f"schtasks devolvió código {result.returncode}."
+    except Exception as exc:
+        return False, f"No se pudo crear la tarea programada: {type(exc).__name__}: {exc}"
+
+
+def _delete_startup_task() -> tuple[bool, str]:
+    try:
+        result = _run_schtasks([
+            "/Delete",
+            "/TN", STARTUP_TASK_NAME,
+            "/F",
+        ])
+        output = (result.stdout or result.stderr or "").strip()
+        if result.returncode == 0:
+            return True, output or "Tarea programada eliminada."
+        output_lc = output.lower()
+        if "no existe" in output_lc or "cannot find the file" in output_lc:
+            return True, output or "La tarea programada ya no existía."
+        return False, output or f"schtasks devolvió código {result.returncode}."
+    except Exception as exc:
+        return False, f"No se pudo eliminar la tarea programada: {type(exc).__name__}: {exc}"
+
+
+def _get_startup_registration_status() -> dict:
+    expected_command = _expected_startup_command()
+    registry_command = _query_startup_registry_command()
+    registry_match = _normalize_startup_command(registry_command) == _normalize_startup_command(expected_command)
+    task_exists = _startup_task_exists() if getattr(sys, 'frozen', False) else False
+
+    enabled = task_exists or registry_match
+    if task_exists:
+        mode = "task"
+    elif registry_match:
+        mode = "registry"
+    else:
+        mode = "disabled"
+
+    return {
+        "enabled": enabled,
+        "mode": mode,
+        "registry_match": registry_match,
+        "registry_command": registry_command,
+        "task_exists": task_exists,
+        "expected_command": expected_command,
+    }
+
+
+def _repair_startup_registration_if_needed():
+    status = _get_startup_registration_status()
+    if not getattr(sys, 'frozen', False):
+        return status
+    if not status["enabled"] or status["task_exists"]:
+        return status
+
+    success = set_startup(True)
+    refreshed = _get_startup_registration_status()
+    if success and refreshed["task_exists"]:
+        _log_startup_registration("startup_registration_repaired=task")
+    else:
+        _log_startup_registration("startup_registration_repair_failed")
+    return refreshed
+
+
+def set_startup(run: bool) -> bool:
+    expected_command = _expected_startup_command()
+
+    if run:
+        if getattr(sys, 'frozen', False):
+            task_ok, task_message = _create_startup_task(expected_command)
+            _log_startup_registration(f"startup_enable_task={task_ok}; {task_message}")
+            if task_ok:
+                reg_ok, reg_message = _delete_startup_registry_command()
+                _log_startup_registration(f"startup_cleanup_registry={reg_ok}; {reg_message}")
+                return _get_startup_registration_status()["enabled"]
+
+        reg_ok, reg_message = _set_startup_registry_command(expected_command)
+        _log_startup_registration(f"startup_enable_registry={reg_ok}; {reg_message}")
+        return _get_startup_registration_status()["enabled"]
+
+    reg_ok, reg_message = _delete_startup_registry_command()
+    task_ok, task_message = _delete_startup_task()
+    _log_startup_registration(f"startup_disable_registry={reg_ok}; {reg_message}")
+    _log_startup_registration(f"startup_disable_task={task_ok}; {task_message}")
+    return not _get_startup_registration_status()["enabled"]
+
+
+def is_startup_enabled() -> bool:
+    return _get_startup_registration_status()["enabled"]
 
 
 def main(page: ft.Page):
-    
-    saved_auto_startup = is_startup_enabled()
+    startup_hidden_requested = "--autorun" in sys.argv
+    startup_state = {
+        "restore_listener_ready": threading.Event(),
+        "tray_ready": threading.Event(),
+        "tray_failed": threading.Event(),
+        "tray_error": None,
+        "degraded_reasons": [],
+        "boot_status": "booting",
+        "sync_startup_status": "not-evaluated",
+        "sync_startup_message": None,
+    }
+
+    startup_registration = _repair_startup_registration_if_needed()
+    saved_auto_startup = startup_registration["enabled"]
+
+    def _log_startup_event(message: str):
+        append_runtime_log("startup", message)
+
+    def _set_boot_status(status: str, detail: str | None = None):
+        startup_state["boot_status"] = status
+        update_runtime_status("boot", status, detail)
+        if detail:
+            _log_startup_event(f"boot_status={status}; {detail}")
+        else:
+            _log_startup_event(f"boot_status={status}")
+
+    def _record_sync_startup(status: str, message: str | None = None):
+        startup_state["sync_startup_status"] = status
+        startup_state["sync_startup_message"] = message
+        if message:
+            _log_startup_event(f"sync_autostart_status={status}; {message}")
+        else:
+            _log_startup_event(f"sync_autostart_status={status}")
+
+    def _register_degraded_reason(message: str):
+        if message not in startup_state["degraded_reasons"]:
+            startup_state["degraded_reasons"].append(message)
+        _log_startup_event(message)
+
+    _set_boot_status("booting", f"autorun={startup_hidden_requested}")
 
     def _on_startup_change(e):
-        set_startup(e.control.value)
+        requested_value = bool(e.control.value)
+        success = set_startup(requested_value)
         chk_auto_startup.value = is_startup_enabled()
         chk_auto_startup.update()
+        if requested_value and not success:
+            _show_message(f"No se pudo registrar el autoarranque. Revisa el log: {get_startup_log_path()}")
+        elif not requested_value and chk_auto_startup.value:
+            _show_message(f"No se pudo desactivar completamente el autoarranque. Revisa el log: {get_startup_log_path()}")
+    _log_startup_event(
+        f"startup_registration mode={startup_registration['mode']}; "
+        f"registry_match={startup_registration['registry_match']}; task_exists={startup_registration['task_exists']}"
+    )
+    _log_startup_event(
+        f"runtime_context cwd={os.getcwd()}; executable={sys.executable}; frozen={getattr(sys, 'frozen', False)}"
+    )
 
     def _show_message(message: str):
         page.snack_bar = ft.SnackBar(content=ft.Text(message))
@@ -162,6 +379,8 @@ def main(page: ft.Page):
             pass
 
     def _listen_for_restore_requests():
+        startup_state["restore_listener_ready"].set()
+        _log_startup_event("restore_listener_ready=true")
         if not restore_window_event:
             return
 
@@ -236,10 +455,6 @@ def main(page: ft.Page):
 
     threading.Thread(target=_listen_for_restore_requests, daemon=True).start()
     
-    # Boot silencioso
-    if "--autorun" in sys.argv:
-        page.window.visible = False
-    
     # Lógica de System Tray (Bandeja del Sistema)
     tray_icon = None
 
@@ -263,13 +478,21 @@ def main(page: ft.Page):
 
     def setup_tray():
         nonlocal tray_icon
-        image = create_image()
-        menu = pystray.Menu(
-            item('Restaurar Ventana', on_show_window, default=True),
-            item('Cerrar completamente', on_quit)
-        )
-        tray_icon = pystray.Icon("toolkit_ogm", image, "ToolKits SISMED (Sincronizando)", menu)
-        tray_icon.run()
+        try:
+            image = create_image()
+            menu = pystray.Menu(
+                item('Restaurar Ventana', on_show_window, default=True),
+                item('Cerrar completamente', on_quit)
+            )
+            tray_icon = pystray.Icon("toolkit_ogm", image, "ToolKits SISMED (Sincronizando)", menu)
+            startup_state["tray_ready"].set()
+            _log_startup_event("tray_ready=true")
+            tray_icon.run()
+        except Exception as exc:
+            startup_state["tray_error"] = exc
+            startup_state["tray_failed"].set()
+            startup_state["tray_ready"].set()
+            _register_degraded_reason(f"Fallo inicializando bandeja del sistema: {type(exc).__name__}: {exc}")
 
     # Iniciar Bandeja en segundo plano
     threading.Thread(target=setup_tray, daemon=True).start()
@@ -284,9 +507,53 @@ def main(page: ft.Page):
     sync_tool = get_tool_by_name("Sync SISMED")
     if sync_tool and hasattr(sync_tool, "start_from_saved"):
         try:
-            sync_tool.start_from_saved(page)
-        except Exception:
-            pass
+            sync_started = sync_tool.start_from_saved(page)
+            sync_startup_status = getattr(sync_tool, "last_startup_status", "unknown")
+            sync_startup_error = getattr(sync_tool, "last_startup_error", None)
+            if sync_started:
+                _record_sync_startup("started")
+            else:
+                _record_sync_startup(sync_startup_status, sync_startup_error)
+            if startup_hidden_requested and sync_startup_error:
+                _register_degraded_reason(f"Autorun degradado: {sync_startup_error}")
+        except Exception as exc:
+            _record_sync_startup("failed-exception", str(exc))
+            _register_degraded_reason(
+                f"Fallo iniciando Sync SISMED automaticamente: {type(exc).__name__}: {exc}"
+            )
+            _log_startup_event(traceback.format_exc())
+    else:
+        _record_sync_startup("tool-not-available", "No se encontro la herramienta Sync SISMED.")
+
+    if startup_hidden_requested:
+        restore_ready = startup_state["restore_listener_ready"].wait(AUTORUN_READY_TIMEOUT_MS / 1000)
+        tray_ready = startup_state["tray_ready"].wait(AUTORUN_READY_TIMEOUT_MS / 1000)
+
+        if not restore_ready:
+            _register_degraded_reason("Autorun degradado: el listener de restauracion no estuvo listo a tiempo.")
+        if not tray_ready:
+            _register_degraded_reason("Autorun degradado: la bandeja del sistema no estuvo lista a tiempo.")
+        if startup_state["tray_failed"].is_set() and startup_state["tray_error"]:
+            _register_degraded_reason(
+                f"Autorun degradado: la bandeja del sistema fallo con {type(startup_state['tray_error']).__name__}."
+            )
+
+        if not startup_state["degraded_reasons"]:
+            page.window.visible = False
+            _set_boot_status(
+                "autorun-hidden-ready",
+                f"sync_status={startup_state['sync_startup_status']}"
+            )
+        else:
+            _set_boot_status(
+                "autorun-degraded-visible",
+                " | ".join(startup_state["degraded_reasons"])
+            )
+    else:
+        _set_boot_status(
+            "interactive-ready",
+            f"sync_status={startup_state['sync_startup_status']}"
+        )
 
     # Función para expandir/colapsar el menú lateral
     def toggle_nav_rail(e):
@@ -362,6 +629,7 @@ def main(page: ft.Page):
             "Consul. TFORMDET":        5,
             "Reporte Guías":           8,
             "DBF a EXCEL":             6,
+            "Unir EXCEL":              15,
             "Format TFORMDET":         7,
             "Sync SISMED":             3,
             "Stock SISMED":            9,
@@ -721,6 +989,7 @@ def main(page: ft.Page):
                         ft.Row(
                             controls=[
                                 make_tool_card(get_tool_by_name("DBF a EXCEL")),
+                                make_tool_card(get_tool_by_name("Unir EXCEL")),
                                 make_tool_card(get_tool_by_name("Format TFORMDET")),
                                 make_tool_card(get_tool_by_name("Editor PDF"))
                             ],
@@ -850,6 +1119,12 @@ def main(page: ft.Page):
             pdf_tool = get_tool_by_name("Editor PDF")
             if pdf_tool:
                 content.controls.append(pdf_tool.build_view(page, navigate))
+
+        elif index == 15:
+            # Unir Excel → delegado al objeto ExcelMergeTool (POO)
+            merge_tool = get_tool_by_name("Unir EXCEL")
+            if merge_tool:
+                content.controls.append(merge_tool.build_view(page, navigate))
 
         page.update()  # Actualiza la página
 

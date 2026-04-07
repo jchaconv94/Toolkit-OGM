@@ -11,6 +11,7 @@ El resto del sistema (Dashboard, buscador, menú) lo recoge automáticamente.
 """
 
 from tools.dbf_tool import DbfExcelTool
+from tools.excel_merge_tool import ExcelMergeTool
 from tools.format_tformdet_tool import FormatTformdetTool
 from tools.pdf_tool import PdfTool
 from tools.consulta_tformdet_tool import ConsultaTformdetTool
@@ -26,6 +27,7 @@ from tools.edit_tmovim_tool import EditTmovimTool
 # Añade más herramientas aquí a medida que las vayas migrando a OOP.
 TOOLS_REGISTRY: list = [
     DbfExcelTool(),
+    ExcelMergeTool(),
     FormatTformdetTool(),
     PdfTool(),
     ConsultaTformdetTool(),

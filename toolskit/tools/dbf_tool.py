@@ -9,12 +9,13 @@ Ya no vive en main.py. Es un Objeto independiente, reutilizable y testeable.
 """
 
 import os
+import tempfile
 import threading
 import flet as ft
 import pandas as pd
 import xlsxwriter
-from dbfread import DBF
  
+from dbf_utils import open_dbf, snapshot_dbf
 from tools.base_tool import SismedTool, ToolMetadata
  
  
@@ -123,35 +124,38 @@ class DbfExcelTool(SismedTool):
                 dbf_path  = selected_file.value
                 xlsx_path = save_location.value
                 try:
-                    # Cargamos DBF de forma perezosa (sin cargar todo en memoria)
-                    table = DBF(dbf_path, encoding="latin1")
-                    
-                    # Escritura Directa con XlsxWriter (Memoria Constante)
-                    # Esta es la forma más rápida de escribir archivos Excel masivos en Python.
-                    workbook = xlsxwriter.Workbook(xlsx_path, {
-                        'constant_memory': True,
-                        'default_date_format': 'dd/mm/yyyy'
-                    })
-                    worksheet = workbook.add_worksheet("Datos")
-                    
-                    # Escribir Cabecera
-                    for col_idx, field_name in enumerate(table.field_names):
-                        worksheet.write(0, col_idx, field_name)
-                    
-                    # Escribir Registros Fila por Fila (Streaming)
-                    count = 0
-                    for row_idx, record in enumerate(table, start=1):
-                        for col_idx, field_name in enumerate(table.field_names):
-                            val = record[field_name]
-                            worksheet.write(row_idx, col_idx, val)
-                        count += 1
+                    with tempfile.TemporaryDirectory(prefix="toolkit_dbf_excel_") as snapshot_dir:
+                        read_path = snapshot_dbf(dbf_path, snapshot_dir)
+
+                        # Cargamos DBF de forma perezosa (sin cargar todo en memoria)
+                        table = open_dbf(read_path, encoding="latin1")
                         
-                        # Actualizar progreso cada 10,000 registros (opcional)
-                        if count % 10000 == 0:
-                            result_label.value = f"✔ Procesados {count:,} registros..."
-                            page.update()
+                        # Escritura Directa con XlsxWriter (Memoria Constante)
+                        # Esta es la forma más rápida de escribir archivos Excel masivos en Python.
+                        workbook = xlsxwriter.Workbook(xlsx_path, {
+                            'constant_memory': True,
+                            'default_date_format': 'dd/mm/yyyy'
+                        })
+                        worksheet = workbook.add_worksheet("Datos")
+                        
+                        # Escribir Cabecera
+                        for col_idx, field_name in enumerate(table.field_names):
+                            worksheet.write(0, col_idx, field_name)
+                        
+                        # Escribir Registros Fila por Fila (Streaming)
+                        count = 0
+                        for row_idx, record in enumerate(table, start=1):
+                            for col_idx, field_name in enumerate(table.field_names):
+                                val = record[field_name]
+                                worksheet.write(row_idx, col_idx, val)
+                            count += 1
                             
-                    workbook.close()
+                            # Actualizar progreso cada 10,000 registros (opcional)
+                            if count % 10000 == 0:
+                                result_label.value = f"✔ Procesados {count:,} registros..."
+                                page.update()
+                                
+                        workbook.close()
  
                     result_label.value = "✔ Conversión completada exitosamente (Modo Fast)."
                     result_label.color = ft.colors.GREEN_400

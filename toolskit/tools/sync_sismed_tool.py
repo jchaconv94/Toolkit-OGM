@@ -14,7 +14,7 @@ import flet as ft
 
 from sismed_sync import SismedSyncManager
 from tools.base_tool import SismedTool, ToolMetadata
-from tools.app_config import get as cfg_get, set as cfg_set
+from tools.app_config import append_runtime_log, get as cfg_get, set as cfg_set, update_runtime_status
 
 class SyncSismedTool(SismedTool):
     """Sincroniza el inventario en tiempo real con Google Sheets."""
@@ -23,6 +23,8 @@ class SyncSismedTool(SismedTool):
         super().__init__()
         self._initialized = False
         self._startup_attempted = False
+        self.last_startup_status = "not-attempted"
+        self.last_startup_error = None
         self.sync_manager = None
         
         # UI controls that need to persist state
@@ -48,6 +50,15 @@ class SyncSismedTool(SismedTool):
         except Exception:
             return default
 
+    def _record_autostart_result(self, status: str, error: str | None = None):
+        self.last_startup_status = status
+        self.last_startup_error = error
+        update_runtime_status("sync_autostart", status, error)
+        if error:
+            append_runtime_log("sync", f"autostart_status={status}; {error}")
+        else:
+            append_runtime_log("sync", f"autostart_status={status}")
+
     def _load_saved_preferences(self):
         if not self.sync_manager:
             return
@@ -58,24 +69,37 @@ class SyncSismedTool(SismedTool):
 
     def _validate_sync_settings(self):
         if not self.sync_manager:
-            return "No se pudo inicializar el sincronizador."
+            return "sync-manager-unavailable", "No se pudo inicializar el sincronizador."
 
         url = (self.sync_manager.apps_script_url or "").strip()
         base_dir = (self.sync_manager.base_dir or "").strip()
 
         if not url:
-            return "No se puede iniciar Sync SISMED automáticamente: falta la URL de integración guardada."
+            return "missing-url", "No se puede iniciar Sync SISMED automáticamente: falta la URL de integración guardada."
         if not url.lower().startswith(("http://", "https://")):
-            return "No se puede iniciar Sync SISMED: la URL de integración no es válida."
+            return "invalid-url", "No se puede iniciar Sync SISMED: la URL de integración no es válida."
         if not base_dir:
-            return "No se puede iniciar Sync SISMED: falta el directorio SISMED."
+            return "missing-base-dir", "No se puede iniciar Sync SISMED: falta el directorio SISMED."
         if not os.path.isdir(base_dir):
-            return f"No se puede iniciar Sync SISMED: el directorio SISMED no existe: {base_dir}"
-        return None
+            return "base-dir-not-found", f"No se puede iniciar Sync SISMED: el directorio SISMED no existe: {base_dir}"
+        datos_dir = os.path.join(base_dir, "DATOS")
+        if not os.path.isdir(datos_dir):
+            return "missing-datos-dir", f"No se puede iniciar Sync SISMED: falta la carpeta DATOS en: {base_dir}"
+        required_files = [
+            os.path.join(datos_dir, "MMEDICAM.DBF"),
+            os.path.join(datos_dir, "MSTKALMDE.DBF"),
+        ]
+        missing_files = [path for path in required_files if not os.path.exists(path)]
+        if missing_files:
+            missing_names = ", ".join(os.path.basename(path) for path in missing_files)
+            return "missing-required-dbf", f"No se puede iniciar Sync SISMED: faltan archivos obligatorios: {missing_names}"
+        return "ready", None
 
-    def _start_sync_if_valid(self, page: ft.Page = None) -> bool:
-        error = self._validate_sync_settings()
+    def _start_sync_if_valid(self, page: ft.Page = None, source: str = "manual") -> bool:
+        status, error = self._validate_sync_settings()
         if error:
+            if source == "autostart":
+                self._record_autostart_result(status, error)
             if self.sync_manager:
                 self.sync_manager.log(f"⚠ {error}")
             if page:
@@ -86,16 +110,36 @@ class SyncSismedTool(SismedTool):
                 except Exception:
                     pass
             return False
-        self.sync_manager.start_sync()
+        started = self.sync_manager.start_sync()
+        if not started:
+            busy_message = "No se pudo iniciar Sync SISMED porque el motor aún está en transición. Intenta nuevamente en unos segundos."
+            if source == "autostart":
+                self._record_autostart_result("engine-busy", busy_message)
+            if self.sync_manager:
+                self.sync_manager.log(f"⚠ {busy_message}")
+            if page:
+                try:
+                    page.snack_bar = ft.SnackBar(content=ft.Text(busy_message))
+                    page.snack_bar.open = True
+                    page.update()
+                except Exception:
+                    pass
+            return False
+        if source == "autostart":
+            self._record_autostart_result("started")
         return True
 
     def start_from_saved(self, page: ft.Page):
         self._init_components(page)
         self._load_saved_preferences()
         self._startup_attempted = True
-        if self.sync_manager.is_running or not self._cfg_bool("sync_auto_start", False):
+        if self.sync_manager.is_running:
+            self._record_autostart_result("already-running")
             return False
-        return self._start_sync_if_valid(page)
+        if not self._cfg_bool("sync_auto_start", False):
+            self._record_autostart_result("auto-start-disabled")
+            return False
+        return self._start_sync_if_valid(page, source="autostart")
 
     @property
     def metadata(self) -> ToolMetadata:
@@ -118,6 +162,7 @@ class SyncSismedTool(SismedTool):
 
         def _on_sync_log(msg):
             try:
+                append_runtime_log("sync", msg)
                 self.sync_logs.controls.append(
                     ft.Text(value=msg, size=14, font_family="Consolas")
                 )
@@ -281,7 +326,7 @@ class SyncSismedTool(SismedTool):
                 cfg_set("sync_sismed_dir", self.sync_manager.base_dir)
                 cfg_set("sync_auto_start", bool(chk_auto_sync.value))
 
-                if not self._start_sync_if_valid(page):
+                if not self._start_sync_if_valid(page, source="manual"):
                     return
 
                 self.btn_toggle_sync.content = ft.Row([

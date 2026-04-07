@@ -1,5 +1,7 @@
 import os
-from dbfread import DBF
+import tempfile
+
+from dbf_utils import open_dbf, snapshot_dbf
 
 class EditSismedManager:
     """
@@ -31,35 +33,37 @@ class EditSismedManager:
             return results
             
         try:
-            table = DBF(self.mmedicam_path, encoding='latin1', load=True) 
-            q = query.strip().upper()
-            
-            self.header_len = table.header.headerlen
-            self.record_len = table.header.recordlen
-            
-            self.medest_offset = -1
-            current_offset = 1 
-            for field in table.fields:
-                if field.name.upper() == 'MEDEST':
-                    self.medest_offset = current_offset
-                    break
-                current_offset += field.length
-
-            for i, record in enumerate(table.records):
-                m_cod = str(record.get('MEDCOD') or record.get('medcod') or '').strip()
-                m_nom = str(record.get('MEDNOM') or record.get('mednom') or '').strip()
-                m_est = str(record.get('MEDEST') or record.get('medest') or '').strip() or "_"
+            with tempfile.TemporaryDirectory(prefix="toolkit_edit_mmedicam_") as snapshot_dir:
+                read_path = snapshot_dbf(self.mmedicam_path, snapshot_dir)
+                table = open_dbf(read_path, encoding='latin1', load=True)
+                q = query.strip().upper()
                 
-                if q in m_cod.upper() or q in m_nom.upper():
-                    results.append({
-                        "id_fisico": i,
-                        "medcod": m_cod,
-                        "mednom": m_nom,
-                        "medest": m_est,
-                        "medpres": str(record.get('MEDPRES') or '').strip(),
-                        "medcnc": str(record.get('MEDCNC') or '').strip(),
-                        "medff": str(record.get('MEDFF') or '').strip(),
-                    })
+                self.header_len = table.header.headerlen
+                self.record_len = table.header.recordlen
+                
+                self.medest_offset = -1
+                current_offset = 1 
+                for field in table.fields:
+                    if field.name.upper() == 'MEDEST':
+                        self.medest_offset = current_offset
+                        break
+                    current_offset += field.length
+
+                for i, record in enumerate(table.records):
+                    m_cod = str(record.get('MEDCOD') or record.get('medcod') or '').strip()
+                    m_nom = str(record.get('MEDNOM') or record.get('mednom') or '').strip()
+                    m_est = str(record.get('MEDEST') or record.get('medest') or '').strip() or "_"
+                    
+                    if q in m_cod.upper() or q in m_nom.upper():
+                        results.append({
+                            "id_fisico": i,
+                            "medcod": m_cod,
+                            "mednom": m_nom,
+                            "medest": m_est,
+                            "medpres": str(record.get('MEDPRES') or '').strip(),
+                            "medcnc": str(record.get('MEDCNC') or '').strip(),
+                            "medff": str(record.get('MEDFF') or '').strip(),
+                        })
         except Exception as e:
             print(f"Error búsqueda binaria: {e}")
             
@@ -92,15 +96,17 @@ class EditSismedManager:
 
     def _detect_structure(self):
         try:
-            table = DBF(self.mmedicam_path, encoding='latin1', load=True)
-            self.header_len = table.header.headerlen
-            self.record_len = table.header.recordlen
-            current_offset = 1
-            for field in table.fields:
-                if field.name.upper() == 'MEDEST':
-                    self.medest_offset = current_offset
-                    break
-                current_offset += field.length
+            with tempfile.TemporaryDirectory(prefix="toolkit_edit_mmedicam_") as snapshot_dir:
+                read_path = snapshot_dbf(self.mmedicam_path, snapshot_dir)
+                table = open_dbf(read_path, encoding='latin1', load=True)
+                self.header_len = table.header.headerlen
+                self.record_len = table.header.recordlen
+                current_offset = 1
+                for field in table.fields:
+                    if field.name.upper() == 'MEDEST':
+                        self.medest_offset = current_offset
+                        break
+                    current_offset += field.length
         except:
             self.medest_offset = -1
 
@@ -122,29 +128,31 @@ class EditSismedManager:
             return results
         try:
             search_set = set(str(c).strip().upper() for c in codes_list)
-            table = DBF(self.mmedicam_path, encoding='latin1', load=True)
-            self.header_len = table.header.headerlen
-            self.record_len = table.header.recordlen
-            self.medest_offset = -1
-            current_offset = 1
-            for field in table.fields:
-                if field.name.upper() == 'MEDEST':
-                    self.medest_offset = current_offset
-                    break
-                current_offset += field.length
+            with tempfile.TemporaryDirectory(prefix="toolkit_edit_mmedicam_") as snapshot_dir:
+                read_path = snapshot_dbf(self.mmedicam_path, snapshot_dir)
+                table = open_dbf(read_path, encoding='latin1', load=True)
+                self.header_len = table.header.headerlen
+                self.record_len = table.header.recordlen
+                self.medest_offset = -1
+                current_offset = 1
+                for field in table.fields:
+                    if field.name.upper() == 'MEDEST':
+                        self.medest_offset = current_offset
+                        break
+                    current_offset += field.length
 
-            for i, record in enumerate(table.records):
-                m_cod = str(record.get('MEDCOD') or '').strip()
-                if m_cod.upper() in search_set:
-                    results.append({
-                        "id_fisico": i,
-                        "medcod": m_cod,
-                        "mednom": str(record.get('MEDNOM') or '').strip(),
-                        "medest": str(record.get('MEDEST') or '').strip() or "_",
-                        "medpres": str(record.get('MEDPRES') or '').strip(),
-                        "medcnc": str(record.get('MEDCNC') or '').strip(),
-                        "medff": str(record.get('MEDFF') or '').strip(),
-                    })
+                for i, record in enumerate(table.records):
+                    m_cod = str(record.get('MEDCOD') or '').strip()
+                    if m_cod.upper() in search_set:
+                        results.append({
+                            "id_fisico": i,
+                            "medcod": m_cod,
+                            "mednom": str(record.get('MEDNOM') or '').strip(),
+                            "medest": str(record.get('MEDEST') or '').strip() or "_",
+                            "medpres": str(record.get('MEDPRES') or '').strip(),
+                            "medcnc": str(record.get('MEDCNC') or '').strip(),
+                            "medff": str(record.get('MEDFF') or '').strip(),
+                        })
         except Exception as e:
             print(f"Error búsqueda masiva: {e}")
         return results
@@ -156,14 +164,16 @@ class EditSismedManager:
     def _detect_tmovim_structure(self):
         """Lee la cabecera de TMOVIM.DBF y guarda offset, longitud y tipo de cada campo."""
         try:
-            table = DBF(self.tmovim_path, encoding='latin1', load=True)
-            self._tmovim_header_len = table.header.headerlen
-            self._tmovim_record_len = table.header.recordlen
-            self._tmovim_field_info = {}
-            current_offset = 1   # byte 0 = flag de eliminación
-            for f in table.fields:
-                self._tmovim_field_info[f.name.upper()] = (current_offset, f.length, f.type)
-                current_offset += f.length
+            with tempfile.TemporaryDirectory(prefix="toolkit_edit_tmovim_") as snapshot_dir:
+                read_path = snapshot_dbf(self.tmovim_path, snapshot_dir)
+                table = open_dbf(read_path, encoding='latin1', load=True)
+                self._tmovim_header_len = table.header.headerlen
+                self._tmovim_record_len = table.header.recordlen
+                self._tmovim_field_info = {}
+                current_offset = 1   # byte 0 = flag de eliminación
+                for f in table.fields:
+                    self._tmovim_field_info[f.name.upper()] = (current_offset, f.length, f.type)
+                    current_offset += f.length
         except Exception as e:
             print(f"Error detectando estructura TMOVIM: {e}")
             self._tmovim_field_info = {}
@@ -174,32 +184,33 @@ class EditSismedManager:
         if not os.path.exists(self.tmovim_path):
             raise FileNotFoundError(f"No se encontró TMOVIM.DBF en: {self.tmovim_path}")
         try:
-            table = DBF(self.tmovim_path, encoding='latin1', load=True,
-                        ignore_missing_memofile=True, char_decode_errors='ignore')
-            self._tmovim_header_len = table.header.headerlen
-            self._tmovim_record_len = table.header.recordlen
-            self._tmovim_field_info = {}
-            current_offset = 1
-            for f in table.fields:
-                self._tmovim_field_info[f.name.upper()] = (current_offset, f.length, f.type)
-                current_offset += f.length
+            with tempfile.TemporaryDirectory(prefix="toolkit_edit_tmovim_") as snapshot_dir:
+                read_path = snapshot_dbf(self.tmovim_path, snapshot_dir)
+                table = open_dbf(read_path, encoding='latin1', load=True)
+                self._tmovim_header_len = table.header.headerlen
+                self._tmovim_record_len = table.header.recordlen
+                self._tmovim_field_info = {}
+                current_offset = 1
+                for f in table.fields:
+                    self._tmovim_field_info[f.name.upper()] = (current_offset, f.length, f.type)
+                    current_offset += f.length
 
-            q = query.strip().upper()
-            for i, record in enumerate(table.records):
-                movnum  = str(record.get('MOVNUMERO')  or '').strip()
-                movguia = str(record.get('MOVNUMEDCO') or '').strip()
-                if q in movnum.upper():
-                    fecha = record.get('MOVFECHREG')
-                    results.append({
-                        "id_fisico":  i,
-                        "movnumero":  movnum,
-                        "movnumedco": movguia,
-                        "movsitua":   str(record.get('MOVSITUA')  or '').strip(),
-                        "movcoditip": str(record.get('MOVCODITIP') or '').strip(),
-                        "movfechreg": fecha.strftime('%d/%m/%Y') if hasattr(fecha, 'strftime') else str(fecha or ''),
-                        "bloqueo":    str(record.get('BLOQUEO')  or '').strip(),
-                        "usrbloq":    str(record.get('USRBLOQ')  or '').strip(),
-                    })
+                q = query.strip().upper()
+                for i, record in enumerate(table.records):
+                    movnum  = str(record.get('MOVNUMERO')  or '').strip()
+                    movguia = str(record.get('MOVNUMEDCO') or '').strip()
+                    if q in movnum.upper():
+                        fecha = record.get('MOVFECHREG')
+                        results.append({
+                            "id_fisico":  i,
+                            "movnumero":  movnum,
+                            "movnumedco": movguia,
+                            "movsitua":   str(record.get('MOVSITUA')  or '').strip(),
+                            "movcoditip": str(record.get('MOVCODITIP') or '').strip(),
+                            "movfechreg": fecha.strftime('%d/%m/%Y') if hasattr(fecha, 'strftime') else str(fecha or ''),
+                            "bloqueo":    str(record.get('BLOQUEO')  or '').strip(),
+                            "usrbloq":    str(record.get('USRBLOQ')  or '').strip(),
+                        })
         except Exception as e:
             print(f"Error búsqueda TMOVIM: {e}")
             raise
@@ -212,31 +223,32 @@ class EditSismedManager:
             return results
         try:
             search_set = set(str(n).strip().upper() for n in numeros_list)
-            table = DBF(self.tmovim_path, encoding='latin1', load=True,
-                        ignore_missing_memofile=True, char_decode_errors='ignore')
-            self._tmovim_header_len = table.header.headerlen
-            self._tmovim_record_len = table.header.recordlen
-            self._tmovim_field_info = {}
-            current_offset = 1
-            for f in table.fields:
-                self._tmovim_field_info[f.name.upper()] = (current_offset, f.length, f.type)
-                current_offset += f.length
+            with tempfile.TemporaryDirectory(prefix="toolkit_edit_tmovim_") as snapshot_dir:
+                read_path = snapshot_dbf(self.tmovim_path, snapshot_dir)
+                table = open_dbf(read_path, encoding='latin1', load=True)
+                self._tmovim_header_len = table.header.headerlen
+                self._tmovim_record_len = table.header.recordlen
+                self._tmovim_field_info = {}
+                current_offset = 1
+                for f in table.fields:
+                    self._tmovim_field_info[f.name.upper()] = (current_offset, f.length, f.type)
+                    current_offset += f.length
 
-            for i, record in enumerate(table.records):
-                movnum  = str(record.get('MOVNUMERO')  or '').strip()
-                movguia = str(record.get('MOVNUMEDCO') or '').strip()
-                if movnum.upper() in search_set:
-                    fecha = record.get('MOVFECHREG')
-                    results.append({
-                        "id_fisico":  i,
-                        "movnumero":  movnum,
-                        "movnumedco": movguia,
-                        "movsitua":   str(record.get('MOVSITUA')  or '').strip(),
-                        "movcoditip": str(record.get('MOVCODITIP') or '').strip(),
-                        "movfechreg": fecha.strftime('%d/%m/%Y') if hasattr(fecha, 'strftime') else str(fecha or ''),
-                        "bloqueo":    str(record.get('BLOQUEO')  or '').strip(),
-                        "usrbloq":    str(record.get('USRBLOQ')  or '').strip(),
-                    })
+                for i, record in enumerate(table.records):
+                    movnum  = str(record.get('MOVNUMERO')  or '').strip()
+                    movguia = str(record.get('MOVNUMEDCO') or '').strip()
+                    if movnum.upper() in search_set:
+                        fecha = record.get('MOVFECHREG')
+                        results.append({
+                            "id_fisico":  i,
+                            "movnumero":  movnum,
+                            "movnumedco": movguia,
+                            "movsitua":   str(record.get('MOVSITUA')  or '').strip(),
+                            "movcoditip": str(record.get('MOVCODITIP') or '').strip(),
+                            "movfechreg": fecha.strftime('%d/%m/%Y') if hasattr(fecha, 'strftime') else str(fecha or ''),
+                            "bloqueo":    str(record.get('BLOQUEO')  or '').strip(),
+                            "usrbloq":    str(record.get('USRBLOQ')  or '').strip(),
+                        })
         except Exception as e:
             print(f"Error búsqueda masiva TMOVIM: {e}")
             raise

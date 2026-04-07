@@ -1,10 +1,12 @@
 
 import os
+import tempfile
 import pandas as pd
-from dbfread import DBF
 import datetime
 from datetime import datetime, date
 import traceback
+
+from dbf_utils import open_dbf, snapshot_dbf
 
 class GuiaReportManager:
     def __init__(self, sismed_dir, log_callback=None):
@@ -38,82 +40,88 @@ class GuiaReportManager:
                 if not os.path.exists(p):
                     raise FileNotFoundError(f"No se encontró el archivo: {os.path.basename(p)}")
 
-            # 2. Cargar Tablas Maestras (Pequeñas)
-            self.log("📂 Cargando maestros de productos y almacenes...")
-            # MPRODUCTO
-            prod_list = []
-            for rec in DBF(path_mproducto, ignore_missing_memofile=True, char_decode_errors='ignore'):
-                prod_list.append({
-                    'MEDCOD': str(rec.get('MEDCOD', '')).strip(),
-                    'MEDNOM': str(rec.get('MEDNOM', '')).strip()
-                })
-            df_prod = pd.DataFrame(prod_list)
+            with tempfile.TemporaryDirectory(prefix="toolkit_guias_") as snapshot_dir:
+                path_mproducto_read = snapshot_dbf(path_mproducto, snapshot_dir)
+                path_malmacen_read = snapshot_dbf(path_malmacen, snapshot_dir)
+                path_tmovim_read = snapshot_dbf(path_tmovim, snapshot_dir)
+                path_tmovimdet_read = snapshot_dbf(path_tmovimdet, snapshot_dir)
 
-            # MALMACEN
-            alm_list = []
-            for rec in DBF(path_malmacen, ignore_missing_memofile=True, char_decode_errors='ignore'):
-                alm_list.append({
-                    'ALMCOD': str(rec.get('ALMCOD', '')).strip(),
-                    'ALMDES': str(rec.get('ALMDES', '')).strip()
-                })
-            df_alm = pd.DataFrame(alm_list)
-
-            # 3. Cargar Cabeceras de Movimientos (Filtradas)
-            self.log(f"🔎 Filtrando movimientos tipo '{type_mov}' entre {date_start.strftime('%d/%m/%Y')} y {date_end.strftime('%d/%m/%Y')}...")
-            mov_list = []
-            for rec in DBF(path_tmovim, ignore_missing_memofile=True, char_decode_errors='ignore'):
-                # Filtro de tipo
-                if str(rec.get('MOVCODITIP', '')).strip() != type_mov:
-                    continue
-                
-                # Filtro de Guia Anulada
-                # El usuario confirma: MOVSITUA = '0' significa anulado.
-                # También verificamos MOVFECANUL por redundancia técnica.
-                situa = str(rec.get('MOVSITUA', '1')).strip()
-                f_anul = rec.get('MOVFECANUL')
-                
-                if exclude_annulled:
-                    if situa == '0' or f_anul is not None:
-                        continue
-
-                f_reg = rec.get('MOVFECHREG')
-                if not f_reg or not isinstance(f_reg, date):
-                    continue
-                
-                dt_reg = datetime.combine(f_reg, datetime.min.time())
-                
-                if date_start <= dt_reg <= date_end:
-                    mov_list.append({
-                        'MOVNUMERO': str(rec.get('MOVNUMERO', '')).strip(),
-                        'MOVCODITIP': str(rec.get('MOVCODITIP', '')).strip(),
-                        'FECHA REGISTRO': f_reg.strftime('%d/%m/%Y'),
-                        'GUIA': str(rec.get('MOVNUMEDCO', '')).strip(),
-                        'COD EESS': str(rec.get('ALMCODIDST', '')).strip(),
-                        'MOVREFE': str(rec.get('MOVREFE', '')).strip()
-                    })
-            
-            if not mov_list:
-                raise ValueError("No se encontraron movimientos en el rango de fechas seleccionado.")
-            
-            df_mov = pd.DataFrame(mov_list)
-
-            # 4. Cargar Detalles
-            self.log("📝 Cargando detalles de movimientos...")
-            det_list = []
-            valid_mov_nums = set(df_mov['MOVNUMERO'])
-            for rec in DBF(path_tmovimdet, ignore_missing_memofile=True, char_decode_errors='ignore'):
-                m_num = str(rec.get('MOVNUMERO', '')).strip()
-                m_tip = str(rec.get('MOVCODITIP', '')).strip()
-                
-                if m_tip == type_mov and m_num in valid_mov_nums:
-                    det_list.append({
-                        'MOVNUMERO': m_num,
+                # 2. Cargar Tablas Maestras (Pequeñas)
+                self.log("📂 Cargando maestros de productos y almacenes...")
+                # MPRODUCTO
+                prod_list = []
+                for rec in open_dbf(path_mproducto_read):
+                    prod_list.append({
                         'MEDCOD': str(rec.get('MEDCOD', '')).strip(),
-                        'LOTE': str(rec.get('MEDLOTE', '')).strip(),
-                        'MOVCANTID': float(rec.get('MOVCANTID', 0) or 0),
-                        'SUBTOTAL': float(rec.get('MOVTOTAL', 0) or 0) # El total histórico guardado en el movimiento
+                        'MEDNOM': str(rec.get('MEDNOM', '')).strip()
                     })
-            df_det = pd.DataFrame(det_list)
+                df_prod = pd.DataFrame(prod_list)
+
+                # MALMACEN
+                alm_list = []
+                for rec in open_dbf(path_malmacen_read):
+                    alm_list.append({
+                        'ALMCOD': str(rec.get('ALMCOD', '')).strip(),
+                        'ALMDES': str(rec.get('ALMDES', '')).strip()
+                    })
+                df_alm = pd.DataFrame(alm_list)
+
+                # 3. Cargar Cabeceras de Movimientos (Filtradas)
+                self.log(f"🔎 Filtrando movimientos tipo '{type_mov}' entre {date_start.strftime('%d/%m/%Y')} y {date_end.strftime('%d/%m/%Y')}...")
+                mov_list = []
+                for rec in open_dbf(path_tmovim_read):
+                    # Filtro de tipo
+                    if str(rec.get('MOVCODITIP', '')).strip() != type_mov:
+                        continue
+                    
+                    # Filtro de Guia Anulada
+                    # El usuario confirma: MOVSITUA = '0' significa anulado.
+                    # También verificamos MOVFECANUL por redundancia técnica.
+                    situa = str(rec.get('MOVSITUA', '1')).strip()
+                    f_anul = rec.get('MOVFECANUL')
+                    
+                    if exclude_annulled:
+                        if situa == '0' or f_anul is not None:
+                            continue
+
+                    f_reg = rec.get('MOVFECHREG')
+                    if not f_reg or not isinstance(f_reg, date):
+                        continue
+                    
+                    dt_reg = datetime.combine(f_reg, datetime.min.time())
+                    
+                    if date_start <= dt_reg <= date_end:
+                        mov_list.append({
+                            'MOVNUMERO': str(rec.get('MOVNUMERO', '')).strip(),
+                            'MOVCODITIP': str(rec.get('MOVCODITIP', '')).strip(),
+                            'FECHA REGISTRO': f_reg.strftime('%d/%m/%Y'),
+                            'GUIA': str(rec.get('MOVNUMEDCO', '')).strip(),
+                            'COD EESS': str(rec.get('ALMCODIDST', '')).strip(),
+                            'MOVREFE': str(rec.get('MOVREFE', '')).strip()
+                        })
+                
+                if not mov_list:
+                    raise ValueError("No se encontraron movimientos en el rango de fechas seleccionado.")
+                
+                df_mov = pd.DataFrame(mov_list)
+
+                # 4. Cargar Detalles
+                self.log("📝 Cargando detalles de movimientos...")
+                det_list = []
+                valid_mov_nums = set(df_mov['MOVNUMERO'])
+                for rec in open_dbf(path_tmovimdet_read):
+                    m_num = str(rec.get('MOVNUMERO', '')).strip()
+                    m_tip = str(rec.get('MOVCODITIP', '')).strip()
+                    
+                    if m_tip == type_mov and m_num in valid_mov_nums:
+                        det_list.append({
+                            'MOVNUMERO': m_num,
+                            'MEDCOD': str(rec.get('MEDCOD', '')).strip(),
+                            'LOTE': str(rec.get('MEDLOTE', '')).strip(),
+                            'MOVCANTID': float(rec.get('MOVCANTID', 0) or 0),
+                            'SUBTOTAL': float(rec.get('MOVTOTAL', 0) or 0) # El total histórico guardado en el movimiento
+                        })
+                df_det = pd.DataFrame(det_list)
 
             # 5. JOINS
             self.log("🔗 Cruzando información...")

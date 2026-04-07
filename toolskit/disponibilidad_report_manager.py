@@ -19,11 +19,12 @@ Columna extra: PRECIO = último precio del período | STOCK_FIN = stock del mes 
 
 import os
 import re
+import tempfile
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
 from collections import defaultdict
 
-from dbfread import DBF
+from dbf_utils import open_dbf, snapshot_dbf
 from openpyxl import Workbook
 from openpyxl.styles import (
     Font, PatternFill, Alignment, Border, Side, numbers
@@ -68,8 +69,9 @@ class DisponibilidadReportManager:
             self.log(f"  ⚠ No encontrado: {path}")
             return []
         try:
-            return list(DBF(path, ignore_missing_memofile=True,
-                           char_decode_errors="ignore"))
+            with tempfile.TemporaryDirectory(prefix="toolkit_disponibilidad_") as snapshot_dir:
+                read_path = snapshot_dbf(path, snapshot_dir)
+                return list(open_dbf(read_path))
         except Exception as e:
             self.log(f"  ✗ Error leyendo {os.path.basename(path)}: {e}")
             return []

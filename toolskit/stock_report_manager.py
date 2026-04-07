@@ -24,9 +24,10 @@ CORRECCIONES v2:
 """
 
 import os
+import tempfile
 import traceback
 
-from dbfread import DBF
+from dbf_utils import open_dbf, snapshot_dbf
 
 try:
     import openpyxl
@@ -119,8 +120,9 @@ class StockReportManager:
             self.log(f"  ⚠ No encontrado: {path}")
             return []
         try:
-            records = list(DBF(path, ignore_missing_memofile=True,
-                               char_decode_errors="ignore"))
+            with tempfile.TemporaryDirectory(prefix="toolkit_stock_") as snapshot_dir:
+                read_path = snapshot_dbf(path, snapshot_dir)
+                records = list(open_dbf(read_path))
             return records
         except Exception as e:
             self.log(f"  ✗ Error leyendo {os.path.basename(path)}: {e}")

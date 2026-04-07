@@ -13,6 +13,8 @@ _CONFIG_DIR  = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), 
 _CONFIG_FILE = os.path.join(_CONFIG_DIR, "config.json")
 _CONFIG_BACKUP_FILE = os.path.join(_CONFIG_DIR, "config.bak")
 _CONFIG_LOG_FILE = os.path.join(_CONFIG_DIR, "config.log")
+_STARTUP_LOG_FILE = os.path.join(_CONFIG_DIR, "startup.log")
+_SYNC_LOG_FILE = os.path.join(_CONFIG_DIR, "sync.log")
 _CONFIG_LOCK = threading.RLock()
 
 _DEFAULTS = {
@@ -27,15 +29,65 @@ _DEFAULTS = {
     "sync_modo_consolidado":   False,
     "sync_apps_script_url":    "",
     "sync_auto_start":         False,
+    "runtime_last_boot_status": "never-started",
+    "runtime_last_boot_detail": "",
+    "runtime_last_boot_at":     "",
+    "runtime_last_sync_autostart_status": "not-attempted",
+    "runtime_last_sync_autostart_message": "",
+    "runtime_last_sync_autostart_at":      "",
+    "runtime_sync_run_state":              "idle",
+    "runtime_sync_run_state_detail":       "",
+    "runtime_sync_run_state_at":           "",
+    "runtime_last_sync_cycle_status":      "never-run",
+    "runtime_last_sync_cycle_message":     "",
+    "runtime_last_sync_cycle_at":          "",
+    "runtime_last_sync_cycle_records":     0,
+    "runtime_last_sync_error_kind":        "",
+    "runtime_last_sync_http_status":       "",
+    "runtime_last_sync_success_at":        "",
+    "runtime_last_sync_success_records":   0,
+    "runtime_last_sync_dbf_source":        "",
+    "runtime_last_sync_dbf_problem_records": 0,
+    "runtime_last_sync_dbf_problem_ratio":   0.0,
+    "runtime_last_sync_dbf_corrupted_records": 0,
+    "runtime_last_sync_dbf_omitted_records":   0,
+    "runtime_last_sync_dbf_field_fallbacks":   0,
+    "runtime_last_sync_dbf_summary":          "",
 }
+
+_RUNTIME_STATUS_MAP = {
+    "boot": (
+        "runtime_last_boot_status",
+        "runtime_last_boot_detail",
+        "runtime_last_boot_at",
+    ),
+    "sync_autostart": (
+        "runtime_last_sync_autostart_status",
+        "runtime_last_sync_autostart_message",
+        "runtime_last_sync_autostart_at",
+    ),
+    "sync_cycle": (
+        "runtime_last_sync_cycle_status",
+        "runtime_last_sync_cycle_message",
+        "runtime_last_sync_cycle_at",
+    ),
+}
+
+_RUNTIME_LOG_PATHS = {
+    "startup": _STARTUP_LOG_FILE,
+    "sync": _SYNC_LOG_FILE,
+}
+
+
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _log_config_error(action: str, exc: Exception):
     try:
         os.makedirs(_CONFIG_DIR, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(_CONFIG_LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"[{timestamp}] {action}: {type(exc).__name__}: {exc}\n")
+            f.write(f"[{_timestamp()}] {action}: {type(exc).__name__}: {exc}\n")
     except Exception:
         pass
 
@@ -99,6 +151,34 @@ def set(key: str, value):
     _save(data)
 
 
+def set_many(values: dict):
+    data = _load()
+    data.update(values)
+    _save(data)
+
+
+def update_runtime_status(scope: str, status: str, detail: str | None = None):
+    if scope not in _RUNTIME_STATUS_MAP:
+        raise ValueError(f"Ambito de estado operativo no soportado: {scope}")
+
+    status_key, detail_key, timestamp_key = _RUNTIME_STATUS_MAP[scope]
+    set_many({
+        status_key: status,
+        detail_key: detail or "",
+        timestamp_key: _timestamp(),
+    })
+
+
+def append_runtime_log(channel: str, message: str):
+    log_path = _RUNTIME_LOG_PATHS.get(channel, _CONFIG_LOG_FILE)
+    try:
+        os.makedirs(_CONFIG_DIR, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{_timestamp()}] {message}\n")
+    except Exception as exc:
+        _log_config_error(f"Error escribiendo log operativo '{channel}'", exc)
+
+
 def get_config_log_path() -> str:
     return _CONFIG_LOG_FILE
 
@@ -109,3 +189,11 @@ def get_config_file_path() -> str:
 
 def get_config_backup_path() -> str:
     return _CONFIG_BACKUP_FILE
+
+
+def get_startup_log_path() -> str:
+    return _STARTUP_LOG_FILE
+
+
+def get_sync_log_path() -> str:
+    return _SYNC_LOG_FILE
