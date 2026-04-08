@@ -207,6 +207,7 @@ class EditSismedManager:
                             "movnumedco": movguia,
                             "movsitua":   str(record.get('MOVSITUA')  or '').strip(),
                             "movcoditip": str(record.get('MOVCODITIP') or '').strip(),
+                            "movindprc":  str(record.get('MOVINDPRC') or '').strip(),
                             "movfechreg": fecha.strftime('%d/%m/%Y') if hasattr(fecha, 'strftime') else str(fecha or ''),
                             "bloqueo":    str(record.get('BLOQUEO')  or '').strip(),
                             "usrbloq":    str(record.get('USRBLOQ')  or '').strip(),
@@ -245,6 +246,7 @@ class EditSismedManager:
                             "movnumedco": movguia,
                             "movsitua":   str(record.get('MOVSITUA')  or '').strip(),
                             "movcoditip": str(record.get('MOVCODITIP') or '').strip(),
+                            "movindprc":  str(record.get('MOVINDPRC') or '').strip(),
                             "movfechreg": fecha.strftime('%d/%m/%Y') if hasattr(fecha, 'strftime') else str(fecha or ''),
                             "bloqueo":    str(record.get('BLOQUEO')  or '').strip(),
                             "usrbloq":    str(record.get('USRBLOQ')  or '').strip(),
@@ -311,3 +313,45 @@ class EditSismedManager:
             else:
                 errors.append(msg)
         return total, f"Desbloqueados {total}/{len(indices_list)}. {errors[0] if errors else ''}"
+
+    def toggle_movindprc_bulk(self, indices_list: list) -> tuple:
+        """Alterna MOVINDPRC entre 'A' y 'M' en los registros indicados."""
+        if not indices_list:
+            return 0, "No se recibieron registros para actualizar."
+
+        total, skipped, errors = 0, 0, []
+        try:
+            with tempfile.TemporaryDirectory(prefix="toolkit_edit_tmovim_") as snapshot_dir:
+                read_path = snapshot_dbf(self.tmovim_path, snapshot_dir)
+                table = open_dbf(read_path, encoding='latin1', load=True)
+                records = table.records
+
+                for idx in indices_list:
+                    if idx < 0 or idx >= len(records):
+                        skipped += 1
+                        continue
+
+                    current_value = str(records[idx].get('MOVINDPRC') or '').strip().upper()
+                    if current_value == 'A':
+                        new_value = 'M'
+                    elif current_value == 'M':
+                        new_value = 'A'
+                    else:
+                        skipped += 1
+                        continue
+
+                    ok, msg = self._patch_tmovim_fields(idx, {"MOVINDPRC": new_value})
+                    if ok:
+                        total += 1
+                    else:
+                        errors.append(msg)
+        except Exception as e:
+            return 0, f"Error alternando MOVINDPRC: {e}"
+
+        extra = []
+        if skipped:
+            extra.append(f"Omitidos {skipped} con MOVINDPRC fuera de A/M")
+        if errors:
+            extra.append(errors[0])
+        suffix = f" {' | '.join(extra)}" if extra else ""
+        return total, f"Actualizados {total}/{len(indices_list)}.{suffix}"

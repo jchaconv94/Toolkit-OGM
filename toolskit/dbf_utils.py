@@ -166,11 +166,11 @@ class SafeDbfFieldParser(FieldParser):
                 return None
 
     def parseT(self, field, data):
-        clean = self._to_bytes(data).replace(b"\x00", b" ")
+        clean = self._to_bytes(data)
         try:
             return super().parseT(field, clean)
         except (ValueError, TypeError, OverflowError):
-            if clean.strip():
+            if clean.strip() or clean.strip(b"\x00"):
                 self._note_fallback(field)
             return None
 

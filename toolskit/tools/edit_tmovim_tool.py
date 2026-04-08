@@ -7,17 +7,17 @@ from tools.app_config import get as cfg_get, set as cfg_set
 
 
 class EditTmovimTool(SismedTool):
-    """Herramienta para modificar MOVSITUA y eliminar bloqueos en TMOVIM.DBF."""
+    """Herramienta para modificar MOVSITUA, modo de ingreso y bloqueos en TMOVIM.DBF."""
 
     @property
     def metadata(self) -> ToolMetadata:
         return ToolMetadata(
             nombre="Habilitar Guías",
-            descripcion="Habilita guías anuladas y guias cerradas TMOVIM.DBF",
+            descripcion="Habilita guías anuladas, quita bloqueos y cambia el modo de ingreso en TMOVIM.DBF",
             icono=ft.icons.EDIT_DOCUMENT,
             color=ft.colors.PURPLE_400,
             categoria="Edit SISMED",
-            etiquetas=["editar", "tmovim", "guia", "movsitua", "bloqueo", "sismed", "modificar", "desbloquear"],
+            etiquetas=["editar", "tmovim", "guia", "movsitua", "movindprc", "bloqueo", "sismed", "modificar", "desbloquear"],
         )
 
     def build_view(self, page: ft.Page, navigate_fn) -> ft.Control:
@@ -91,32 +91,6 @@ class EditTmovimTool(SismedTool):
             focused_border_color=ft.colors.PURPLE_400,
         )
 
-        # ── Selector de acción ──────────────────────────────────────────────────
-        def on_action_change(e):
-            _update_actions_visibility()
-
-        action_selector = ft.SegmentedButton(
-            segments=[
-                ft.Segment(
-                    value="situa",
-                    label=ft.Text("Revertir Anulación", size=11),
-                    icon=ft.Icon(ft.icons.SWAP_HORIZ, size=18),
-                ),
-                ft.Segment(
-                    value="bloqueo",
-                    label=ft.Text("Quitar Bloqueo", size=11),
-                    icon=ft.Icon(ft.icons.LOCK_OPEN, size=18),
-                ),
-            ],
-            selected={"situa"},
-            on_change=on_action_change,
-            show_selected_icon=False,
-            style=ft.ButtonStyle(
-                padding=ft.padding.all(20),
-                shape=ft.RoundedRectangleBorder(radius=12),
-            ),
-        )
-
         # ── Tabla de Resultados ─────────────────────────────────────────────────
         results_table = ft.DataTable(
             column_spacing=16,
@@ -126,10 +100,11 @@ class EditTmovimTool(SismedTool):
             border_radius=10,
             heading_text_style=ft.TextStyle(weight="bold", color=ft.colors.GREY_300, size=12),
             columns=[
+                ft.DataColumn(ft.Text("TIPO")),
                 ft.DataColumn(ft.Text("N° MOVIM.")),
                 ft.DataColumn(ft.Text("N° GUÍA")),
                 ft.DataColumn(ft.Text("FECHA")),
-                ft.DataColumn(ft.Text("TIPO")),
+                ft.DataColumn(ft.Text("MODO INGRESO")),
                 ft.DataColumn(ft.Text("SITUACIÓN")),
                 ft.DataColumn(ft.Text("BLOQUEO")),
                 ft.DataColumn(ft.Text("USR BLOQ.")),
@@ -148,6 +123,28 @@ class EditTmovimTool(SismedTool):
                     color=ft.colors.GREEN_300 if is_active else ft.colors.RED_300,
                 ),
                 bgcolor=ft.colors.with_opacity(0.15, ft.colors.GREEN_400 if is_active else ft.colors.RED_400),
+                border_radius=6,
+                padding=ft.padding.symmetric(horizontal=8, vertical=3),
+            )
+
+        def _indprc_badge(value: str) -> ft.Control:
+            current = (value or "").strip().upper()
+            if current == "A":
+                label = "Automática"
+                text_color = ft.colors.CYAN_300
+                bg_color = ft.colors.CYAN_400
+            elif current == "M":
+                label = "Manual"
+                text_color = ft.colors.AMBER_300
+                bg_color = ft.colors.AMBER_400
+            else:
+                label = current or "—"
+                text_color = ft.colors.GREY_400
+                bg_color = ft.colors.GREY_600
+
+            return ft.Container(
+                content=ft.Text(label, size=11, weight="bold", color=text_color),
+                bgcolor=ft.colors.with_opacity(0.15, bg_color),
                 border_radius=6,
                 padding=ft.padding.symmetric(horizontal=8, vertical=3),
             )
@@ -171,32 +168,62 @@ class EditTmovimTool(SismedTool):
             _update_actions_visibility()
             results_table.update()
 
-        btn_action = ft.ElevatedButton(
-            "MODIFICAR SELECCIONADOS",
-            icon=ft.icons.EDIT_DOCUMENT,
-            on_click=lambda _: _show_action_dialog(),
-            bgcolor=ft.colors.PURPLE_700,
-            color=ft.colors.WHITE,
+        def _action_btn(label: str, icon_name: str, bgcolor: str, on_click) -> ft.Control:
+            return ft.ElevatedButton(
+                content=ft.Row([
+                    ft.Icon(icon_name, color=ft.colors.WHITE, size=14),
+                    ft.Text(label, color=ft.colors.WHITE, size=10, weight=ft.FontWeight.W_600),
+                ], alignment=ft.MainAxisAlignment.CENTER, spacing=8),
+                on_click=on_click,
+                bgcolor=bgcolor,
+                color=ft.colors.WHITE,
+                height=38,
+                style=ft.ButtonStyle(
+                    padding=ft.padding.symmetric(horizontal=14, vertical=10),
+                    shape=ft.RoundedRectangleBorder(radius=9),
+                ),
+            )
+
+        action_count_text = ft.Text("", size=11, color=ft.colors.CYAN_200, weight=ft.FontWeight.W_600)
+        btn_situa = _action_btn("Cambiar Situación", ft.icons.SWAP_HORIZ, ft.colors.BLUE_700, lambda _: _show_situa_dialog())
+        btn_bloqueo = _action_btn("Quitar Bloqueo", ft.icons.LOCK_OPEN, ft.colors.ORANGE_700, lambda _: _show_bloqueo_dialog())
+        btn_indprc = _action_btn("Cambiar Modo Ingreso", ft.icons.SWAP_HORIZ, ft.colors.PURPLE_700, lambda _: _show_indprc_dialog())
+
+        action_buttons_row = ft.Row(
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            alignment=ft.MainAxisAlignment.END,
+            controls=[
+                btn_situa,
+                btn_bloqueo,
+                btn_indprc,
+            ],
+        )
+
+        action_bar_container = ft.Container(
             visible=False,
-            height=50,
-            width=320,
-            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=10)),
+            col={"sm": 12, "md": 8},
+            alignment=ft.alignment.center_right,
+            content=ft.Column([
+                ft.Row([
+                    action_count_text,
+                ], alignment=ft.MainAxisAlignment.END),
+                action_buttons_row,
+            ], spacing=6),
         )
 
         def _update_actions_visibility():
             has_sel = len(selected_indices) > 0
-            current_action = action_selector.selected.copy().pop()
             if has_sel:
-                if current_action == "situa":
-                    btn_action.text   = "CAMBIAR SITUACIÓN"
-                    btn_action.icon   = ft.icons.SWAP_HORIZ
-                    btn_action.bgcolor = ft.colors.BLUE_700
-                else:
-                    btn_action.text   = "QUITAR BLOQUEO"
-                    btn_action.icon   = ft.icons.LOCK_OPEN
-                    btn_action.bgcolor = ft.colors.ORANGE_700
-            btn_action.visible = has_sel
-            btn_action.update()
+                suffix = "guía seleccionada" if len(selected_indices) == 1 else "guías seleccionadas"
+                action_count_text.value = f"{len(selected_indices)} {suffix}"
+            action_bar_container.visible = has_sel
+            if getattr(action_count_text, "page", None):
+                action_count_text.update()
+            if getattr(action_buttons_row, "page", None):
+                action_buttons_row.update()
+            if getattr(action_bar_container, "page", None):
+                action_bar_container.update()
 
         # ── Búsqueda ────────────────────────────────────────────────────────────
         def _build_rows(lista):
@@ -209,10 +236,11 @@ class EditTmovimTool(SismedTool):
                 rows.append(ft.DataRow(
                     selected=is_sel,
                     cells=[
+                        ft.DataCell(ft.Text(g["movcoditip"], size=11)),
                         ft.DataCell(ft.Text(g["movnumero"],  weight="bold", color=ft.colors.AMBER_100)),
                         ft.DataCell(ft.Text(g["movnumedco"], size=12)),
                         ft.DataCell(ft.Text(g["movfechreg"], size=11)),
-                        ft.DataCell(ft.Text(g["movcoditip"], size=11)),
+                        ft.DataCell(_indprc_badge(g.get("movindprc", ""))),
                         ft.DataCell(_situa_badge(g["movsitua"])),
                         ft.DataCell(ft.Text(g["bloqueo"] or "—", size=11, color=ft.colors.RED_300 if g["bloqueo"] else ft.colors.GREY_600)),
                         ft.DataCell(ft.Text(g["usrbloq"] or "—", size=11, color=ft.colors.RED_300 if g["usrbloq"] else ft.colors.GREY_600)),
@@ -255,15 +283,6 @@ class EditTmovimTool(SismedTool):
                     page.update()
 
             threading.Thread(target=_thread, daemon=True).start()
-
-        # ── Diálogo de acción ───────────────────────────────────────────────────
-        def _show_action_dialog():
-            current_action = action_selector.selected.copy().pop()
-
-            if current_action == "situa":
-                _show_situa_dialog()
-            else:
-                _show_bloqueo_dialog()
 
         def _show_situa_dialog():
             map_situa = {"1": "1 — Habilitar guía", "0": "0 — Anular guía"}
@@ -381,6 +400,63 @@ class EditTmovimTool(SismedTool):
             dialog.open = True
             page.update()
 
+        def _show_indprc_dialog():
+            def _confirm(e):
+                dialog.open = False
+                log_text.value = "⚡ Cambiando modo de ingreso..."
+                log_text.color = ft.colors.PURPLE_300
+                page.update()
+
+                def _thread():
+                    mgr = EditSismedManager(sismed_dir_field.value)
+                    ph_idxs = [guia_list[i]["id_fisico"] for i in selected_indices]
+                    total, msg = mgr.toggle_movindprc_bulk(ph_idxs)
+                    log_text.value = f"🔄 {msg}"
+                    log_text.color = ft.colors.GREEN_400 if total else ft.colors.AMBER_300
+                    _do_search()
+
+                threading.Thread(target=_thread, daemon=True).start()
+
+            dialog = ft.AlertDialog(
+                title=ft.Row([
+                    ft.Icon(ft.icons.SWAP_HORIZ, color=ft.colors.PURPLE_400),
+                    ft.Text(" Cambiar Modo de Ingreso"),
+                ]),
+                content=ft.Column([
+                    ft.Text(
+                        f"Se cambiará el modo de ingreso en {len(selected_indices)} guía(s).",
+                        size=14, color=ft.colors.GREY_300,
+                    ),
+                    ft.Container(height=6),
+                    ft.Container(
+                        content=ft.Text(
+                            "Automática cambiará a Manual y Manual cambiará a Automática únicamente en los registros seleccionados.",
+                            size=12, color=ft.colors.PURPLE_200,
+                        ),
+                        bgcolor=ft.colors.with_opacity(0.1, ft.colors.PURPLE_400),
+                        border_radius=8,
+                        padding=ft.padding.all(10),
+                    ),
+                ], tight=True),
+                actions=[
+                    ft.TextButton("Cancelar", on_click=lambda _: setattr(dialog, "open", False) or page.update()),
+                    ft.ElevatedButton(
+                        "CONFIRMAR",
+                        on_click=_confirm,
+                        bgcolor=ft.colors.PURPLE_700,
+                        color=ft.colors.WHITE,
+                        style=ft.ButtonStyle(
+                            padding=ft.padding.symmetric(horizontal=30, vertical=18),
+                            shape=ft.RoundedRectangleBorder(radius=10),
+                            elevation=5,
+                        ),
+                    ),
+                ],
+            )
+            page.overlay.append(dialog)
+            dialog.open = True
+            page.update()
+
         # ── Layout ──────────────────────────────────────────────────────────────
         sidebar = ft.Container(
             width=430,
@@ -418,10 +494,6 @@ class EditTmovimTool(SismedTool):
                 ),
 
                 ft.Container(height=16),
-                ft.Text("Acción a Realizar:", size=11, color=ft.colors.GREY_500),
-                action_selector,
-
-                ft.Container(height=16),
                 ft.Container(
                     content=log_text,
                     padding=10,
@@ -435,11 +507,14 @@ class EditTmovimTool(SismedTool):
             expand=True,
             padding=10,
             content=ft.Column([
-                ft.Row([
-                    ft.Text("RESULTADOS DE LA BÚSQUEDA", weight="bold", size=18),
-                    ft.Container(expand=True),
-                    btn_action,
-                ]),
+                ft.ResponsiveRow([
+                    ft.Container(
+                        col={"sm": 12, "md": 4},
+                        alignment=ft.alignment.center_left,
+                        content=ft.Text("RESULTADOS DE LA BÚSQUEDA", weight="bold", size=18),
+                    ),
+                    action_bar_container,
+                ], spacing=10, run_spacing=10),
                 ft.Divider(height=1, color=ft.colors.WHITE10),
                 ft.ListView(controls=[results_table], expand=True),
             ]),
@@ -452,7 +527,7 @@ class EditTmovimTool(SismedTool):
                 self._section_header(
                     ft.icons.EDIT_DOCUMENT, ft.colors.PURPLE_400,
                     "Habilitar Guías (TMOVIM)",
-                    "Habilita guías anuladas y guías cerradas en TMOVIM.DBF",
+                    "Habilita guías anuladas, quita bloqueos y cambia el modo de ingreso en TMOVIM.DBF",
                     self._back_button("Volver a Edit SISMED", navigate_fn, 11),
                 ),
                 ft.Row([sidebar, main_content], expand=True, spacing=20, vertical_alignment=ft.CrossAxisAlignment.STRETCH),
