@@ -634,6 +634,7 @@ def main(page: ft.Page):
             "Sync SISMED":             3,
             "Stock SISMED":            9,
             "Disponibilidad TFORMDET": 10,
+            "Consumo Valorizado":      16,
             "Cambiar Estado Med.":     12,
             "Habilitar Guías":          13,
             "Editor PDF":               14,
@@ -1028,6 +1029,7 @@ def main(page: ft.Page):
                                 make_tool_card(get_tool_by_name("Reporte Guías")),
                                 make_tool_card(get_tool_by_name("Stock SISMED")),
                                 make_tool_card(get_tool_by_name("Disponibilidad TFORMDET")),
+                                make_tool_card(get_tool_by_name("Consumo Valorizado")),
                             ],
                             wrap=True,
                             spacing=16,
@@ -1073,6 +1075,12 @@ def main(page: ft.Page):
             disp_tool = get_tool_by_name("Disponibilidad TFORMDET")
             if disp_tool:
                 content.controls.append(disp_tool.build_view(page, navigate))
+
+        elif index == 16:
+            # Consumo Valorizado → delegado al objeto ConsumoValorizadoReportTool (POO)
+            consumo_tool = get_tool_by_name("Consumo Valorizado")
+            if consumo_tool:
+                content.controls.append(consumo_tool.build_view(page, navigate))
 
         elif index == 11:
             # Nuevo Dashboard de Edit SISMED
