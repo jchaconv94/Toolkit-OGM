@@ -408,10 +408,14 @@ class DisponibilidadReportManager:
                     continue
 
                 # Calcular consumo
-                venta   = self._f(rec.get("VENTA"))
-                sis     = self._f(rec.get("SIS"))
-                intersan= self._f(rec.get("INTERSAN"))
-                consumo = venta + sis + intersan
+                venta     = self._f(rec.get("VENTA"))
+                sis       = self._f(rec.get("SIS"))
+                intersan  = self._f(rec.get("INTERSAN"))
+                reingre   = self._f(rec.get("REINGRE"))
+                soat      = self._f(rec.get("SOAT"))
+                credhosp  = self._f(rec.get("CREDHOSP"))
+                otr_conv  = self._f(rec.get("OTR_CONV"))
+                consumo = venta + sis + intersan + reingre + soat + credhosp + otr_conv
 
                 precio    = self._f(rec.get("PRECIO"))
                 stock_fin = self._f(rec.get("STOCK_FIN"))
