@@ -269,7 +269,15 @@ def main(page: ft.Page):
 
 # CONSTRUCCION DE LA PAGINA ----- Agregar elementos a la página
 
-    page.title = "ToolKits SISMED - By: Ing. Jordan Chacon Villacis"
+    # Leer versión desde archivo VERSION
+    version = ""
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "VERSION"), "r", encoding="utf-8") as vf:
+            version = vf.read().strip()
+    except Exception:
+        version = ""
+
+    page.title = f"ToolKits SISMED v{version} - By: Ing. Jordan Chacon Villacis"
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER
     page.vertical_alignment = ft.MainAxisAlignment.START
 
