@@ -6,12 +6,17 @@ import sys
 import threading
 import tempfile
 import traceback
+import socket
+from urllib.parse import urlparse
 
 from dbf_utils import DbfReadMetrics, iter_dbf_records, open_dbf, snapshot_dbf
 from tools.app_config import set_many, update_runtime_status
 
 SYNC_DBF_ABORT_MIN_BAD_RECORDS = 15
 SYNC_DBF_ABORT_BAD_RATIO = 0.05
+SYNC_DNS_RETRY_ATTEMPTS = 6
+SYNC_DNS_RETRY_SECONDS = 20
+SYNC_CONNECTIVITY_TIMEOUT_SECONDS = 5
 
 class SismedSyncManager:
     def __init__(self, log_callback=None, on_stop_callback=None):
@@ -72,6 +77,103 @@ class SismedSyncManager:
             updates["runtime_last_sync_success_records"] = max(0, int(records or 0))
 
         set_many(updates)
+
+    def _host_timestamp(self) -> str:
+        return time.strftime('%d/%m/%Y %H:%M:%S')
+
+    def _stamp_payload_host_time(self, payload_data: list[dict]):
+        fecha_equipo = self._host_timestamp()
+        for item in payload_data:
+            item["fecha_equipo"] = fecha_equipo
+            # Compatibilidad con el Apps Script anterior.
+            item["actualizado"] = fecha_equipo
+
+    def _sync_target_host(self) -> str:
+        parsed = urlparse((self.apps_script_url or "").strip())
+        return parsed.hostname or ""
+
+    def _resolve_sync_host(self) -> tuple[bool, str]:
+        host = self._sync_target_host()
+        if not host:
+            return False, "La URL de integracion no contiene un servidor valido."
+        try:
+            socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+            return True, ""
+        except socket.gaierror as exc:
+            return False, f"No se pudo resolver {host}: {exc}"
+        except OSError as exc:
+            return False, f"No se pudo consultar DNS para {host}: {exc}"
+
+    def _check_https_port(self) -> tuple[bool, str]:
+        host = self._sync_target_host()
+        try:
+            with socket.create_connection((host, 443), timeout=SYNC_CONNECTIVITY_TIMEOUT_SECONDS):
+                return True, ""
+        except (OSError, TimeoutError) as exc:
+            return False, f"{host}:443 no respondio durante la validacion previa ({type(exc).__name__}: {exc})"
+
+    def _wait_between_quick_retries(self) -> bool:
+        self.log(f"  Reintentando en {SYNC_DNS_RETRY_SECONDS} segundos sin esperar el intervalo normal...")
+        return self._stop_event.wait(SYNC_DNS_RETRY_SECONDS)
+
+    def _post_payload_with_retries(self, payload_data: list[dict]):
+        last_error_kind = ""
+        last_user_message = ""
+        last_technical_detail = ""
+
+        for attempt in range(1, SYNC_DNS_RETRY_ATTEMPTS + 1):
+            dns_ok, dns_detail = self._resolve_sync_host()
+            if not dns_ok:
+                last_error_kind = "dns-error"
+                last_user_message = "No se pudo resolver el servidor de Google. Revisa DNS, proxy o conectividad."
+                last_technical_detail = dns_detail
+                self.log(
+                    f"  ⚠ Validacion DNS fallida ({attempt}/{SYNC_DNS_RETRY_ATTEMPTS}): {dns_detail}"
+                )
+                if attempt < SYNC_DNS_RETRY_ATTEMPTS:
+                    if self._wait_between_quick_retries():
+                        return None, "stopped", "Sincronizacion detenida por el usuario.", ""
+                    continue
+                return None, last_error_kind, last_user_message, last_technical_detail
+
+            if attempt > 1:
+                self.log(f"  ✓ DNS disponible para {self._sync_target_host()}. Continuando envio.")
+
+            port_ok, port_detail = self._check_https_port()
+            if not port_ok:
+                self.log(f"  ⚠ {port_detail}. Se intentara el envio igualmente.")
+
+            try:
+                response = requests.post(
+                    self.apps_script_url,
+                    data=json.dumps(payload_data),
+                    headers={'Content-Type': 'application/json'},
+                    timeout=(10, 300)
+                )
+                return response, "", "", ""
+            except requests.exceptions.RequestException as req_err:
+                error_kind, user_message = self._classify_request_exception(req_err)
+                technical_detail = f"{type(req_err).__name__}: {req_err}"
+                last_error_kind = error_kind
+                last_user_message = user_message
+                last_technical_detail = technical_detail
+
+                quick_retry_error = (
+                    error_kind in {"dns-error", "connection-error"}
+                    or isinstance(req_err, requests.exceptions.ConnectTimeout)
+                )
+                if quick_retry_error and attempt < SYNC_DNS_RETRY_ATTEMPTS:
+                    self.log(
+                        f"  ⚠ {user_message} Intento {attempt}/{SYNC_DNS_RETRY_ATTEMPTS}. "
+                        f"Detalle: {technical_detail}"
+                    )
+                    if self._wait_between_quick_retries():
+                        return None, "stopped", "Sincronizacion detenida por el usuario.", ""
+                    continue
+
+                return None, error_kind, user_message, technical_detail
+
+        return None, last_error_kind, last_user_message, last_technical_detail
 
     def _classify_request_exception(self, req_err: requests.exceptions.RequestException) -> tuple[str, str]:
         if isinstance(req_err, requests.exceptions.SSLError):
@@ -377,7 +479,8 @@ class SismedSyncManager:
                             "saldo":       safe_float(rec.get('STKSALDODE')),
                             "precio_det":  safe_float(rec.get('STKPRED')),
                             "preciocab":   safe_float(rec.get('STKPREO')),
-                            "actualizado": time.strftime('%d/%m/%Y %H:%M:%S'),
+                            "fecha_equipo": "",
+                            "actualizado": "",
                         })
                 else:
                     message = f"No se encontró archivo de stock en: {PATH_STOCK_DET}"
@@ -449,49 +552,46 @@ class SismedSyncManager:
                     )
                     return
                     
+                self._stamp_payload_host_time(payload_data)
                 self.log(f"[{time.strftime('%H:%M:%S')}] Subiendo a la nube (Google Sheets)...")
                 
-                try:
-                    response = requests.post(
-                        self.apps_script_url,
-                        data=json.dumps(payload_data),
-                        headers={'Content-Type': 'application/json'},
-                        timeout=300
-                    )
-                    
-                    if response.status_code == 200 and response.text.startswith("OK"):
-                        success_message = f"Stock detallado sincronizado ({response.text.strip()})."
-                        self.log(f"[{time.strftime('%H:%M:%S')}] ✓ ¡Éxito! {success_message}")
-                        self._record_cycle_result(
-                            "success",
-                            f"{success_message} Registros={len(payload_data)}; omitidos={registros_omitidos}; problemas_dbf={stock_metrics.problem_records}",
-                            http_status=response.status_code,
-                            records=len(payload_data),
-                            success=True,
-                        )
-                    else:
-                        response_preview = response.text[:300].strip()
-                        failure_message = f"HTTP {response.status_code} al sincronizar con Google."
-                        self.log(f"  ✗ Fallo en la conexión a Google: HTTP {response.status_code}")
-                        if response_preview:
-                            self.log(f"  Respuesta del servidor: {response_preview}")
-                        self._record_cycle_result(
-                            "http-error",
-                            f"{failure_message} {response_preview}".strip(),
-                            error_kind="http-error",
-                            http_status=response.status_code,
-                            records=len(payload_data),
-                        )
-                        
-                except requests.exceptions.RequestException as req_err:
-                    error_kind, user_message = self._classify_request_exception(req_err)
-                    technical_detail = f"{type(req_err).__name__}: {req_err}"
+                response, error_kind, user_message, technical_detail = self._post_payload_with_retries(payload_data)
+                if error_kind == "stopped":
+                    return
+
+                if response is None:
                     self.log(f"  ⚠️ {user_message}")
-                    self.log(f"  Detalle técnico: {technical_detail}")
+                    if technical_detail:
+                        self.log(f"  Detalle técnico: {technical_detail}")
                     self._record_cycle_result(
-                        error_kind,
-                        f"{user_message} | {technical_detail}",
-                        error_kind=error_kind,
+                        error_kind or "request-error",
+                        f"{user_message} | {technical_detail}".strip(" |"),
+                        error_kind=error_kind or "request-error",
+                        records=len(payload_data),
+                    )
+                    return
+
+                if response.status_code == 200 and response.text.startswith("OK"):
+                    success_message = f"Stock detallado sincronizado ({response.text.strip()})."
+                    self.log(f"[{time.strftime('%H:%M:%S')}] ✓ ¡Éxito! {success_message}")
+                    self._record_cycle_result(
+                        "success",
+                        f"{success_message} Registros={len(payload_data)}; omitidos={registros_omitidos}; problemas_dbf={stock_metrics.problem_records}",
+                        http_status=response.status_code,
+                        records=len(payload_data),
+                        success=True,
+                    )
+                else:
+                    response_preview = response.text[:300].strip()
+                    failure_message = f"HTTP {response.status_code} al sincronizar con Google."
+                    self.log(f"  ✗ Fallo en la conexión a Google: HTTP {response.status_code}")
+                    if response_preview:
+                        self.log(f"  Respuesta del servidor: {response_preview}")
+                    self._record_cycle_result(
+                        "http-error",
+                        f"{failure_message} {response_preview}".strip(),
+                        error_kind="http-error",
+                        http_status=response.status_code,
                         records=len(payload_data),
                     )
 

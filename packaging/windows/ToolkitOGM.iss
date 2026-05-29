@@ -7,6 +7,7 @@
   #define RepoRoot "..\.."
 #endif
 #define MyAppExeName "ToolkitOGM.exe"
+#define MyAppMutex "ToolkitOGM_SingleInstanceMutex_v1"
 #define MyBuildDir RepoRoot + "\dist\ToolkitOGM"
 #define MyInstallerDir RepoRoot + "\dist\installer"
 #define MyIconFile RepoRoot + "\packaging\windows\ToolkitOGM.ico"
@@ -19,6 +20,7 @@ AppPublisher=Jordan Chacon Villacis
 DefaultDirName={localappdata}\Programs\ToolKit SISMED
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+UsePreviousAppDir=yes
 OutputDir={#MyInstallerDir}
 OutputBaseFilename=ToolkitOGM-Setup-{#MyAppVersion}
 Compression=lzma
@@ -26,14 +28,35 @@ SolidCompression=yes
 WizardStyle=modern
 SetupIconFile={#MyIconFile}
 UninstallDisplayIcon={app}\{#MyAppExeName}
+UninstallDisplayName={#MyAppName}
 PrivilegesRequired=lowest
+MinVersion=10.0
+ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+AppMutex={#MyAppMutex}
+CloseApplications=yes
+RestartApplications=no
+SetupLogging=yes
+VersionInfoVersion={#MyAppVersion}
+VersionInfoProductVersion={#MyAppVersion}
+VersionInfoCompany=Jordan Chacon Villacis
+VersionInfoDescription={#MyAppName}
+VersionInfoProductName={#MyAppName}
 
 [Languages]
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 
+[Messages]
+FinishedHeadingLabel=Instalación o actualización completada
+FinishedLabel={#MyAppName} se instaló o actualizó correctamente.%n%nPuedes iniciar la aplicación ahora.
+FinishedLabelNoIcons={#MyAppName} se instaló o actualizó correctamente.
+
 [Tasks]
 Name: "desktopicon"; Description: "Crear acceso directo en el escritorio"; GroupDescription: "Accesos directos:"; Flags: unchecked
+
+[InstallDelete]
+Type: files; Name: "{app}\{#MyAppExeName}"
+Type: filesandordirs; Name: "{app}\_internal"
 
 [Files]
 Source: "{#MyBuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -43,4 +66,4 @@ Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Ejecutar {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--install-success"; Description: "Ejecutar {#MyAppName}"; Flags: nowait postinstall skipifsilent

@@ -11,6 +11,7 @@ la conexión y logs aunque el usuario cambie de pestaña.
 
 import os
 import flet as ft
+from urllib.parse import urlparse
 
 from sismed_sync import SismedSyncManager
 from tools.base_tool import SismedTool, ToolMetadata
@@ -76,7 +77,8 @@ class SyncSismedTool(SismedTool):
 
         if not url:
             return "missing-url", "No se puede iniciar Sync SISMED automáticamente: falta la URL de integración guardada."
-        if not url.lower().startswith(("http://", "https://")):
+        parsed_url = urlparse(url)
+        if parsed_url.scheme.lower() not in ("http", "https") or not parsed_url.hostname:
             return "invalid-url", "No se puede iniciar Sync SISMED: la URL de integración no es válida."
         if not base_dir:
             return "missing-base-dir", "No se puede iniciar Sync SISMED: falta el directorio SISMED."

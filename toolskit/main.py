@@ -42,7 +42,7 @@ SECOND_INSTANCE_TIMEOUT_MS = 3000
 AUTORUN_READY_TIMEOUT_MS = 5000
 STARTUP_REGISTRY_VALUE_NAME = "ToolkitOGM_Sync"
 STARTUP_TASK_NAME = "ToolkitOGM_Autorun"
-STARTUP_TASK_DELAY = "0000:30"
+STARTUP_TASK_DELAY = "0002:00"
 single_instance_mutex = None
 restore_window_event = None
 restore_window_ack_event = None
@@ -265,8 +265,17 @@ def _repair_startup_registration_if_needed():
     status = _get_startup_registration_status()
     if not getattr(sys, 'frozen', False):
         return status
-    if not status["enabled"] or status["task_exists"]:
+    if not status["enabled"]:
         return status
+
+    if status["task_exists"]:
+        success = set_startup(True)
+        refreshed = _get_startup_registration_status()
+        if success and refreshed["task_exists"]:
+            _log_startup_registration("startup_registration_refreshed=task")
+        else:
+            _log_startup_registration("startup_registration_refresh_failed")
+        return refreshed
 
     success = set_startup(True)
     refreshed = _get_startup_registration_status()
@@ -306,6 +315,7 @@ def is_startup_enabled() -> bool:
 
 def main(page: ft.Page):
     startup_hidden_requested = "--autorun" in sys.argv
+    install_success_requested = "--install-success" in sys.argv
     startup_state = {
         "restore_listener_ready": threading.Event(),
         "tray_ready": threading.Event(),
@@ -1235,6 +1245,9 @@ def main(page: ft.Page):
     sync_tool = get_tool_by_name("Sync SISMED")
     if sync_tool:
         sync_tool.build_view(page, lambda idx: None)
+
+    if install_success_requested:
+        _show_message("ToolKit SISMED se instaló o actualizó correctamente.")
 
 if __name__ == "__main__":
     if _acquire_single_instance():
