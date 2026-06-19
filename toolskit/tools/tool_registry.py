@@ -17,6 +17,7 @@ from tools.pdf_tool import PdfTool
 from tools.consulta_tformdet_tool import ConsultaTformdetTool
 from tools.reporte_guias_tool import ReporteGuiasTool
 from tools.sync_sismed_tool import SyncSismedTool
+from tools.sync_sismed2_tool import SyncSismed2Tool
 from tools.stock_report_tool import StockReportTool
 from tools.disponibilidad_report_tool import DisponibilidadReportTool
 from tools.consumo_valorizado_report_tool import ConsumoValorizadoReportTool
@@ -39,6 +40,7 @@ TOOLS_REGISTRY: list = [
     ChangeMedestTool(),
     EditTmovimTool(),
     SyncSismedTool(),
+    SyncSismed2Tool(),
 ]
 
 

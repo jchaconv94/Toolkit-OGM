@@ -1,6 +1,7 @@
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 import ctypes
+import hashlib
 import flet as ft
 import os
 import sys
@@ -29,7 +30,7 @@ def _bootstrap_runtime_directory():
 
 _bootstrap_runtime_directory()
 
-from tools.app_config import append_runtime_log, get_config_log_path, get_startup_log_path, update_runtime_status
+from tools.app_config import append_runtime_log, get as cfg_get, get_config_log_path, get_startup_log_path, set as cfg_set, update_runtime_status
 from tools.tool_registry import TOOLS_REGISTRY, get_tool_by_name
 
 # ==========================================
@@ -418,6 +419,15 @@ def main(page: ft.Page):
         except Exception as exc:
             _show_message(f"No se pudo abrir el log de configuración: {exc}")
 
+    sync_access_unlocked = [False]
+    SYNC_NAV_INDICES = {3, 17, 18}
+
+    def _hash_sync_password(password: str) -> str:
+        return hashlib.sha256((password or "").encode("utf-8")).hexdigest()
+
+    def _lock_sync_access():
+        sync_access_unlocked[0] = False
+
     chk_auto_startup = ft.Checkbox(
         label="Abrir esta aplicación al encender Windows",
         value=saved_auto_startup,
@@ -479,9 +489,10 @@ def main(page: ft.Page):
         _restore_main_window()
 
     def on_quit(icon, item):
-        sync_tool = get_tool_by_name("Sync SISMED")
-        if sync_tool and sync_tool.sync_manager:
-            sync_tool.sync_manager.stop_sync()
+        for tool_name in ("Sync SISMED", "Sync SISMED 2.0"):
+            sync_tool = get_tool_by_name(tool_name)
+            if sync_tool and getattr(sync_tool, "sync_manager", None):
+                sync_tool.sync_manager.stop_sync()
         icon.stop()
         _release_single_instance_resources()
         page.window.destroy()
@@ -509,6 +520,12 @@ def main(page: ft.Page):
 
     def window_event(e):
         if e.data == "close":
+            _lock_sync_access()
+            try:
+                update_sidebar_ui(0)
+                update_content(0)
+            except Exception:
+                pass
             page.window.visible = False
             page.update()
             
@@ -534,6 +551,16 @@ def main(page: ft.Page):
             _log_startup_event(traceback.format_exc())
     else:
         _record_sync_startup("tool-not-available", "No se encontro la herramienta Sync SISMED.")
+
+    sync2_tool = get_tool_by_name("Sync SISMED 2.0")
+    if sync2_tool and hasattr(sync2_tool, "start_from_saved"):
+        try:
+            sync2_tool.start_from_saved(page)
+        except Exception as exc:
+            append_runtime_log(
+                "sync",
+                f"Fallo iniciando Sync SISMED 2.0 automaticamente: {type(exc).__name__}: {exc}",
+            )
 
     if startup_hidden_requested:
         restore_ready = startup_state["restore_listener_ready"].wait(AUTORUN_READY_TIMEOUT_MS / 1000)
@@ -628,6 +655,8 @@ def main(page: ft.Page):
     def update_content(index):
         # Limpiar el contenido anterior
         content.controls.clear()
+        if index not in SYNC_NAV_INDICES:
+            _lock_sync_access()
         
         def navigate(view_idx):
             # Ahora que están en el sidebar, sí los seleccionamos. Si el view_idx no es visualmente un tooltip lateral (como los index 6 y 7, mantendrá visualmente la categoría principal si existe)
@@ -641,7 +670,8 @@ def main(page: ft.Page):
             "DBF a EXCEL":             6,
             "Unir EXCEL":              15,
             "Format TFORMDET":         7,
-            "Sync SISMED":             3,
+            "Sync SISMED":             18,
+            "Sync SISMED 2.0":         17,
             "Stock SISMED":            9,
             "Disponibilidad TFORMDET": 10,
             "Consumo Valorizado":      16,
@@ -750,6 +780,126 @@ def main(page: ft.Page):
                     ], spacing=2)
                 ], vertical_alignment=ft.CrossAxisAlignment.CENTER)
             )
+
+        def build_sync_access_view(target_index: int):
+            saved_hash = (cfg_get("sync_access_password_hash") or "").strip()
+            setup_mode = not saved_hash
+            password_field = ft.TextField(
+                label="Contraseña",
+                password=True,
+                can_reveal_password=True,
+                prefix_icon=ft.icons.LOCK_ROUNDED,
+                border_radius=8,
+                filled=True,
+                autofocus=True,
+            )
+            confirm_field = ft.TextField(
+                label="Confirmar contraseña",
+                password=True,
+                can_reveal_password=True,
+                prefix_icon=ft.icons.LOCK_ROUNDED,
+                border_radius=8,
+                filled=True,
+                visible=setup_mode,
+            )
+            message_text = ft.Text("", size=12, color=ft.colors.ERROR)
+
+            def _submit_access(e=None):
+                password = (password_field.value or "").strip()
+                confirm = (confirm_field.value or "").strip()
+                if len(password) < 4:
+                    message_text.value = "La contraseña debe tener al menos 4 caracteres."
+                    message_text.update()
+                    return
+
+                if setup_mode:
+                    if password != confirm:
+                        message_text.value = "Las contraseñas no coinciden."
+                        message_text.update()
+                        return
+                    cfg_set("sync_access_password_hash", _hash_sync_password(password))
+                    sync_access_unlocked[0] = True
+                    _show_message("Contraseña de Sync SISMED configurada.")
+                    update_sidebar_ui(target_index)
+                    update_content(target_index)
+                    return
+
+                if _hash_sync_password(password) != saved_hash:
+                    message_text.value = "Contraseña incorrecta."
+                    message_text.update()
+                    return
+
+                sync_access_unlocked[0] = True
+                update_sidebar_ui(target_index)
+                update_content(target_index)
+
+            password_field.on_submit = _submit_access
+            confirm_field.on_submit = _submit_access
+
+            return ft.Container(
+                padding=40,
+                expand=True,
+                content=ft.Column([
+                    build_premium_header(
+                        ft.icons.ADMIN_PANEL_SETTINGS_ROUNDED,
+                        CATEGORY_COLORS["Sync"],
+                        "Acceso protegido",
+                        "Las herramientas Sync guardan URLs y claves sensibles."
+                    ),
+                    ft.Divider(height=20, color=ft.colors.TRANSPARENT),
+                    ft.Container(
+                        width=520,
+                        bgcolor=ft.colors.SURFACE_VARIANT,
+                        border_radius=20,
+                        padding=30,
+                        content=ft.Column([
+                            ft.Row([
+                                ft.Icon(
+                                    ft.icons.VPN_KEY_ROUNDED if setup_mode else ft.icons.LOCK_ROUNDED,
+                                    color=CATEGORY_COLORS["Sync"],
+                                ),
+                                ft.Text(
+                                    "Crear contraseña de Sync" if setup_mode else "Ingrese la contraseña de Sync",
+                                    size=20,
+                                    weight=ft.FontWeight.W_800,
+                                ),
+                            ]),
+                            ft.Text(
+                                "Esta contraseña se pedirá para abrir Sync SISMED y Sync SISMED 2.0 en esta PC."
+                                if setup_mode
+                                else "Acceso requerido para ver y editar credenciales de sincronización.",
+                                size=13,
+                                color=ft.colors.ON_SURFACE_VARIANT,
+                            ),
+                            ft.Divider(height=18, color=ft.colors.OUTLINE_VARIANT),
+                            password_field,
+                            confirm_field,
+                            message_text,
+                            ft.Row([
+                                ft.ElevatedButton(
+                                    "ENTRAR" if not setup_mode else "GUARDAR Y ENTRAR",
+                                    icon=ft.icons.LOGIN_ROUNDED,
+                                    on_click=_submit_access,
+                                    style=ft.ButtonStyle(
+                                        bgcolor={
+                                            ft.ControlState.DEFAULT: ft.colors.TEAL_600,
+                                            ft.ControlState.HOVERED: ft.colors.TEAL_800,
+                                        },
+                                        color=ft.colors.WHITE,
+                                        padding=ft.padding.symmetric(horizontal=18, vertical=14),
+                                        shape=ft.RoundedRectangleBorder(radius=10),
+                                    ),
+                                ),
+                            ], alignment=ft.MainAxisAlignment.END),
+                        ], spacing=12),
+                    ),
+                ], scroll=ft.ScrollMode.AUTO),
+            )
+
+        if index in (3, 17, 18) and not sync_access_unlocked[0]:
+            content.controls.append(build_sync_access_view(index))
+            page.update()
+            return
 
         if index == 0:
 
@@ -1015,9 +1165,42 @@ def main(page: ft.Page):
 
         elif index == 3:
             # Sync SISMED → delegado al objeto SyncSismedTool (POO)
+            sync_ui = ft.Container(
+                padding=40,
+                expand=True,
+                content=ft.Column(
+                    controls=[
+                        build_premium_header(
+                            ft.icons.CLOUD_SYNC_ROUNDED,
+                            CATEGORY_COLORS["Sync"],
+                            "Sync SISMED",
+                            "Seleccione el motor de sincronización que desea configurar:"
+                        ),
+                        ft.Divider(height=20, color=ft.colors.TRANSPARENT),
+                        ft.Row(
+                            controls=[
+                                make_tool_card(get_tool_by_name("Sync SISMED")),
+                                make_tool_card(get_tool_by_name("Sync SISMED 2.0")),
+                            ],
+                            wrap=True,
+                            spacing=16,
+                            run_spacing=16,
+                        )
+                    ],
+                    scroll=ft.ScrollMode.AUTO,
+                )
+            )
+            content.controls.append(sync_ui)
+
+        elif index == 18:
             sync_tool = get_tool_by_name("Sync SISMED")
             if sync_tool:
                 content.controls.append(sync_tool.build_view(page, navigate))
+
+        elif index == 17:
+            sync2_tool = get_tool_by_name("Sync SISMED 2.0")
+            if sync2_tool:
+                content.controls.append(sync2_tool.build_view(page, navigate))
         
         elif index == 4:
             # Nuevo Dashboard de Reports SISMED
@@ -1151,8 +1334,9 @@ def main(page: ft.Page):
 
     def update_sidebar_ui(idx):
         selected_nav_idx[0] = idx
+        visual_idx = 3 if idx in (17, 18) else idx
         for item in nav_items_list:
-            is_selected = (idx == item.data)
+            is_selected = (visual_idx == item.data)
             stack = item.content
             # Indicador (control 0 del Stack)
             stack.controls[0].visible = is_selected
@@ -1201,7 +1385,13 @@ def main(page: ft.Page):
                     alignment=ft.alignment.center 
                 )
             ]),
-            on_hover=lambda e: setattr(e.control, "bgcolor", ft.colors.with_opacity(0.15, ft.colors.WHITE) if e.data == "true" or selected_nav_idx[0] == index else ft.colors.TRANSPARENT) or e.control.update()
+            on_hover=lambda e: setattr(
+                e.control,
+                "bgcolor",
+                ft.colors.with_opacity(0.15, ft.colors.WHITE)
+                if e.data == "true" or selected_nav_idx[0] == index or (index == 3 and selected_nav_idx[0] in (17, 18))
+                else ft.colors.TRANSPARENT,
+            ) or e.control.update()
         )
 
     nav_items_list = [
@@ -1244,7 +1434,10 @@ def main(page: ft.Page):
     # Inicializar silenciosamente Sync SISMED para activar su auto-arranque temporal si corresponde
     sync_tool = get_tool_by_name("Sync SISMED")
     if sync_tool:
-        sync_tool.build_view(page, lambda idx: None)
+        sync_tool._init_components(page)
+    sync2_tool = get_tool_by_name("Sync SISMED 2.0")
+    if sync2_tool:
+        sync2_tool._init_components(page)
 
     if install_success_requested:
         _show_message("ToolKit SISMED se instaló o actualizó correctamente.")

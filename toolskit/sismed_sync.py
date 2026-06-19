@@ -18,6 +18,15 @@ SYNC_DNS_RETRY_ATTEMPTS = 6
 SYNC_DNS_RETRY_SECONDS = 20
 SYNC_CONNECTIVITY_TIMEOUT_SECONDS = 5
 
+
+def _read_toolkit_version() -> str:
+    try:
+        version_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "VERSION"))
+        with open(version_path, "r", encoding="utf-8") as f:
+            return f.read().strip() or "unknown"
+    except Exception:
+        return "unknown"
+
 class SismedSyncManager:
     def __init__(self, log_callback=None, on_stop_callback=None):
         self.is_running = False
@@ -37,6 +46,8 @@ class SismedSyncManager:
         self.base_dir = r"C:\SISMEDV2"
         self.modo_consolidado = True
         self.intervalo_minutos = 5
+        self.destination_name = "Google"
+        self.destination_label = "Google Sheets"
 
     def _set_run_state(self, state: str, detail: str = ""):
         with self._state_lock:
@@ -88,8 +99,36 @@ class SismedSyncManager:
             # Compatibilidad con el Apps Script anterior.
             item["actualizado"] = fecha_equipo
 
+    def _integration_url(self) -> str:
+        return (self.apps_script_url or "").strip()
+
+    def _request_headers(self) -> dict:
+        return {'Content-Type': 'application/json'}
+
+    def _request_body(self, payload_data: list[dict]) -> str:
+        return json.dumps(payload_data)
+
+    def _is_success_response(self, response: requests.Response) -> bool:
+        return response.status_code == 200 and response.text.startswith("OK")
+
+    def _success_message(self, response: requests.Response, record_count: int) -> str:
+        return f"Stock detallado sincronizado ({response.text.strip()})."
+
+    def _destination_user_message(self, error_kind: str) -> str:
+        if error_kind == "dns-error":
+            return f"No se pudo resolver el servidor de {self.destination_name}. Revisa DNS, proxy o conectividad."
+        if error_kind == "tls-error":
+            return f"Error TLS/SSL al enviar datos a {self.destination_name}. Revisa certificados del sistema, fecha/hora del equipo o inspeccion HTTPS."
+        if error_kind == "proxy-error":
+            return f"Error de proxy al enviar datos a {self.destination_name}. Revisa la configuracion de red del equipo."
+        if error_kind == "timeout":
+            return f"La conexion a {self.destination_name} excedio el tiempo de espera. Revisa conectividad o saturacion de red."
+        if error_kind == "connection-error":
+            return f"No se pudo establecer conexion con {self.destination_name}. Revisa red, firewall o acceso a Internet."
+        return f"Error de red al enviar datos a {self.destination_name}."
+
     def _sync_target_host(self) -> str:
-        parsed = urlparse((self.apps_script_url or "").strip())
+        parsed = urlparse(self._integration_url())
         return parsed.hostname or ""
 
     def _resolve_sync_host(self) -> tuple[bool, str]:
@@ -125,7 +164,7 @@ class SismedSyncManager:
             dns_ok, dns_detail = self._resolve_sync_host()
             if not dns_ok:
                 last_error_kind = "dns-error"
-                last_user_message = "No se pudo resolver el servidor de Google. Revisa DNS, proxy o conectividad."
+                last_user_message = self._destination_user_message(last_error_kind)
                 last_technical_detail = dns_detail
                 self.log(
                     f"  ⚠ Validacion DNS fallida ({attempt}/{SYNC_DNS_RETRY_ATTEMPTS}): {dns_detail}"
@@ -145,9 +184,9 @@ class SismedSyncManager:
 
             try:
                 response = requests.post(
-                    self.apps_script_url,
-                    data=json.dumps(payload_data),
-                    headers={'Content-Type': 'application/json'},
+                    self._integration_url(),
+                    data=self._request_body(payload_data),
+                    headers=self._request_headers(),
                     timeout=(10, 300)
                 )
                 return response, "", "", ""
@@ -177,22 +216,13 @@ class SismedSyncManager:
 
     def _classify_request_exception(self, req_err: requests.exceptions.RequestException) -> tuple[str, str]:
         if isinstance(req_err, requests.exceptions.SSLError):
-            return (
-                "tls-error",
-                "Error TLS/SSL al enviar datos a Google. Revisa certificados del sistema, fecha/hora del equipo o inspeccion HTTPS.",
-            )
+            return ("tls-error", self._destination_user_message("tls-error"))
 
         if isinstance(req_err, requests.exceptions.ProxyError):
-            return (
-                "proxy-error",
-                "Error de proxy al enviar datos a Google. Revisa la configuracion de red del equipo.",
-            )
+            return ("proxy-error", self._destination_user_message("proxy-error"))
 
         if isinstance(req_err, (requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, requests.exceptions.Timeout)):
-            return (
-                "timeout",
-                "La conexion a Google excedio el tiempo de espera. Revisa conectividad o saturacion de red.",
-            )
+            return ("timeout", self._destination_user_message("timeout"))
 
         if isinstance(req_err, requests.exceptions.ConnectionError):
             detail = str(req_err).lower()
@@ -208,17 +238,17 @@ class SismedSyncManager:
             if any(marker in detail for marker in dns_markers):
                 return (
                     "dns-error",
-                    "No se pudo resolver el servidor de Google. Revisa DNS, proxy o conectividad.",
+                    self._destination_user_message("dns-error"),
                 )
 
             return (
                 "connection-error",
-                "No se pudo establecer conexion con Google. Revisa red, firewall o acceso a Internet.",
+                self._destination_user_message("connection-error"),
             )
 
         return (
             "request-error",
-            f"Error de red al enviar datos a Google: {type(req_err).__name__}.",
+            f"Error de red al enviar datos a {self.destination_name}: {type(req_err).__name__}.",
         )
 
     def _persist_dbf_quality(self, metrics_list: list[DbfReadMetrics]):
@@ -258,6 +288,105 @@ class SismedSyncManager:
             "runtime_last_sync_dbf_field_fallbacks": worst_metric.field_fallbacks,
             "runtime_last_sync_dbf_summary": " | ".join(metric.summary() for metric in relevant_metrics),
         })
+
+    def inspect_local_almcods(self, base_dir: str | None = None) -> dict:
+        """Lee el stock local y resume los ALMCOD reales antes de enviar."""
+        base_dir = (base_dir or self.base_dir or "").strip()
+        if not base_dir:
+            return {"ok": False, "error": "No se ha configurado el directorio SISMED."}
+
+        datos_dir = os.path.join(base_dir, "DATOS")
+        stock_path = os.path.join(datos_dir, "MSTKALMDE.DBF")
+        almacen_path = os.path.join(datos_dir, "MALMACEN.DBF")
+
+        if not os.path.isdir(datos_dir):
+            return {"ok": False, "error": f"No existe la carpeta DATOS en: {base_dir}"}
+        if not os.path.exists(stock_path):
+            return {"ok": False, "error": f"No se encontro MSTKALMDE.DBF en: {stock_path}"}
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="toolkit_almcod_") as snapshot_dir:
+                stock_read_path = snapshot_dbf(stock_path, snapshot_dir)
+                almacen_read_path = snapshot_dbf(almacen_path, snapshot_dir)
+
+                almacen_metrics = DbfReadMetrics("MALMACEN.DBF")
+                stock_metrics = DbfReadMetrics("MSTKALMDE.DBF")
+                almacen_names = {}
+                counts = {}
+                omitted = 0
+
+                if os.path.exists(almacen_read_path):
+                    for rec in iter_dbf_records(open_dbf(almacen_read_path, metrics=almacen_metrics), almacen_metrics):
+                        almcod = str(rec.get("ALMCOD", "")).strip()
+                        if almcod:
+                            almacen_names[almcod] = str(rec.get("ALMDES", "")).strip()
+
+                for rec in iter_dbf_records(open_dbf(stock_read_path, metrics=stock_metrics), stock_metrics):
+                    almcod = str(rec.get("ALMCOD", "")).strip()
+                    if not almcod:
+                        omitted += 1
+                        continue
+                    counts[almcod] = counts.get(almcod, 0) + 1
+
+                def guess_facility_code(almcod: str) -> str:
+                    if len(almcod) >= 8 and almcod[5:6].upper() == "F":
+                        return almcod[:5]
+                    if len(almcod) >= 6 and any(ch.isalpha() for ch in almcod[:6]):
+                        return almcod[:6]
+                    return almcod[:5] if len(almcod) >= 5 else almcod
+
+                rows = [
+                    {
+                        "almcod": almcod,
+                        "desc_alm": almacen_names.get(almcod, ""),
+                        "records": count,
+                        "facility_code": guess_facility_code(almcod),
+                    }
+                    for almcod, count in sorted(counts.items())
+                ]
+                facility_codes = sorted({row["facility_code"] for row in rows if row["facility_code"]})
+                warnings = []
+                if self.modo_consolidado and any(len(row["facility_code"]) == 6 for row in rows):
+                    warnings.append(
+                        "El modo consolidado esta activo y hay codigos IPRESS de 6 caracteres. "
+                        "Para Sync 2.0 se recomienda modo detallado salvo que el servidor ya apruebe el ALMCOD consolidado."
+                    )
+
+                return {
+                    "ok": True,
+                    "rows": rows,
+                    "almcods": [row["almcod"] for row in rows],
+                    "facility_codes": facility_codes,
+                    "total_records": sum(counts.values()),
+                    "omitted": omitted,
+                    "metrics": [almacen_metrics.summary(), stock_metrics.summary()],
+                    "warnings": warnings,
+                }
+        except Exception as exc:
+            return {"ok": False, "error": f"No se pudo leer ALMCOD local: {type(exc).__name__}: {exc}"}
+
+    def _log_payload_almcods(self, payload_data: list[dict]):
+        counts = {}
+        names = {}
+        for item in payload_data:
+            almcod = str(item.get("almcod", "")).strip()
+            if not almcod:
+                continue
+            counts[almcod] = counts.get(almcod, 0) + 1
+            if item.get("desc_alm") and almcod not in names:
+                names[almcod] = str(item.get("desc_alm", "")).strip()
+
+        if not counts:
+            self.log("  ALMCOD detectados en SISMED: ninguno.")
+            return
+
+        codes = sorted(counts)
+        self.log(f"  ALMCOD detectados en SISMED: {', '.join(codes)}")
+        for code in codes[:10]:
+            desc = f" | {names[code]}" if names.get(code) else ""
+            self.log(f"    - {code}: {counts[code]} registros{desc}")
+        if len(codes) > 10:
+            self.log(f"    ... {len(codes) - 10} ALMCOD adicionales.")
 
     def _log_dbf_metrics(self, metrics_list: list[DbfReadMetrics]):
         for metric in metrics_list:
@@ -493,6 +622,7 @@ class SismedSyncManager:
                     return
 
                 self.log(f"  ✓ Registros leídos de MSTKALMDE: {len(payload_data)}")
+                self._log_payload_almcods(payload_data)
                 if registros_omitidos:
                     self.log(f"  ℹ Registros omitidos por claves incompletas: {registros_omitidos}")
 
@@ -553,7 +683,7 @@ class SismedSyncManager:
                     return
                     
                 self._stamp_payload_host_time(payload_data)
-                self.log(f"[{time.strftime('%H:%M:%S')}] Subiendo a la nube (Google Sheets)...")
+                self.log(f"[{time.strftime('%H:%M:%S')}] Subiendo a la nube ({self.destination_label})...")
                 
                 response, error_kind, user_message, technical_detail = self._post_payload_with_retries(payload_data)
                 if error_kind == "stopped":
@@ -571,8 +701,8 @@ class SismedSyncManager:
                     )
                     return
 
-                if response.status_code == 200 and response.text.startswith("OK"):
-                    success_message = f"Stock detallado sincronizado ({response.text.strip()})."
+                if self._is_success_response(response):
+                    success_message = self._success_message(response, len(payload_data))
                     self.log(f"[{time.strftime('%H:%M:%S')}] ✓ ¡Éxito! {success_message}")
                     self._record_cycle_result(
                         "success",
@@ -583,8 +713,8 @@ class SismedSyncManager:
                     )
                 else:
                     response_preview = response.text[:300].strip()
-                    failure_message = f"HTTP {response.status_code} al sincronizar con Google."
-                    self.log(f"  ✗ Fallo en la conexión a Google: HTTP {response.status_code}")
+                    failure_message = f"HTTP {response.status_code} al sincronizar con {self.destination_name}."
+                    self.log(f"  ✗ Fallo en la conexión a {self.destination_name}: HTTP {response.status_code}")
                     if response_preview:
                         self.log(f"  Respuesta del servidor: {response_preview}")
                     self._record_cycle_result(

@@ -388,7 +388,8 @@ class SyncSismedTool(SismedTool):
                 self._section_header(
                     self.metadata.icono, self.metadata.color,
                     self.metadata.nombre,
-                    self.metadata.descripcion
+                    self.metadata.descripcion,
+                    right_content=self._back_button("Volver a Sync SISMED", navigate_fn, 3)
                 ),
                 ft.Divider(height=30, color=ft.colors.TRANSPARENT),
                 
