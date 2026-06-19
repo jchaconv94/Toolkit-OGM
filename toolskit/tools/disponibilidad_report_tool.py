@@ -17,6 +17,7 @@ similar a las consultas TRANSFORM de Access.
 Hereda de: tools.base_tool.SismedTool
 """
 
+import re
 import threading
 import flet as ft
 from datetime import date
@@ -191,19 +192,55 @@ class DisponibilidadReportTool(SismedTool):
             size=10, color=ft.colors.GREY_400, expand=True,
         )
 
-        # ── Excluir con Chips ─────────────────────────────────────────────────
-        saved_excluir = ""
-        excluir_chips = [c.strip() for c in saved_excluir.split(",") if c.strip()]
+        # ── Filtro de establecimientos con Chips ──────────────────────────────
+        def _as_bool(value) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                return value.strip().lower() in {"1", "true", "yes", "si", "sí"}
+            return bool(value)
+
+        saved_remember = _as_bool(cfg_get("disponibilidad_filter_remember"))
+        saved_mode = (cfg_get("disponibilidad_filter_mode") or "excluir").strip().lower()
+        if saved_mode not in {"excluir", "incluir"}:
+            saved_mode = "excluir"
+        def _normalizar_codigo(value: str) -> str:
+            return re.sub(r"[^0-9A-Za-z]", "", value or "").upper()
+
+        saved_codes = cfg_get("disponibilidad_filter_codes") if saved_remember else ""
+
+        filtro_state = {"value": saved_mode}
+        excluir_chips = []
+        for c in (saved_codes or "").split(","):
+            code = _normalizar_codigo(c)
+            if code and code not in excluir_chips:
+                excluir_chips.append(code)
         
         chips_wrap = ft.Row(wrap=True, spacing=6, run_spacing=6)
+
+        filtro_label = ft.Text(
+            "Excluir establecimientos" if filtro_state["value"] == "excluir"
+            else "Incluir solo establecimientos",
+            size=11,
+            color=ft.colors.GREY_400,
+            weight=ft.FontWeight.W_600,
+        )
  
         chk_recordar = ft.Checkbox(
-            label="Recordar estas exclusiones",
-            value=False,
+            label="Recordar esta lista",
+            value=saved_remember,
             
             active_color=ft.colors.INDIGO_600,
             visible=len(excluir_chips) > 0,
         )
+
+        def _persist_filter_state():
+            cfg_set("disponibilidad_filter_remember", bool(chk_recordar.value))
+            if chk_recordar.value:
+                cfg_set("disponibilidad_filter_mode", filtro_state["value"])
+                cfg_set("disponibilidad_filter_codes", ",".join(excluir_chips))
+            else:
+                cfg_set("disponibilidad_filter_codes", "")
 
         def _update_chips():
             chk_recordar.visible = len(excluir_chips) > 0
@@ -215,6 +252,7 @@ class DisponibilidadReportTool(SismedTool):
                 def _del_chip(e, c=code):
                     excluir_chips.remove(c)
                     _update_chips()
+                    _persist_filter_state()
                 chips_wrap.controls.append(
                     ft.Container(
                         width=len(code)*8 + 45, # Ancho ajustado a la lóngitud del código
@@ -235,25 +273,99 @@ class DisponibilidadReportTool(SismedTool):
             if chips_wrap.page:
                 chips_wrap.update()
 
-        _update_chips()
+        def _sync_filter_ui():
+            filtro_label.value = (
+                "Excluir establecimientos"
+                if filtro_state["value"] == "excluir"
+                else "Incluir solo establecimientos"
+            )
+            excluir_input.hint_text = (
+                "Códigos que se excluirán. Presione Espacio o Enter..."
+                if filtro_state["value"] == "excluir"
+                else "Códigos que sí se incluirán. Presione Espacio o Enter..."
+            )
+            if filtro_label.page:
+                filtro_label.update()
+            if excluir_input.page:
+                excluir_input.update()
+
+        def _on_remember_change(e):
+            _persist_filter_state()
+
+        filtro_modo_ref = [None]
+
+        def _filtro_btn(label: str, icon_name: str, key: str) -> ft.Container:
+            is_sel = filtro_state["value"] == key
+
+            def _click(e, k=key):
+                filtro_state["value"] = k
+                filtro_modo_ref[0].controls = [
+                    _filtro_btn("Excluir lista", ft.icons.REMOVE_CIRCLE_OUTLINE_ROUNDED, "excluir"),
+                    _filtro_btn("Incluir lista", ft.icons.CHECK_CIRCLE_OUTLINE_ROUNDED, "incluir"),
+                ]
+                filtro_modo_ref[0].update()
+                _sync_filter_ui()
+                _persist_filter_state()
+
+            bg = ft.colors.INDIGO_700 if is_sel else ft.colors.with_opacity(0.06, ft.colors.WHITE)
+            border_c = ft.colors.INDIGO_400 if is_sel else ft.colors.BLUE_GREY_700
+            txt_c = ft.colors.WHITE if is_sel else ft.colors.GREY_400
+            ico_c = ft.colors.WHITE if is_sel else ft.colors.GREY_500
+
+            return ft.Container(
+                expand=True,
+                height=40,
+                bgcolor=bg,
+                border_radius=9,
+                border=ft.border.all(1, border_c),
+                on_click=_click,
+                content=ft.Row([
+                    ft.Icon(icon_name, size=15, color=ico_c),
+                    ft.Text(
+                        label,
+                        size=11,
+                        weight=ft.FontWeight.W_600 if is_sel else ft.FontWeight.NORMAL,
+                        color=txt_c,
+                    ),
+                ], spacing=6, alignment=ft.MainAxisAlignment.CENTER,
+                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+            )
+
+        filtro_modo_buttons = ft.Row(
+            controls=[
+                _filtro_btn("Excluir lista", ft.icons.REMOVE_CIRCLE_OUTLINE_ROUNDED, "excluir"),
+                _filtro_btn("Incluir lista", ft.icons.CHECK_CIRCLE_OUTLINE_ROUNDED, "incluir"),
+            ],
+            spacing=8,
+        )
+        filtro_modo_ref[0] = filtro_modo_buttons
+
+        chk_recordar.on_change = _on_remember_change
 
         def _on_exclude_change(e):
             val = e.control.value
+            normalized = _normalizar_codigo(val)
+            if val != normalized and not (val.endswith(" ") or val.endswith(",")):
+                e.control.value = normalized
+                e.control.update()
+                return
             if val and (val.endswith(" ") or val.endswith(",")):
-                v_clean = val.replace(",", " ").strip()
+                v_clean = _normalizar_codigo(val)
                 if v_clean and v_clean not in excluir_chips:
                     excluir_chips.append(v_clean)
                 e.control.value = ""
                 e.control.update()
                 _update_chips()
+                _persist_filter_state()
         
         def _on_exclude_submit(e):
-            val = e.control.value.strip()
+            val = _normalizar_codigo(e.control.value)
             if val and val not in excluir_chips:
                 excluir_chips.append(val)
             e.control.value = ""
             e.control.update()
             _update_chips()
+            _persist_filter_state()
 
         excluir_input = ft.TextField(
             hint_text="Escriba código y presione Espacio o Enter...",
@@ -278,6 +390,9 @@ class DisponibilidadReportTool(SismedTool):
                 excluir_input
             ], spacing=6, scroll=ft.ScrollMode.AUTO)
         )
+
+        _sync_filter_ui()
+        _update_chips()
 
         # (Definido arriba para visibilidad dinámica)
 
@@ -364,6 +479,7 @@ class DisponibilidadReportTool(SismedTool):
 
                 mes_stock = f"{anio_ref[0]}{mes_ref[0]:02d}"
                 excluir_lista = excluir_chips.copy()
+                _persist_filter_state()
  
                 mgr = DisponibilidadReportManager(
                     sismed_dir=input_dir.value.strip(),
@@ -375,6 +491,7 @@ class DisponibilidadReportTool(SismedTool):
                     modo=modo_state["value"],
                     excluir_codigos=excluir_lista,
                     mes_stock_fin=mes_stock,
+                    filtro_modo=filtro_state["value"],
                 )
 
                 page.snack_bar = ft.SnackBar(
@@ -394,6 +511,14 @@ class DisponibilidadReportTool(SismedTool):
         page.update()
 
         def _abrir_guardado():
+            if filtro_state["value"] == "incluir" and not excluir_chips:
+                page.snack_bar = ft.SnackBar(
+                    ft.Text("Agrega al menos un establecimiento para usar el modo Incluir."),
+                    bgcolor=ft.colors.ORANGE_700,
+                )
+                page.snack_bar.open = True
+                page.update()
+                return
             fecha_str  = date.today().strftime("%d%m%Y")
             modo_label = {
                 "farmacias": "POR_FARMACIAS",
@@ -516,11 +641,13 @@ class DisponibilidadReportTool(SismedTool):
                                     ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
                                 ),
                                 
-                                # Derecha: Excluir
+                                # Derecha: Filtro de establecimientos
                                 ft.Container(
                                     col={"sm": 12, "lg": 6},
                                     content=ft.Column([
-                                        _lbl("Excluir establecimientos"),
+                                        _lbl("Modo de filtro:"),
+                                        filtro_modo_buttons,
+                                        filtro_label,
                                         excluir_container,
                                         ft.Row([chk_recordar], alignment=ft.MainAxisAlignment.END),
                                     ], spacing=6, horizontal_alignment=ft.CrossAxisAlignment.STRETCH),

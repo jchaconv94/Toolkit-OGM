@@ -305,6 +305,7 @@ class DisponibilidadReportManager:
         modo:            str   = "farmacias",   # 'farmacias' | 'ipress' | 'red'
         excluir_codigos: list  = None,
         mes_stock_fin:   str   = None,          # 'yyyymm'; si None → mes más reciente del rango
+        filtro_modo:     str   = "excluir",     # 'excluir' | 'incluir'
     ) -> bool:
         """
         Genera el reporte de disponibilidad y lo guarda en *output_path* (.xlsx).
@@ -314,11 +315,15 @@ class DisponibilidadReportManager:
           modo            → 'farmacias'  = por código completo de farmacia
                             'ipress'     = consolida quitando Fxx del código
                             'red'        = consolida por RED (sin EESS)
-          excluir_codigos → lista de códigos_pre a excluir (exacto, ej: ['06502', '06502F01'])
+          excluir_codigos → lista de códigos_pre para filtrar (exacto, ej: ['06502', '06502F01'])
           mes_stock_fin   → mes de STOCK_FIN y PRECIO (ej: '202602'); None = último del rango
+          filtro_modo     → 'excluir' omite la lista; 'incluir' solo procesa la lista
         """
         try:
-            excluir  = set(c.strip() for c in (excluir_codigos or []))
+            filtro_modo = (filtro_modo or "excluir").strip().lower()
+            if filtro_modo not in {"excluir", "incluir"}:
+                filtro_modo = "excluir"
+            filtro_codigos = set(c.strip().upper() for c in (excluir_codigos or []) if c and c.strip())
             
             # ── Paso 1: Leer TFORMDET para saber periodos reales ────────────────
             self.log("▶ Iniciando Reporte de Disponibilidad...")
@@ -369,7 +374,8 @@ class DisponibilidadReportManager:
             
             self.log(f"  Período  : {periodos[0]} → {periodos[-1]}  ({len(periodos)} meses con datos)")
             self.log(f"  Stock fin: {mes_fin}")
-            self.log(f"  Excluir  : {excluir or '(ninguno)'}")
+            etiqueta_filtro = "Incluir" if filtro_modo == "incluir" else "Excluir"
+            self.log(f"  Filtro   : {etiqueta_filtro} {filtro_codigos or '(ninguno)'}")
 
             # ── Procesar registros ─────────────────────────────────────────────
             #  Estructura acumulada:
@@ -399,9 +405,13 @@ class DisponibilidadReportManager:
                 else:
                     cod_pre = cod_pre_orig
 
-                # Filtrar excluidos (chequeamos el código normalizado Y el original)
-                if cod_pre in excluir or cod_pre_orig in excluir:
-                    continue
+                # Filtrar por código normalizado y código original.
+                if filtro_codigos:
+                    esta_en_lista = cod_pre.upper() in filtro_codigos or cod_pre_orig.upper() in filtro_codigos
+                    if filtro_modo == "excluir" and esta_en_lista:
+                        continue
+                    if filtro_modo == "incluir" and not esta_en_lista:
+                        continue
 
                 # Verificar que el medicamento existe
                 if cod_med not in cat_med:
