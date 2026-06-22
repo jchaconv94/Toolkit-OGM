@@ -163,7 +163,7 @@ class SyncSismed2Tool(SismedTool):
         if self._initialized:
             return
 
-        self.sync_logs = ft.ListView(expand=True, spacing=5, auto_scroll=True, height=210)
+        self.sync_logs = ft.ListView(expand=True, spacing=5, auto_scroll=True)
 
         def _on_sync_log(msg):
             try:
@@ -216,7 +216,7 @@ class SyncSismed2Tool(SismedTool):
             val_int = "5"
 
         input_intervalo = ft.Dropdown(
-            label="Intervalo sugerido (minutos)",
+            label="Intervalo",
             options=opciones_intervalo,
             value=val_int,
             width=250,
@@ -301,17 +301,19 @@ class SyncSismed2Tool(SismedTool):
             cfg_set("sync2_expected_facility_code", code)
 
         input_expected_facility = ft.TextField(
-            label="Codigo IPRESS autorizado",
+            label="Codigo IPRESS",
             value=self.sync_manager.expected_facility_code,
             expand=True,
+            dense=True,
             border_radius=8,
             filled=True,
             border_color=ft.colors.OUTLINE_VARIANT,
             prefix_icon=ft.icons.VERIFIED_USER_ROUNDED,
+            content_padding=10,
+            text_size=14,
             read_only=True,
             password=True,
             can_reveal_password=False,
-            helper_text="Debe coincidir con la IPRESS autorizada para esta clave.",
             on_change=_on_expected_facility_change,
             suffix=ft.IconButton(
                 icon=ft.icons.LOCK_ROUNDED,
@@ -435,16 +437,28 @@ class SyncSismed2Tool(SismedTool):
                                 ]),
                                 ft.Divider(height=20, color=ft.colors.OUTLINE_VARIANT),
                                 ft.Container(content=input_sismed_dir, padding=ft.padding.only(top=5, bottom=0)),
-                                ft.Container(content=input_intervalo, padding=ft.padding.symmetric(vertical=8)),
+                                ft.Container(height=8),
+                                ft.Row([
+                                    ft.Container(
+                                        content=input_intervalo,
+                                        height=58,
+                                        width=250,
+                                    ),
+                                    ft.Container(
+                                        content=input_expected_facility,
+                                        height=58,
+                                        expand=True,
+                                    ),
+                                ], spacing=14, vertical_alignment=ft.CrossAxisAlignment.START),
                                 ft.Container(content=input_endpoint, padding=ft.padding.symmetric(vertical=8)),
                                 ft.Container(content=input_token, padding=ft.padding.symmetric(vertical=8)),
-                                ft.Container(content=input_expected_facility, padding=ft.padding.symmetric(vertical=8)),
                                 ft.Divider(height=20, color=ft.colors.OUTLINE_VARIANT),
                                 ft.Container(content=chk_auto_sync, padding=ft.padding.only(top=5)),
                             ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.START),
                         ),
                         ft.Container(
                             col={"sm": 12, "md": 12, "lg": 6, "xl": 7},
+                            height=540,
                             padding=30,
                             bgcolor=ft.colors.SURFACE_VARIANT,
                             border_radius=20,
@@ -468,9 +482,9 @@ class SyncSismed2Tool(SismedTool):
                                     bgcolor=ft.colors.BACKGROUND,
                                     border_radius=10,
                                     padding=15,
-                                    height=350,
+                                    expand=True,
                                 ),
-                            ]),
+                            ], expand=True),
                         ),
                     ], spacing=30),
                 ],
