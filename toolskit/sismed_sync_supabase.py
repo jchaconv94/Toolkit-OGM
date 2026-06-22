@@ -1,4 +1,5 @@
 import json
+import re
 import time
 
 import requests
@@ -16,6 +17,20 @@ class SismedSyncSupabaseManager(SismedSyncManager):
         self.modo_consolidado = False
         self.supabase_endpoint_url = ""
         self.installation_token = ""
+        self.expected_facility_code = ""
+
+    @staticmethod
+    def _normalize_code(value: str) -> str:
+        return re.sub(r"[^0-9A-Za-z]", "", value or "").upper()
+
+    @classmethod
+    def _facility_from_almcod(cls, almcod: str) -> str:
+        code = cls._normalize_code(almcod)
+        if len(code) >= 8 and code[5:6] == "F":
+            return code[:5]
+        if len(code) >= 6 and any(ch.isalpha() for ch in code[:6]):
+            return code[:6]
+        return code[:5] if len(code) >= 5 else code
 
     def _dedupe_records_for_supabase(self, payload_data: list[dict]) -> list[dict]:
         deduped: dict[tuple, dict] = {}
@@ -43,6 +58,39 @@ class SismedSyncSupabaseManager(SismedSyncManager):
 
     def _integration_url(self) -> str:
         return (self.supabase_endpoint_url or "").strip()
+
+    def _validate_payload_before_send(self, payload_data: list[dict]) -> tuple[bool, str]:
+        expected = self._normalize_code(self.expected_facility_code)
+        if not expected:
+            return False, (
+                "Sync SISMED 2.0 bloqueado: falta configurar el Código IPRESS autorizado "
+                "para validar que la ruta SISMED corresponda a esta instalación."
+            )
+
+        invalid: dict[str, int] = {}
+        detected_facilities: set[str] = set()
+        for item in payload_data:
+            almcod = self._normalize_code(str(item.get("almcod", "")))
+            if not almcod:
+                continue
+            facility = self._facility_from_almcod(almcod)
+            detected_facilities.add(facility)
+            if facility != expected:
+                invalid[almcod] = invalid.get(almcod, 0) + 1
+
+        if invalid:
+            examples = ", ".join(f"{code}({count})" for code, count in sorted(invalid.items())[:5])
+            extra = f" y {len(invalid) - 5} más" if len(invalid) > 5 else ""
+            detected = ", ".join(sorted(detected_facilities)) or "(sin detectar)"
+            return False, (
+                "Sync SISMED 2.0 bloqueado por posible ruta SISMED incorrecta. "
+                f"IPRESS autorizada: {expected}. IPRESS detectadas en ALMCOD: {detected}. "
+                f"ALMCOD no permitidos: {examples}{extra}. "
+                "Revise la ruta SISMED seleccionada o la clave de instalación."
+            )
+
+        self.log(f"  ✓ Validación IPRESS correcta: {expected}")
+        return True, ""
 
     def _request_headers(self) -> dict:
         headers = {

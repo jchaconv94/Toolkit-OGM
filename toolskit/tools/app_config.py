@@ -37,6 +37,7 @@ _DEFAULTS = {
     "sync2_modo_consolidado":  False,
     "sync2_endpoint_url":      "",
     "sync2_installation_token": "",
+    "sync2_expected_facility_code": "",
     "sync2_auto_start":        False,
     "sync_access_password_hash": "",
     "runtime_last_boot_status": "never-started",

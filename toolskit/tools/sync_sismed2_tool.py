@@ -9,6 +9,7 @@ Mantiene las mismas validaciones locales y reintentos de red del Sync SISMED act
 """
 
 import os
+import re
 from urllib.parse import urlparse
 
 import flet as ft
@@ -50,6 +51,9 @@ class SyncSismed2Tool(SismedTool):
         except Exception:
             return default
 
+    def _normalize_facility_code(self, value: str) -> str:
+        return re.sub(r"[^0-9A-Za-z]", "", value or "").upper()
+
     def _record_autostart_result(self, status: str, error: str | None = None):
         self.last_startup_status = status
         self.last_startup_error = error
@@ -65,6 +69,9 @@ class SyncSismed2Tool(SismedTool):
         cfg_set("sync2_modo_consolidado", False)
         self.sync_manager.supabase_endpoint_url = (cfg_get("sync2_endpoint_url") or "").strip()
         self.sync_manager.installation_token = (cfg_get("sync2_installation_token") or "").strip()
+        self.sync_manager.expected_facility_code = self._normalize_facility_code(
+            cfg_get("sync2_expected_facility_code") or ""
+        )
 
     def _validate_sync_settings(self):
         if not self.sync_manager:
@@ -72,6 +79,7 @@ class SyncSismed2Tool(SismedTool):
 
         endpoint = (self.sync_manager.supabase_endpoint_url or "").strip()
         token = (self.sync_manager.installation_token or "").strip()
+        expected_facility = self._normalize_facility_code(getattr(self.sync_manager, "expected_facility_code", ""))
         base_dir = (self.sync_manager.base_dir or "").strip()
 
         if not endpoint:
@@ -81,6 +89,8 @@ class SyncSismed2Tool(SismedTool):
             return "invalid-endpoint", "No se puede iniciar Sync SISMED 2.0: la URL API/Edge Function no es válida."
         if not token:
             return "missing-installation-token", "No se puede iniciar Sync SISMED 2.0: falta la clave de instalación."
+        if not expected_facility:
+            return "missing-expected-facility", "No se puede iniciar Sync SISMED 2.0: falta el Codigo IPRESS autorizado."
         if not base_dir:
             return "missing-base-dir", "No se puede iniciar Sync SISMED 2.0: falta el directorio SISMED."
         if not os.path.isdir(base_dir):
@@ -282,6 +292,35 @@ class SyncSismed2Tool(SismedTool):
             ),
         )
 
+        def _on_expected_facility_change(e):
+            code = self._normalize_facility_code(e.control.value)
+            if e.control.value != code:
+                e.control.value = code
+                e.control.update()
+            self.sync_manager.expected_facility_code = code
+            cfg_set("sync2_expected_facility_code", code)
+
+        input_expected_facility = ft.TextField(
+            label="Codigo IPRESS autorizado",
+            value=self.sync_manager.expected_facility_code,
+            expand=True,
+            border_radius=8,
+            filled=True,
+            border_color=ft.colors.OUTLINE_VARIANT,
+            prefix_icon=ft.icons.VERIFIED_USER_ROUNDED,
+            read_only=True,
+            password=True,
+            can_reveal_password=False,
+            helper_text="Debe coincidir con la IPRESS autorizada para esta clave.",
+            on_change=_on_expected_facility_change,
+            suffix=ft.IconButton(
+                icon=ft.icons.LOCK_ROUNDED,
+                tooltip="Desbloquear codigo IPRESS para editar",
+                icon_color=ft.colors.ON_SURFACE_VARIANT,
+                on_click=lambda _: _toggle_protected(input_expected_facility, ft.colors.TEAL_500),
+            ),
+        )
+
         def _on_sismed_dir(e: ft.FilePickerResultEvent):
             if e.path:
                 input_sismed_dir.value = e.path
@@ -324,11 +363,13 @@ class SyncSismed2Tool(SismedTool):
                 self.sync_manager.modo_consolidado = False
                 self.sync_manager.supabase_endpoint_url = input_endpoint.value.strip()
                 self.sync_manager.installation_token = input_token.value.strip()
+                self.sync_manager.expected_facility_code = self._normalize_facility_code(input_expected_facility.value)
                 self.sync_manager.base_dir = input_sismed_dir.value.strip()
                 cfg_set("sync2_interval_minutes", self.sync_manager.intervalo_minutos)
                 cfg_set("sync2_modo_consolidado", False)
                 cfg_set("sync2_endpoint_url", self.sync_manager.supabase_endpoint_url)
                 cfg_set("sync2_installation_token", self.sync_manager.installation_token)
+                cfg_set("sync2_expected_facility_code", self.sync_manager.expected_facility_code)
                 cfg_set("sync2_sismed_dir", self.sync_manager.base_dir)
                 cfg_set("sync2_auto_start", bool(chk_auto_sync.value))
 
@@ -397,6 +438,7 @@ class SyncSismed2Tool(SismedTool):
                                 ft.Container(content=input_intervalo, padding=ft.padding.symmetric(vertical=8)),
                                 ft.Container(content=input_endpoint, padding=ft.padding.symmetric(vertical=8)),
                                 ft.Container(content=input_token, padding=ft.padding.symmetric(vertical=8)),
+                                ft.Container(content=input_expected_facility, padding=ft.padding.symmetric(vertical=8)),
                                 ft.Divider(height=20, color=ft.colors.OUTLINE_VARIANT),
                                 ft.Container(content=chk_auto_sync, padding=ft.padding.only(top=5)),
                             ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.START),

@@ -114,6 +114,9 @@ class SismedSyncManager:
     def _success_message(self, response: requests.Response, record_count: int) -> str:
         return f"Stock detallado sincronizado ({response.text.strip()})."
 
+    def _validate_payload_before_send(self, payload_data: list[dict]) -> tuple[bool, str]:
+        return True, ""
+
     def _destination_user_message(self, error_kind: str) -> str:
         if error_kind == "dns-error":
             return f"No se pudo resolver el servidor de {self.destination_name}. Revisa DNS, proxy o conectividad."
@@ -682,6 +685,18 @@ class SismedSyncManager:
                     )
                     return
                     
+                payload_ok, payload_message = self._validate_payload_before_send(payload_data)
+                if not payload_ok:
+                    message = payload_message or "La validacion local del stock impidio el envio."
+                    self.log(f"[{time.strftime('%H:%M:%S')}] â›” {message}")
+                    self._record_cycle_result(
+                        "payload-validation",
+                        message,
+                        error_kind="payload-validation",
+                        records=len(payload_data),
+                    )
+                    return
+
                 self._stamp_payload_host_time(payload_data)
                 self.log(f"[{time.strftime('%H:%M:%S')}] Subiendo a la nube ({self.destination_label})...")
                 
