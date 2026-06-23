@@ -468,8 +468,17 @@ class SyncSismed2Tool(SismedTool):
                                 ft.Container(content=input_endpoint, padding=ft.padding.symmetric(vertical=8)),
                                 ft.Container(content=input_token, padding=ft.padding.symmetric(vertical=8)),
                                 ft.Divider(height=20, color=ft.colors.OUTLINE_VARIANT),
-                                ft.Container(content=chk_omit_zero_stock, padding=ft.padding.only(top=5)),
-                                ft.Container(content=chk_auto_sync, padding=ft.padding.only(top=5)),
+                                ft.Container(
+                                    content=ft.Row(
+                                        [
+                                            chk_omit_zero_stock,
+                                            chk_auto_sync,
+                                        ],
+                                        spacing=34,
+                                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                    ),
+                                    padding=ft.padding.only(top=5),
+                                ),
                             ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.START),
                         ),
                         ft.Container(
