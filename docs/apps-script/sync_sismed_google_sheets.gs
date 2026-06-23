@@ -25,16 +25,64 @@ function splitReportedAlmcods(value) {
     .filter(function(item) { return item; });
 }
 
-function findExistingSheetByCode(ss, codigoBase) {
+function isSheetForCode(name, codigoBase) {
   var suffix = "-" + codigoBase;
-  var sheets = ss.getSheets();
-  for (var i = 0; i < sheets.length; i++) {
-    var name = sheets[i].getName();
-    if (name === codigoBase || name.slice(-suffix.length) === suffix) {
-      return sheets[i];
+  return name === codigoBase || name.slice(-suffix.length) === suffix;
+}
+
+function isGenericSheetName(name, codigoBase) {
+  var suffix = "-" + codigoBase;
+  var baseName = name === codigoBase ? name : name.slice(0, -suffix.length);
+  var upper = baseName
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+
+  var genericNames = [
+    "ALM SISMED",
+    "FAR SISMED",
+    "FARM SISMED",
+    "FAR DONACIONES",
+    "FARMACIA SISMED"
+  ];
+
+  for (var i = 0; i < genericNames.length; i++) {
+    if (upper === genericNames[i] || upper.indexOf(genericNames[i]) >= 0) {
+      return true;
     }
   }
-  return null;
+
+  return false;
+}
+
+function findExistingSheetByCode(ss, codigoBase, generatedName) {
+  var sheets = ss.getSheets();
+  var exact = null;
+  var firstMatch = null;
+  var firstNonGeneric = null;
+
+  for (var i = 0; i < sheets.length; i++) {
+    var name = sheets[i].getName();
+    if (!isSheetForCode(name, codigoBase)) {
+      continue;
+    }
+
+    if (!firstMatch) {
+      firstMatch = sheets[i];
+    }
+
+    if (name === generatedName) {
+      exact = sheets[i];
+    }
+
+    if (!firstNonGeneric && !isGenericSheetName(name, codigoBase)) {
+      firstNonGeneric = sheets[i];
+    }
+  }
+
+  // Si ya existe una hoja con el mismo codigo IPRESS y un nombre mas descriptivo,
+  // se reutiliza para evitar duplicados como "ALM SISMED-030S05".
+  return firstNonGeneric || exact || firstMatch;
 }
 
 function doPost(e) {
@@ -99,10 +147,7 @@ function doPost(e) {
 
       if (!nombreHoja.trim()) nombreHoja = codigoBase;
 
-      var sheet = ss.getSheetByName(nombreHoja);
-      if (!sheet && registros.length === 0) {
-        sheet = findExistingSheetByCode(ss, codigoBase);
-      }
+      var sheet = findExistingSheetByCode(ss, codigoBase, nombreHoja);
 
       if (!sheet) {
         if (registros.length === 0) {
@@ -153,7 +198,7 @@ function doPost(e) {
       }
 
       totalRegistros += rows.length;
-      hojasActualizadas.push(nombreHoja + "(" + rows.length + ")");
+      hojasActualizadas.push(sheet.getName() + "(" + rows.length + ")");
     }
 
     var msg = "OK:" + totalRegistros + " registros en hojas: " + hojasActualizadas.join(", ");
