@@ -66,6 +66,7 @@ class SyncSismedTool(SismedTool):
         self.sync_manager.base_dir = (cfg_get("sync_sismed_dir") or r"C:\SISMEDV2").strip()
         self.sync_manager.intervalo_minutos = max(1, self._cfg_int("sync_interval_minutes", 5))
         self.sync_manager.modo_consolidado = self._cfg_bool("sync_modo_consolidado", False)
+        self.sync_manager.omitir_stock_cero = self._cfg_bool("sync_omit_zero_stock", True)
         self.sync_manager.apps_script_url = (cfg_get("sync_apps_script_url") or "").strip()
 
     def _validate_sync_settings(self):
@@ -225,6 +226,18 @@ class SyncSismedTool(SismedTool):
             )
         )
 
+        chk_omit_zero_stock = ft.Checkbox(
+            label="Omitir lotes con stock 0",
+            value=bool(self.sync_manager.omitir_stock_cero),
+            fill_color={ft.ControlState.SELECTED: ft.colors.CYAN_500, ft.ControlState.DEFAULT: ft.colors.TRANSPARENT},
+            check_color=ft.colors.WHITE,
+            label_style=ft.TextStyle(size=13, color=ft.colors.ON_SURFACE),
+            on_change=lambda e: (
+                setattr(self.sync_manager, "omitir_stock_cero", bool(e.control.value)),
+                cfg_set("sync_omit_zero_stock", bool(e.control.value))
+            )
+        )
+
         opciones_intervalo = [ft.dropdown.Option(str(i)) for i in range(5, 65, 5)]
         val_int = str(self.sync_manager.intervalo_minutos)
         if val_int not in [opt.key for opt in opciones_intervalo]:
@@ -320,10 +333,12 @@ class SyncSismedTool(SismedTool):
                     self.sync_manager.intervalo_minutos = 5
                 
                 self.sync_manager.modo_consolidado = switch_consolidado.value
+                self.sync_manager.omitir_stock_cero = bool(chk_omit_zero_stock.value)
                 self.sync_manager.apps_script_url = input_apps_script.value.strip()
                 self.sync_manager.base_dir = input_sismed_dir.value.strip()
                 cfg_set("sync_interval_minutes", self.sync_manager.intervalo_minutos)
                 cfg_set("sync_modo_consolidado", bool(self.sync_manager.modo_consolidado))
+                cfg_set("sync_omit_zero_stock", bool(self.sync_manager.omitir_stock_cero))
                 cfg_set("sync_apps_script_url", self.sync_manager.apps_script_url)
                 cfg_set("sync_sismed_dir", self.sync_manager.base_dir)
                 cfg_set("sync_auto_start", bool(chk_auto_sync.value))
@@ -407,6 +422,7 @@ class SyncSismedTool(SismedTool):
                             ft.Divider(height=20, color=ft.colors.OUTLINE_VARIANT),
                             ft.Container(content=input_sismed_dir, padding=ft.padding.only(top=5, bottom=0)),
                             ft.Container(content=switch_consolidado, padding=ft.padding.only(bottom=5)),
+                            ft.Container(content=chk_omit_zero_stock, padding=ft.padding.only(bottom=5)),
                             ft.Container(content=input_intervalo, padding=ft.padding.symmetric(vertical=8)),
                             ft.Container(content=input_apps_script, padding=ft.padding.symmetric(vertical=8)),
                             ft.Divider(height=20, color=ft.colors.OUTLINE_VARIANT),

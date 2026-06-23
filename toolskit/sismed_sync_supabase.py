@@ -1,5 +1,4 @@
 import json
-import re
 import time
 
 import requests
@@ -18,19 +17,6 @@ class SismedSyncSupabaseManager(SismedSyncManager):
         self.supabase_endpoint_url = ""
         self.installation_token = ""
         self.expected_facility_code = ""
-
-    @staticmethod
-    def _normalize_code(value: str) -> str:
-        return re.sub(r"[^0-9A-Za-z]", "", value or "").upper()
-
-    @classmethod
-    def _facility_from_almcod(cls, almcod: str) -> str:
-        code = cls._normalize_code(almcod)
-        if len(code) >= 8 and code[5:6] == "F":
-            return code[:5]
-        if len(code) >= 6 and any(ch.isalpha() for ch in code[:6]):
-            return code[:6]
-        return code[:5] if len(code) >= 5 else code
 
     def _dedupe_records_for_supabase(self, payload_data: list[dict]) -> list[dict]:
         deduped: dict[tuple, dict] = {}
@@ -69,10 +55,14 @@ class SismedSyncSupabaseManager(SismedSyncManager):
 
         invalid: dict[str, int] = {}
         detected_facilities: set[str] = set()
-        for item in payload_data:
-            almcod = self._normalize_code(str(item.get("almcod", "")))
-            if not almcod:
-                continue
+        almcods_to_validate = set(self._last_reported_almcods)
+        almcods_to_validate.update(
+            self._normalize_code(str(item.get("almcod", "")))
+            for item in payload_data
+            if str(item.get("almcod", "")).strip()
+        )
+
+        for almcod in sorted(almcods_to_validate):
             facility = self._facility_from_almcod(almcod)
             detected_facilities.add(facility)
             if facility != expected:
@@ -113,6 +103,11 @@ class SismedSyncSupabaseManager(SismedSyncManager):
             "sent_at_host": fecha_equipo,
             "sent_at_epoch": int(time.time()),
             "mode": "consolidado" if self.modo_consolidado else "detallado",
+            "omit_zero_stock": bool(self.omitir_stock_cero),
+            "source_record_count": self._last_source_record_count,
+            "zero_stock_omitted": self._last_zero_stock_omitted,
+            "reported_almcods": self._last_reported_almcods,
+            "reported_facility_codes": self._last_reported_facility_codes,
             "record_count": len(payload_data),
             "fecha_equipo": fecha_equipo,
             "records": payload_data,

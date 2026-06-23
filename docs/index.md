@@ -8,6 +8,26 @@ async function hashToken(token: string) {
   return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function normalizeCode(value: string | null | undefined) {
+  return (value || '').toString().replace(/[^0-9A-Za-z]/g, '').toUpperCase();
+}
+
+function facilityCodeFromAlmcod(almcod: string) {
+  const code = normalizeCode(almcod);
+  if (code.length >= 8 && code.substring(5, 6) === 'F') {
+    return code.substring(0, 5);
+  }
+  if (code.length >= 6 && /[A-Z]/.test(code.substring(0, 6))) {
+    return code.substring(0, 6);
+  }
+  return code.length >= 5 ? code.substring(0, 5) : code;
+}
+
+function normalizeAlmcodList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => normalizeCode(String(item))).filter(Boolean);
+}
+
 serve(async (req) => {
   // Configurar CORS para permitir que clientes e invocaciones externas operen
   const corsHeaders = {
@@ -43,7 +63,15 @@ serve(async (req) => {
     }
 
     const payload = await req.json();
-    const { mode, record_count, records, toolkit_version, fecha_equipo } = payload;
+    const {
+      mode,
+      record_count,
+      records,
+      toolkit_version,
+      fecha_equipo,
+      reported_almcods,
+      omit_zero_stock,
+    } = payload;
 
     // Validar que los records sean un array y que coincida el record_count reportado
     if (!Array.isArray(records)) {
@@ -99,20 +127,28 @@ serve(async (req) => {
 
     // 4. Inferir instalación y extraer reglas de permitidos
     const facilityCode = installation.facility_code;
-    const allowedAlmcods = installation.allowed_almcods || [];
+    const allowedAlmcods = (installation.allowed_almcods || []).map((code: string) => normalizeCode(code));
 
     const incomingAlmcods = new Set<string>();
+    for (const reportedAlmcod of normalizeAlmcodList(reported_almcods)) {
+      incomingAlmcods.add(reportedAlmcod);
+    }
+
     let cleanedRecords = [];
     
     // Validar, formatear e inyectar el facility_code forzado en los registros entrantes
     for (const record of records) {
-      const recAlmcod = record.almcod;
+      const recAlmcod = normalizeCode(record.almcod);
       if (!recAlmcod) continue;
       
       incomingAlmcods.add(recAlmcod);
+
+      if (omit_zero_stock && Number(record.saldo || 0) === 0) {
+        continue;
+      }
       
       cleanedRecords.push({
-        facility_code: facilityCode || recAlmcod.substring(0, 5),
+        facility_code: facilityCode || facilityCodeFromAlmcod(recAlmcod),
         almcod: recAlmcod,
         desc_alm: record.desc_alm,
         medcod: record.medcod,

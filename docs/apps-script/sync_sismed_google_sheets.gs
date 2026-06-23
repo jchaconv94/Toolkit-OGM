@@ -18,11 +18,34 @@ function facilityCodeFromAlmcod(almcod) {
   return code.length >= 5 ? code.substring(0, 5) : code;
 }
 
+function splitReportedAlmcods(value) {
+  if (!value) return [];
+  return value.toString().split(",")
+    .map(function(item) { return normalizeAlmcod(item); })
+    .filter(function(item) { return item; });
+}
+
+function findExistingSheetByCode(ss, codigoBase) {
+  var suffix = "-" + codigoBase;
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    var name = sheets[i].getName();
+    if (name === codigoBase || name.slice(-suffix.length) === suffix) {
+      return sheets[i];
+    }
+  }
+  return null;
+}
+
 function doPost(e) {
   try {
     var data = JSON.parse(e.postData.contents);
 
-    if (!data || data.length === 0) {
+    var reportedAlmcods = splitReportedAlmcods(
+      e && e.parameter ? e.parameter.reported_almcods : ""
+    );
+
+    if (!data || (data.length === 0 && reportedAlmcods.length === 0)) {
       return ContentService.createTextOutput("OK:0 registros (payload vacio).")
         .setMimeType(ContentService.MimeType.TEXT);
     }
@@ -53,13 +76,20 @@ function doPost(e) {
       grupos[alm_base].push(item);
     });
 
+    reportedAlmcods.forEach(function(almcod) {
+      var alm_base = facilityCodeFromAlmcod(almcod);
+      if (alm_base && !grupos[alm_base]) grupos[alm_base] = [];
+    });
+
     var totalRegistros = 0;
     var hojasActualizadas = [];
 
     for (var codigoBase in grupos) {
       var registros = grupos[codigoBase];
 
-      var descAlm = (registros[0].desc_alm || codigoBase).toString().trim();
+      var descAlm = (registros.length > 0 ? (registros[0].desc_alm || codigoBase) : codigoBase)
+        .toString()
+        .trim();
       descAlm = descAlm.replace(" (CONSOLIDADO)", "");
 
       var nombreHoja = (descAlm + "-" + codigoBase)
@@ -70,7 +100,15 @@ function doPost(e) {
       if (!nombreHoja.trim()) nombreHoja = codigoBase;
 
       var sheet = ss.getSheetByName(nombreHoja);
+      if (!sheet && registros.length === 0) {
+        sheet = findExistingSheetByCode(ss, codigoBase);
+      }
+
       if (!sheet) {
+        if (registros.length === 0) {
+          hojasActualizadas.push(codigoBase + "(0 sin hoja previa)");
+          continue;
+        }
         sheet = ss.insertSheet(nombreHoja);
       }
 

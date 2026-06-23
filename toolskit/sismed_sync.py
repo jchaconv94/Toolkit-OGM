@@ -46,9 +46,14 @@ class SismedSyncManager:
         self.apps_script_url = "https://script.google.com/macros/s/AKfycbyAtEQj5huUcEsXHLiMIe2-wzwFtlvYckIAabQQr2Z_g6Aa3o_93DaXaLgmfeYZm5pqCw/exec"
         self.base_dir = r"C:\SISMEDV2"
         self.modo_consolidado = False
+        self.omitir_stock_cero = True
         self.intervalo_minutos = 5
         self.destination_name = "Google"
         self.destination_label = "Google Sheets"
+        self._last_reported_almcods: list[str] = []
+        self._last_reported_facility_codes: list[str] = []
+        self._last_source_record_count = 0
+        self._last_zero_stock_omitted = 0
 
     def _set_run_state(self, state: str, detail: str = ""):
         with self._state_lock:
@@ -126,6 +131,16 @@ class SismedSyncManager:
     def _request_headers(self) -> dict:
         return {'Content-Type': 'application/json'}
 
+    def _request_params(self) -> dict:
+        params = {}
+        if self.omitir_stock_cero:
+            params["omit_zero_stock"] = "1"
+        if self._last_reported_almcods:
+            params["reported_almcods"] = ",".join(self._last_reported_almcods)
+        if self._last_reported_facility_codes:
+            params["reported_facility_codes"] = ",".join(self._last_reported_facility_codes)
+        return params
+
     def _request_body(self, payload_data: list[dict]) -> str:
         return json.dumps(payload_data)
 
@@ -147,6 +162,42 @@ class SismedSyncManager:
 
     def _validate_payload_before_send(self, payload_data: list[dict]) -> tuple[bool, str]:
         return True, ""
+
+    def _set_reported_scope(self, payload_data: list[dict]):
+        almcods = sorted({
+            self._normalize_code(str(item.get("almcod", "")))
+            for item in payload_data
+            if str(item.get("almcod", "")).strip()
+        })
+        self._last_reported_almcods = almcods
+        self._last_reported_facility_codes = sorted({
+            self._facility_from_almcod(almcod)
+            for almcod in almcods
+            if almcod
+        })
+        self._last_source_record_count = len(payload_data)
+        self._last_zero_stock_omitted = 0
+
+    @staticmethod
+    def _is_zero_stock_item(item: dict) -> bool:
+        try:
+            return float(item.get("saldo") or 0) == 0.0
+        except (TypeError, ValueError):
+            return False
+
+    def _filter_zero_stock_records(self, payload_data: list[dict], stage: str) -> list[dict]:
+        if not self.omitir_stock_cero:
+            return payload_data
+
+        filtered = [item for item in payload_data if not self._is_zero_stock_item(item)]
+        omitted = len(payload_data) - len(filtered)
+        if omitted:
+            self._last_zero_stock_omitted += omitted
+            self.log(f"  ℹ Lotes con stock 0 omitidos ({stage}): {omitted}")
+        return filtered
+
+    def _can_send_empty_payload_for_clear(self) -> bool:
+        return bool(self.omitir_stock_cero and self._last_reported_almcods)
 
     def _destination_user_message(self, error_kind: str) -> str:
         if error_kind == "dns-error":
@@ -221,6 +272,7 @@ class SismedSyncManager:
                     self._integration_url(),
                     data=self._request_body(payload_data),
                     headers=self._request_headers(),
+                    params=self._request_params() or None,
                     timeout=(10, 300)
                 )
                 return response, "", "", ""
@@ -652,6 +704,8 @@ class SismedSyncManager:
                 self._log_payload_almcods(payload_data)
                 if registros_omitidos:
                     self.log(f"  ℹ Registros omitidos por claves incompletas: {registros_omitidos}")
+                self._set_reported_scope(payload_data)
+                payload_data = self._filter_zero_stock_records(payload_data, "lectura DBF")
 
                 dbf_metrics = [
                     medicam_metrics,
@@ -699,19 +753,26 @@ class SismedSyncManager:
 
                     payload_data = list(consolidado.values())
                     self.log(f"  ✓ Stock consolidado: {len(payload_data)} lotes únicos.")
+                    payload_data = self._filter_zero_stock_records(payload_data, "consolidación")
                 else:
                     self.log(f"  ℹ Modo DETALLADO activo (farmacias por separado).")
 
                 # 7. Enviar a Google Apps Script (Envío Unificado)
                 if not payload_data:
-                    message = "No hay stock para enviar. El archivo DBF analizado está vacío o sin precios."
-                    self.log(f"[{time.strftime('%H:%M:%S')}] ⚠ {message}")
-                    self._record_cycle_result(
-                        "no-data",
-                        message,
-                        records=0,
-                    )
-                    return
+                    if self._can_send_empty_payload_for_clear():
+                        self.log(
+                            "  ℹ No hay lotes con stock distinto de cero; se enviará señal de limpieza "
+                            "para los ALMCOD reportados."
+                        )
+                    else:
+                        message = "No hay stock para enviar. El archivo DBF analizado está vacío o sin precios."
+                        self.log(f"[{time.strftime('%H:%M:%S')}] ⚠ {message}")
+                        self._record_cycle_result(
+                            "no-data",
+                            message,
+                            records=0,
+                        )
+                        return
                     
                 payload_ok, payload_message = self._validate_payload_before_send(payload_data)
                 if not payload_ok:
@@ -767,7 +828,11 @@ class SismedSyncManager:
                     self.log(f"[{time.strftime('%H:%M:%S')}] ✓ ¡Éxito! {success_message}")
                     self._record_cycle_result(
                         "success",
-                        f"{success_message} Registros={len(payload_data)}; omitidos={registros_omitidos}; problemas_dbf={stock_metrics.problem_records}",
+                        (
+                            f"{success_message} Registros={len(payload_data)}; "
+                            f"stock_cero_omitidos={self._last_zero_stock_omitted}; "
+                            f"omitidos={registros_omitidos}; problemas_dbf={stock_metrics.problem_records}"
+                        ),
                         http_status=response.status_code,
                         records=len(payload_data),
                         success=True,
