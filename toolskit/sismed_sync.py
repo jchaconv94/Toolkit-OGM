@@ -93,6 +93,26 @@ class SismedSyncManager:
     def _host_timestamp(self) -> str:
         return time.strftime('%d/%m/%Y %H:%M:%S')
 
+    @staticmethod
+    def _normalize_code(value: str) -> str:
+        return re.sub(r"[^0-9A-Za-z]", "", value or "").upper()
+
+    @classmethod
+    def _facility_from_almcod(cls, almcod: str) -> str:
+        code = cls._normalize_code(almcod)
+        if len(code) >= 8 and code[5:6] == "F":
+            return code[:5]
+        if len(code) >= 6 and any(ch.isalpha() for ch in code[:6]):
+            return code[:6]
+        return code[:5] if len(code) >= 5 else code
+
+    @classmethod
+    def _consolidated_almcod(cls, facility_code: str) -> str:
+        code = cls._normalize_code(facility_code)
+        if len(code) == 6 and any(ch.isalpha() for ch in code):
+            return f"{code}01"
+        return f"{code}F01" if code else ""
+
     def _stamp_payload_host_time(self, payload_data: list[dict]):
         fecha_equipo = self._host_timestamp()
         for item in payload_data:
@@ -342,19 +362,12 @@ class SismedSyncManager:
                         continue
                     counts[almcod] = counts.get(almcod, 0) + 1
 
-                def guess_facility_code(almcod: str) -> str:
-                    if len(almcod) >= 8 and almcod[5:6].upper() == "F":
-                        return almcod[:5]
-                    if len(almcod) >= 6 and any(ch.isalpha() for ch in almcod[:6]):
-                        return almcod[:6]
-                    return almcod[:5] if len(almcod) >= 5 else almcod
-
                 rows = [
                     {
                         "almcod": almcod,
                         "desc_alm": almacen_names.get(almcod, ""),
                         "records": count,
-                        "facility_code": guess_facility_code(almcod),
+                        "facility_code": self._facility_from_almcod(almcod),
                     }
                     for almcod, count in sorted(counts.items())
                 ]
@@ -539,13 +552,13 @@ class SismedSyncManager:
                         nombre = cat_almacen[alm_cod]
                         genericos = ['FAR SISMED', 'FAR DONACIONES', 'ALM SISMED', 'FARM SISMED']
                         if any(g in nombre.upper() for g in genericos):
-                            for longitud in [8, 5]:
+                            for longitud in [8, 6, 5]:
                                 if len(alm_cod) > longitud:
                                     prefijo = alm_cod[:longitud]
                                     if prefijo in cat_almacen:
                                         return cat_almacen[prefijo]
                         return nombre
-                    for longitud in [8, 10, 5]:
+                    for longitud in [10, 8, 6, 5]:
                         if len(alm_cod) >= longitud:
                             prefijo = alm_cod[:longitud]
                             if prefijo in cat_almacen:
@@ -671,13 +684,13 @@ class SismedSyncManager:
                     self.log(f"  Σ Consolidando stock de sub-almacenes...")
                     consolidado = {}
                     for item in payload_data:
-                        alm_base = item["almcod"][:5]
+                        alm_base = self._facility_from_almcod(item["almcod"])
                         group_key = (alm_base, item["medcod"], item["lote"], item["fecha"], item["ffinan"], item["tipsum"])
                         
                         if group_key not in consolidado:
                             consolidado[group_key] = item.copy()
                             nombre_base = buscar_establecimiento(alm_base)
-                            consolidado[group_key]["almcod"] = alm_base + "F01"
+                            consolidado[group_key]["almcod"] = self._consolidated_almcod(alm_base)
                             consolidado[group_key]["desc_alm"] = f"{nombre_base} (CONSOLIDADO)"
                         else:
                             consolidado[group_key]["saldo"] += item["saldo"]
