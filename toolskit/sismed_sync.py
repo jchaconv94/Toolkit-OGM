@@ -45,7 +45,7 @@ class SismedSyncManager:
         # Configuraciones por defecto
         self.apps_script_url = "https://script.google.com/macros/s/AKfycbyAtEQj5huUcEsXHLiMIe2-wzwFtlvYckIAabQQr2Z_g6Aa3o_93DaXaLgmfeYZm5pqCw/exec"
         self.base_dir = r"C:\SISMEDV2"
-        self.modo_consolidado = True
+        self.modo_consolidado = False
         self.intervalo_minutos = 5
         self.destination_name = "Google"
         self.destination_label = "Google Sheets"
