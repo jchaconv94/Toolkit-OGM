@@ -1,5 +1,6 @@
 import requests
 import json
+import re
 import time
 import os
 import sys
@@ -113,6 +114,16 @@ class SismedSyncManager:
 
     def _success_message(self, response: requests.Response, record_count: int) -> str:
         return f"Stock detallado sincronizado ({response.text.strip()})."
+
+    def _acknowledged_record_count(self, response: requests.Response) -> int | None:
+        text = (response.text or "").strip()
+        match = re.search(r"\bOK\s*:\s*(\d+)", text, flags=re.IGNORECASE)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
 
     def _validate_payload_before_send(self, payload_data: list[dict]) -> tuple[bool, str]:
         return True, ""
@@ -653,6 +664,10 @@ class SismedSyncManager:
 
                 # 6. Consolidación (Si está activado)
                 if self.modo_consolidado:
+                    self.log(
+                        "  ⚠ Modo CONSOLIDADO activo: se sumarán farmacias/sub-almacenes "
+                        "y el total de filas enviadas puede ser menor al stock detallado."
+                    )
                     self.log(f"  Σ Consolidando stock de sub-almacenes...")
                     consolidado = {}
                     for item in payload_data:
@@ -717,6 +732,24 @@ class SismedSyncManager:
                     return
 
                 if self._is_success_response(response):
+                    acknowledged_count = self._acknowledged_record_count(response)
+                    if acknowledged_count is not None and acknowledged_count != len(payload_data):
+                        message = (
+                            f"Envío parcial detectado: {self.destination_name} confirmó "
+                            f"{acknowledged_count} registros, pero Toolkit envió {len(payload_data)}. "
+                            "No se marcará como éxito hasta que ambos conteos coincidan."
+                        )
+                        self.log(f"[{time.strftime('%H:%M:%S')}] ⚠ {message}")
+                        self.log(f"  Respuesta del servidor: {(response.text or '').strip()[:300]}")
+                        self._record_cycle_result(
+                            "partial-upload",
+                            message,
+                            error_kind="partial-upload",
+                            http_status=response.status_code,
+                            records=len(payload_data),
+                        )
+                        return
+
                     success_message = self._success_message(response, len(payload_data))
                     self.log(f"[{time.strftime('%H:%M:%S')}] ✓ ¡Éxito! {success_message}")
                     self._record_cycle_result(

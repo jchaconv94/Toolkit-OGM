@@ -214,7 +214,7 @@ class SyncSismedTool(SismedTool):
         )
 
         switch_consolidado = ft.Checkbox(
-            label="Sumar stock de farmacias",
+            label="Consolidar farmacias (reduce filas)",
             value=self.sync_manager.modo_consolidado,
             fill_color={ft.ControlState.SELECTED: ft.colors.CYAN_500, ft.ControlState.DEFAULT: ft.colors.TRANSPARENT},
             check_color=ft.colors.WHITE,

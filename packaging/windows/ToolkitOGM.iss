@@ -54,9 +54,9 @@ FinishedLabelNoIcons={#MyAppName} se instaló o actualizó correctamente.
 [Tasks]
 Name: "desktopicon"; Description: "Crear acceso directo en el escritorio"; GroupDescription: "Accesos directos:"; Flags: unchecked
 
-[InstallDelete]
-Type: files; Name: "{app}\{#MyAppExeName}"
-Type: filesandordirs; Name: "{app}\_internal"
+; No borrar archivos criticos antes de copiar la nueva version.
+; Inno Setup sobrescribe en sitio; si una actualizacion se interrumpe,
+; borrar primero el EXE/_internal puede dejar la app "desaparecida".
 
 [Files]
 Source: "{#MyBuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
