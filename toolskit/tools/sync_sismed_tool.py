@@ -215,7 +215,7 @@ class SyncSismedTool(SismedTool):
         )
 
         switch_consolidado = ft.Checkbox(
-            label="Consolidar farmacias (reduce filas)",
+            label="Consolidar farmacias",
             value=self.sync_manager.modo_consolidado,
             fill_color={ft.ControlState.SELECTED: ft.colors.CYAN_500, ft.ControlState.DEFAULT: ft.colors.TRANSPARENT},
             check_color=ft.colors.WHITE,
@@ -421,8 +421,17 @@ class SyncSismedTool(SismedTool):
                             ]),
                             ft.Divider(height=20, color=ft.colors.OUTLINE_VARIANT),
                             ft.Container(content=input_sismed_dir, padding=ft.padding.only(top=5, bottom=0)),
-                            ft.Container(content=switch_consolidado, padding=ft.padding.only(bottom=5)),
-                            ft.Container(content=chk_omit_zero_stock, padding=ft.padding.only(bottom=5)),
+                            ft.Container(
+                                content=ft.Row(
+                                    [
+                                        switch_consolidado,
+                                        chk_omit_zero_stock,
+                                    ],
+                                    spacing=34,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                ),
+                                padding=ft.padding.only(bottom=5),
+                            ),
                             ft.Container(content=input_intervalo, padding=ft.padding.symmetric(vertical=8)),
                             ft.Container(content=input_apps_script, padding=ft.padding.symmetric(vertical=8)),
                             ft.Divider(height=20, color=ft.colors.OUTLINE_VARIANT),
