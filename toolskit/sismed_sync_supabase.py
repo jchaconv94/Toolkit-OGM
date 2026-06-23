@@ -110,6 +110,7 @@ class SismedSyncSupabaseManager(SismedSyncManager):
             "reported_facility_codes": self._last_reported_facility_codes,
             "record_count": len(payload_data),
             "fecha_equipo": fecha_equipo,
+            "sismed_path": (self.base_dir or "").strip(),
             "records": payload_data,
         }, ensure_ascii=False)
 

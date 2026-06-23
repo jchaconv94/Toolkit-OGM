@@ -71,6 +71,7 @@ serve(async (req) => {
       fecha_equipo,
       reported_almcods,
       omit_zero_stock,
+      sismed_path,
     } = payload;
 
     // Validar que los records sean un array y que coincida el record_count reportado
@@ -126,8 +127,48 @@ serve(async (req) => {
     }
 
     // 4. Inferir instalación y extraer reglas de permitidos
-    const facilityCode = installation.facility_code;
+    const facilityCode = normalizeCode(installation.facility_code);
     const allowedAlmcods = (installation.allowed_almcods || []).map((code: string) => normalizeCode(code));
+
+    if (!facilityCode) {
+      return new Response(JSON.stringify({ error: 'Instalación inválida: no tiene facility_code autorizado.' }), {
+        status: 403,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    const auditSecurityBlock = async (
+      reason: string,
+      detectedAlmcods: string[],
+      rejectedAlmcods: any[],
+      message: string,
+    ) => {
+      try {
+        await supabase
+          .from('sync_runs')
+          .insert({
+            installation_id: installation.id,
+            facility_code: facilityCode,
+            mode: mode || 'detallado',
+            record_count: Array.isArray(records) ? records.length : 0,
+            fecha_equipo: fecha_equipo,
+            status: 'failed',
+            error_message: JSON.stringify({
+              security_event: reason,
+              message,
+              authorized_facility_code: facilityCode,
+              detected_almcods: detectedAlmcods,
+              rejected_almcods: rejectedAlmcods,
+              sismed_path: sismed_path || null,
+              toolkit_version: toolkit_version || null,
+              blocked_at: new Date().toISOString(),
+            }).substring(0, 4000),
+            finished_at: new Date().toISOString(),
+          });
+      } catch (auditError: any) {
+        console.error('No se pudo registrar auditoría de bloqueo:', auditError.message);
+      }
+    };
 
     const incomingAlmcods = new Set<string>();
     for (const reportedAlmcod of normalizeAlmcodList(reported_almcods)) {
@@ -192,10 +233,49 @@ serve(async (req) => {
     }
     cleanedRecords = Array.from(dedupedRecordsMap.values());
 
+    const incomingAlmcodList = Array.from(incomingAlmcods).sort();
+    const rejectedByFacility = [];
+
+    for (const almcod of incomingAlmcodList) {
+      const detectedFacilityCode = facilityCodeFromAlmcod(almcod);
+      if (detectedFacilityCode && detectedFacilityCode !== facilityCode) {
+        rejectedByFacility.push({
+          almcod,
+          detected_facility_code: detectedFacilityCode,
+          authorized_facility_code: facilityCode,
+        });
+      }
+    }
+
+    if (rejectedByFacility.length > 0) {
+      const firstRejected = rejectedByFacility[0];
+      const message = `Violación de seguridad: ALMCOD ${firstRejected.almcod} pertenece a ${firstRejected.detected_facility_code}, pero esta instalación está autorizada para ${facilityCode}.`;
+      await auditSecurityBlock(
+        'almcod_facility_mismatch',
+        incomingAlmcodList,
+        rejectedByFacility,
+        message,
+      );
+      return new Response(JSON.stringify({
+        error: message,
+        rejected_almcods: rejectedByFacility,
+      }), {
+        status: 403,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     if (allowedAlmcods.length > 0) {
-      for (const almcod of incomingAlmcods) {
+      for (const almcod of incomingAlmcodList) {
         if (!allowedAlmcods.includes(almcod)) {
-          return new Response(JSON.stringify({ error: `Violación de Seguridad: Almcod ${almcod} no está permitido en la whitelist para esta instalación del Toolkit.` }), {
+          const message = `Violación de seguridad: ALMCOD ${almcod} no está permitido para esta instalación del Toolkit.`;
+          await auditSecurityBlock(
+            'almcod_not_whitelisted',
+            incomingAlmcodList,
+            [{ almcod, authorized_facility_code: facilityCode }],
+            message,
+          );
+          return new Response(JSON.stringify({ error: message }), {
             status: 403,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
@@ -222,8 +302,6 @@ serve(async (req) => {
     }
 
     try {
-      const incomingAlmcodList = Array.from(incomingAlmcods);
-      
       // 7. Flujo de reemplazo completo (Delete + Insert): 
       // Se borra el target completo del servidor para asegurar que los items que dejaron de existir o llegaron a cero y desaparecieron de los dbf locales también salgan del cloud.
       if (incomingAlmcodList.length > 0) {
