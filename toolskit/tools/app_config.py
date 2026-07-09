@@ -21,6 +21,8 @@ _DEFAULTS = {
     "medest_sismed_dir":       r"C:\SISMEDV2",
     "tmovim_sismed_dir":       r"C:\SISMEDV2",
     "tformdet_sismed_dir":     r"C:\SISMEDV2",
+    "tformdet_append_source_file": "",
+    "tformdet_append_sismed_dir": r"C:\SISMEDV2",
     "guias_sismed_dir":        r"C:\SISMEDV2",
     "stock_sismed_dir":        r"C:\SISMEDV2",
     "disponibilidad_sismed_dir": r"C:\SISMEDV2",

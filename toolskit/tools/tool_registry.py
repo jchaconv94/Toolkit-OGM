@@ -12,6 +12,7 @@ El resto del sistema (Dashboard, buscador, menú) lo recoge automáticamente.
 
 from tools.dbf_tool import DbfExcelTool
 from tools.excel_merge_tool import ExcelMergeTool
+from tools.tformdet_append_tool import TformdetAppendTool
 from tools.format_tformdet_tool import FormatTformdetTool
 from tools.pdf_tool import PdfTool
 from tools.consulta_tformdet_tool import ConsultaTformdetTool
@@ -30,6 +31,7 @@ from tools.edit_tmovim_tool import EditTmovimTool
 TOOLS_REGISTRY: list = [
     DbfExcelTool(),
     ExcelMergeTool(),
+    TformdetAppendTool(),
     FormatTformdetTool(),
     PdfTool(),
     ConsultaTformdetTool(),

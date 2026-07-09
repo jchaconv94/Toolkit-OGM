@@ -669,6 +669,7 @@ def main(page: ft.Page):
             "Reporte Guías":           8,
             "DBF a EXCEL":             6,
             "Unir EXCEL":              15,
+            "Anexar TFORMDET":         19,
             "Format TFORMDET":         7,
             "Sync SISMED":             18,
             "Sync SISMED 2.0":         17,
@@ -1151,6 +1152,7 @@ def main(page: ft.Page):
                             controls=[
                                 make_tool_card(get_tool_by_name("DBF a EXCEL")),
                                 make_tool_card(get_tool_by_name("Unir EXCEL")),
+                                make_tool_card(get_tool_by_name("Anexar TFORMDET")),
                                 make_tool_card(get_tool_by_name("Format TFORMDET")),
                                 make_tool_card(get_tool_by_name("Editor PDF"))
                             ],
@@ -1256,6 +1258,11 @@ def main(page: ft.Page):
             fmt_tool = get_tool_by_name("Format TFORMDET")
             if fmt_tool:
                 content.controls.append(fmt_tool.build_view(page, navigate))
+
+        elif index == 19:
+            append_tool = get_tool_by_name("Anexar TFORMDET")
+            if append_tool:
+                content.controls.append(append_tool.build_view(page, navigate))
 
         elif index == 9:
             # Stock SISMED → delegado al objeto StockReportTool (POO)
