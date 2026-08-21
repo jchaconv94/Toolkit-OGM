@@ -13,6 +13,7 @@
 - Ejecutar `powershell -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1`.
 - Verificar la existencia de `dist/ToolkitOGM/ToolkitOGM.exe`.
 - Verificar la existencia de `dist/installer/ToolkitOGM-Setup-<version>.exe`.
+- Verificar la existencia del checksum `dist/installer/ToolkitOGM-Setup-<version>.exe.sha256`.
 
 ## Smoke test del instalador
 
@@ -32,6 +33,8 @@
 ## Cierre de release
 
 - Commit final del release.
-- Push a GitHub.
-- Crear tag de version si aplica.
-- Adjuntar el instalador generado a la distribucion interna.
+- Confirmar una sola vez que existe el secreto `TOOLKITSISMED_RELEASE_TOKEN`, segun `RELEASE_AUTOMATION.md`.
+- Hacer push a `main` o a una rama `release/**`.
+- Esperar que la accion `Publicar actualizador de escritorio` finalice correctamente.
+- Confirmar que la accion creo la Release publica `desktop-v<version>` en `jchaconv94/ToolkitSISMED`.
+- Confirmar que la API publica de Releases muestra el instalador antes de distribuir la version.

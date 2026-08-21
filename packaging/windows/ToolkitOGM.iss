@@ -34,7 +34,7 @@ PrivilegesRequired=admin
 MinVersion=10.0
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-AppMutex={#MyAppMutex}
+AppMutex={code:GetAppMutex}
 CloseApplications=yes
 RestartApplications=no
 SetupLogging=yes
@@ -68,3 +68,28 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--install-success"; Description: "Ejecutar {#MyAppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--install-success"; Flags: nowait; Check: IsAutoUpdateMode
+
+[Code]
+function IsAutoUpdateMode: Boolean;
+var
+  Index: Integer;
+begin
+  Result := False;
+  for Index := 1 to ParamCount do
+  begin
+    if CompareText(ParamStr(Index), '/AUTOUPDATE') = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+function GetAppMutex(Param: String): String;
+begin
+  if IsAutoUpdateMode then
+    Result := ''
+  else
+    Result := '{#MyAppMutex}';
+end;

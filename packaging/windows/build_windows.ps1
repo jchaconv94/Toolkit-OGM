@@ -167,4 +167,16 @@ Write-Host "==> Generando instalador con Inno Setup..." -ForegroundColor Cyan
 & $isccPath "/DMyAppVersion=$Version" "/DRepoRoot=$repoRoot" $issFile
 Assert-LastExitCode "Fallo la compilacion del instalador con Inno Setup"
 
+$installerPath = Join-Path $distDir "installer\ToolkitOGM-Setup-$Version.exe"
+if (-not (Test-Path $installerPath)) {
+    throw "Inno Setup termino, pero no se encontro el instalador esperado en $installerPath"
+}
+
+Write-Host "==> Generando huella SHA-256 para la actualizacion automatica..." -ForegroundColor Cyan
+$installerHash = (Get-FileHash -Path $installerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$checksumPath = "$installerPath.sha256"
+"$installerHash  $(Split-Path -Leaf $installerPath)" | Set-Content -Path $checksumPath -Encoding Ascii
+
 Write-Host "==> Proceso completado." -ForegroundColor Green
+Write-Host "    Instalador: $installerPath" -ForegroundColor Green
+Write-Host "    SHA-256:    $checksumPath" -ForegroundColor Green

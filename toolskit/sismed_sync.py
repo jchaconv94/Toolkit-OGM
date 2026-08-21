@@ -10,6 +10,7 @@ import traceback
 import socket
 from urllib.parse import urlparse
 
+from app_version import get_current_version
 from dbf_utils import DbfReadMetrics, iter_dbf_records, open_dbf, snapshot_dbf
 from tools.app_config import set_many, update_runtime_status
 
@@ -21,12 +22,7 @@ SYNC_CONNECTIVITY_TIMEOUT_SECONDS = 5
 
 
 def _read_toolkit_version() -> str:
-    try:
-        version_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "VERSION"))
-        with open(version_path, "r", encoding="utf-8") as f:
-            return f.read().strip() or "unknown"
-    except Exception:
-        return "unknown"
+    return get_current_version()
 
 class SismedSyncManager:
     def __init__(self, log_callback=None, on_stop_callback=None):

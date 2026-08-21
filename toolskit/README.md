@@ -54,6 +54,24 @@ La version de release se toma del archivo `VERSION` en la raiz del repositorio.
 ### 3. Salidas esperadas
 - Ejecutable: `dist\ToolkitOGM\ToolkitOGM.exe`
 - Instalador: `dist\installer\ToolkitOGM-Setup-<version>.exe`
+- Huella de seguridad: `dist\installer\ToolkitOGM-Setup-<version>.exe.sha256`
+
+## Actualizaciones automaticas
+
+La aplicacion consulta las Releases publicas de `jchaconv94/ToolkitSISMED` y busca
+archivos con el nombre exacto `ToolkitOGM-Setup-<version>.exe`. Las Releases de la
+aplicacion web que no contengan ese archivo son ignoradas.
+
+Para publicar una actualizacion:
+
+1. Generar el instalador con `packaging\windows\build_windows.ps1`.
+2. Crear una Release publica con una version superior a la instalada.
+3. Adjuntar el `.exe` y el `.exe.sha256` generados, conservando sus nombres.
+4. Publicar la Release. Las instalaciones comprobaran novedades al iniciar y cada
+   12 horas. Si la descarga automatica esta activa, verificaran SHA-256 antes de
+   ofrecer la instalacion.
+5. Si la comprobacion o la descarga fallan por falta de internet, la aplicacion
+   reintentara automaticamente cada 5 minutos hasta recuperar la conexion.
 
 ### 4. Requisito adicional para el instalador
 - Instalar Inno Setup 6 si deseas generar el `.exe` instalable final. Si no está instalado, el script dejará al menos el ejecutable empaquetado listo.

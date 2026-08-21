@@ -15,6 +15,7 @@ _CONFIG_BACKUP_FILE = os.path.join(_CONFIG_DIR, "config.bak")
 _CONFIG_LOG_FILE = os.path.join(_CONFIG_DIR, "config.log")
 _STARTUP_LOG_FILE = os.path.join(_CONFIG_DIR, "startup.log")
 _SYNC_LOG_FILE = os.path.join(_CONFIG_DIR, "sync.log")
+_UPDATE_LOG_FILE = os.path.join(_CONFIG_DIR, "update.log")
 _CONFIG_LOCK = threading.RLock()
 
 _DEFAULTS = {
@@ -44,6 +45,10 @@ _DEFAULTS = {
     "sync2_expected_facility_code": "",
     "sync2_auto_start":        False,
     "sync_access_password_hash": "",
+    "update_auto_check":         True,
+    "update_auto_download":      True,
+    "update_last_check_at":      "",
+    "update_pending_version":    "",
     "runtime_last_boot_status": "never-started",
     "runtime_last_boot_detail": "",
     "runtime_last_boot_at":     "",
@@ -91,6 +96,7 @@ _RUNTIME_STATUS_MAP = {
 _RUNTIME_LOG_PATHS = {
     "startup": _STARTUP_LOG_FILE,
     "sync": _SYNC_LOG_FILE,
+    "update": _UPDATE_LOG_FILE,
 }
 
 
@@ -212,3 +218,7 @@ def get_startup_log_path() -> str:
 
 def get_sync_log_path() -> str:
     return _SYNC_LOG_FILE
+
+
+def get_update_log_path() -> str:
+    return _UPDATE_LOG_FILE

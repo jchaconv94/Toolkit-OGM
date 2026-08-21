@@ -32,6 +32,8 @@ _bootstrap_runtime_directory()
 
 from tools.app_config import append_runtime_log, get as cfg_get, get_config_log_path, get_startup_log_path, set as cfg_set, update_runtime_status
 from tools.tool_registry import TOOLS_REGISTRY, get_tool_by_name
+from app_version import get_current_version
+from updater_controller import AppUpdaterController
 
 # ==========================================
 # PREVENCIÓN DE MULTI-CLONACIÓN (MUTEX)
@@ -458,7 +460,9 @@ def main(page: ft.Page):
 
 # CONSTRUCCION DE LA PAGINA ----- Agregar elementos a la página
 
-    page.title = "ToolKits SISMED"
+    current_version = get_current_version()
+    app_display_title = f"ToolKit SISMED (v{current_version})"
+    page.title = app_display_title
     page.horizontal_alignment = ft.CrossAxisAlignment.START
     page.vertical_alignment = ft.MainAxisAlignment.START
     page.window.width = 1200
@@ -477,6 +481,7 @@ def main(page: ft.Page):
     
     # Lógica de System Tray (Bandeja del Sistema)
     tray_icon = None
+    updater_controller = None
 
     def create_image():
         # Crea una imagen simple con Pillow (puedes reemplazarla luego por tu ícono .ico)
@@ -488,14 +493,39 @@ def main(page: ft.Page):
     def on_show_window(icon, item):
         _restore_main_window()
 
-    def on_quit(icon, item):
+    def _stop_sync_services():
         for tool_name in ("Sync SISMED", "Sync SISMED 2.0"):
             sync_tool = get_tool_by_name(tool_name)
             if sync_tool and getattr(sync_tool, "sync_manager", None):
                 sync_tool.sync_manager.stop_sync()
-        icon.stop()
+
+    def _stop_tray():
+        if tray_icon:
+            try:
+                tray_icon.stop()
+            except Exception:
+                pass
+
+    def on_quit(icon, item):
+        if updater_controller:
+            updater_controller.stop()
+        _stop_sync_services()
+        _stop_tray()
         _release_single_instance_resources()
         page.window.destroy()
+
+    def _shutdown_after_update():
+        _stop_sync_services()
+        _stop_tray()
+        _release_single_instance_resources()
+        page.window.destroy()
+
+    def _notify_update(title: str, message: str):
+        if tray_icon:
+            try:
+                tray_icon.notify(message, title)
+            except Exception:
+                pass
 
     def setup_tray():
         nonlocal tray_icon
@@ -620,17 +650,25 @@ def main(page: ft.Page):
         menu.update()
 
     # AppBar Superior (Estilo Docker Desktop)
+    updater_controller = AppUpdaterController(
+        page,
+        on_installer_launched=_shutdown_after_update,
+        notify_callback=_notify_update,
+        startup_hidden=startup_hidden_requested,
+    )
+
     page.appbar = ft.AppBar(
         leading=ft.IconButton(ft.icons.MENU, on_click=toggle_nav_rail, tooltip="Menú principal"),
         leading_width=50,
         title=ft.Row([
             ft.Icon(ft.icons.LAYERS_ROUNDED, color=ft.colors.CYAN_500, size=24),
-            ft.Text("ToolKit SISMED", size=18, weight=ft.FontWeight.W_800)
+            ft.Text(app_display_title, size=18, weight=ft.FontWeight.W_800)
         ], spacing=10),
         bgcolor=ft.colors.SURFACE_VARIANT,
         actions=[
             ft.Container(
                 content=ft.Row([
+                    updater_controller.appbar_button,
                     cambia_modo,
                     ft.Container(width=20),
                     ft.Icon(ft.icons.CODE_ROUNDED, size=16, color=ft.colors.ON_SURFACE_VARIANT),
@@ -1094,6 +1132,7 @@ def main(page: ft.Page):
                             ])
                         ])
                     ),
+                    updater_controller.build_settings_card(),
                     ft.Container(
                         bgcolor=ft.colors.SURFACE_VARIANT,
                         border_radius=20,
@@ -1129,8 +1168,9 @@ def main(page: ft.Page):
                                 selectable=True,
                             ),
                         ])
-                    )
-                ])
+                    ),
+                    ft.Container(height=20),
+                ], scroll=ft.ScrollMode.ALWAYS, expand=True)
             )
             content.controls.append(settings_view)
 
@@ -1446,7 +1486,10 @@ def main(page: ft.Page):
     if sync2_tool:
         sync2_tool._init_components(page)
 
+    updater_controller.start()
+
     if install_success_requested:
+        cfg_set("update_pending_version", "")
         _show_message("ToolKit SISMED se instaló o actualizó correctamente.")
 
 if __name__ == "__main__":

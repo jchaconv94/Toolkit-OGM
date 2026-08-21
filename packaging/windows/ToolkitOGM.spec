@@ -17,6 +17,7 @@ FLET_DESKTOP_TREE = Tree(str(FLET_DESKTOP_DIR / "app"), prefix="flet_desktop/app
 
 datas = [
     (str(TOOLKIT_DIR / "assets"), "assets"),
+    (str(REPO_ROOT / "VERSION"), "."),
 ]
 datas += collect_data_files("flet")
 
