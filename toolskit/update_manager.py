@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import ctypes
+import base64
 import hashlib
 import os
 import re
@@ -29,6 +29,7 @@ INSTALLER_ARGUMENTS = (
     "/SP- /SILENT /SUPPRESSMSGBOXES /NORESTART "
     "/CLOSEAPPLICATIONS /FORCECLOSEAPPLICATIONS /AUTOUPDATE"
 )
+INSTALLER_PARENT_WAIT_SECONDS = 60
 
 
 class UpdateError(RuntimeError):
@@ -67,6 +68,7 @@ class UpdateManager:
         allowed_download_hosts: set[str] | None = None,
         allow_http_for_tests: bool = False,
         launcher: Callable[[str, str], bool] | None = None,
+        process_launcher=None,
         logger: Callable[[str], None] | None = None,
     ):
         self.api_url = (
@@ -84,6 +86,7 @@ class UpdateManager:
         }
         self.allow_http_for_tests = allow_http_for_tests
         self.launcher = launcher
+        self.process_launcher = process_launcher or subprocess.Popen
         self.logger = logger or (lambda _message: None)
 
     def _log(self, message: str) -> None:
@@ -307,6 +310,63 @@ class UpdateManager:
             except OSError:
                 continue
 
+    @staticmethod
+    def _powershell_literal(value: str) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    @classmethod
+    def _build_installer_helper_script(
+        cls,
+        installer_path: str,
+        parent_pid: int,
+        log_path: str,
+    ) -> str:
+        installer = cls._powershell_literal(installer_path)
+        arguments = cls._powershell_literal(INSTALLER_ARGUMENTS)
+        log_file = cls._powershell_literal(log_path)
+        max_checks = max(1, INSTALLER_PARENT_WAIT_SECONDS * 4)
+        return f"""
+$ErrorActionPreference = 'Stop'
+$parentProcessId = {int(parent_pid)}
+$installerPath = {installer}
+$installerArguments = {arguments}
+$logPath = {log_file}
+
+function Write-LauncherLog([string]$message) {{
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    Add-Content -LiteralPath $logPath -Value "[$timestamp] $message" -Encoding UTF8
+}}
+
+try {{
+    Write-LauncherLog "Auxiliar iniciado. Esperando que ToolKit SISMED cierre (PID=$parentProcessId)."
+    for ($attempt = 0; $attempt -lt {max_checks}; $attempt++) {{
+        if (-not (Get-Process -Id $parentProcessId -ErrorAction SilentlyContinue)) {{
+            break
+        }}
+        Start-Sleep -Milliseconds 250
+    }}
+
+    if (Get-Process -Id $parentProcessId -ErrorAction SilentlyContinue) {{
+        Write-LauncherLog "No se pudo instalar: ToolKit SISMED no cerro dentro del tiempo esperado."
+        exit 2
+    }}
+
+    Start-Sleep -Milliseconds 750
+    Write-LauncherLog "Abriendo instalador y solicitando permiso de administrador."
+    Start-Process -FilePath $installerPath -ArgumentList $installerArguments -Verb RunAs
+    Write-LauncherLog "Solicitud de instalacion enviada a Windows."
+}} catch {{
+    Write-LauncherLog ("No se pudo abrir el instalador: " + $_.Exception.Message)
+    exit 3
+}}
+""".strip()
+
+    @staticmethod
+    def _powershell_path() -> str:
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        candidate = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        return str(candidate) if candidate.is_file() else "powershell.exe"
+
     def launch_installer(self, installer_path: str | os.PathLike) -> None:
         path = str(Path(installer_path).resolve())
         if not Path(path).is_file():
@@ -320,15 +380,44 @@ class UpdateManager:
         if os.name != "nt":
             raise UpdateError("La instalacion automatica solo esta disponible en Windows.")
 
-        result = ctypes.windll.shell32.ShellExecuteW(
-            None,
-            "runas",
+        self.download_dir.mkdir(parents=True, exist_ok=True)
+        launcher_log = self.download_dir / "launcher.log"
+        script = self._build_installer_helper_script(
             path,
-            INSTALLER_ARGUMENTS,
-            str(Path(path).parent),
-            subprocess.SW_SHOWNORMAL,
+            os.getpid(),
+            str(launcher_log.resolve()),
         )
-        if result <= 32:
-            raise UpdateError(
-                "Windows no autorizo la instalacion. Vuelva a intentarlo y acepte el permiso."
+        encoded_script = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        creation_flags = (
+            getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+        command = [
+            self._powershell_path(),
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-EncodedCommand",
+            encoded_script,
+        ]
+        try:
+            self.process_launcher(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                creationflags=creation_flags,
             )
+        except OSError as exc:
+            raise UpdateError(
+                "No se pudo preparar el instalador. Reinicie ToolKit SISMED e intentelo nuevamente."
+            ) from exc
+
+        self._log(
+            "Instalador programado. Se abrira despues de que ToolKit SISMED cierre por completo."
+        )

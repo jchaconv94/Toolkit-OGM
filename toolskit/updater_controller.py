@@ -420,6 +420,10 @@ class AppUpdaterController:
             return
 
         cfg_set("update_pending_version", self.current_info.version)
+        append_runtime_log(
+            "update",
+            f"Actualizacion {self.current_info.version} preparada. Cerrando la aplicacion.",
+        )
         self.stop()
         self.on_installer_launched()
 

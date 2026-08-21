@@ -515,10 +515,23 @@ def main(page: ft.Page):
         page.window.destroy()
 
     def _shutdown_after_update():
+        append_runtime_log("update", "Cerrando ToolKit SISMED antes de iniciar el instalador.")
+        try:
+            page.window.prevent_close = False
+            page.window.visible = False
+            page.update()
+        except Exception:
+            pass
         _stop_sync_services()
         _stop_tray()
         _release_single_instance_resources()
-        page.window.destroy()
+        try:
+            page.window.destroy()
+        except Exception as exc:
+            append_runtime_log(
+                "update",
+                f"La ventana no se pudo cerrar normalmente: {type(exc).__name__}: {exc}",
+            )
 
     def _notify_update(title: str, message: str):
         if tray_icon:
@@ -1490,6 +1503,7 @@ def main(page: ft.Page):
 
     if install_success_requested:
         cfg_set("update_pending_version", "")
+        append_runtime_log("update", f"Actualizacion {current_version} instalada correctamente.")
         _show_message("ToolKit SISMED se instaló o actualizó correctamente.")
 
 if __name__ == "__main__":

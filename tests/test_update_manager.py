@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import threading
@@ -14,7 +15,7 @@ if str(TOOLKIT_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLKIT_DIR))
 
 from app_version import is_newer_version, normalize_version, version_tuple
-from update_manager import UpdateManager, UpdateSecurityError
+from update_manager import INSTALLER_ARGUMENTS, UpdateError, UpdateManager, UpdateSecurityError
 
 
 class _UpdateServer:
@@ -152,6 +153,62 @@ class UpdateManagerIntegrationTests(unittest.TestCase):
                     allow_http_for_tests=True,
                 )
                 self.assertIsNone(manager.check_for_update())
+
+    def test_helper_waits_for_parent_before_requesting_elevation(self):
+        script = UpdateManager._build_installer_helper_script(
+            r"C:\Updates\ToolkitOGM-Setup-2.0.15.exe",
+            4321,
+            r"C:\Updates\launcher.log",
+        )
+
+        self.assertIn("Get-Process -Id $parentProcessId", script)
+        self.assertIn("$parentProcessId = 4321", script)
+        self.assertIn("-Verb RunAs", script)
+        self.assertIn(INSTALLER_ARGUMENTS, script)
+        self.assertLess(
+            script.index("Get-Process -Id $parentProcessId"),
+            script.index("Start-Process -FilePath $installerPath"),
+        )
+
+    @unittest.skipUnless(os.name == "nt", "El lanzador diferido solo existe en Windows")
+    def test_default_launcher_starts_hidden_detached_helper(self):
+        calls = []
+
+        def fake_process_launcher(command, **kwargs):
+            calls.append((command, kwargs))
+            return object()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installer = Path(temp_dir) / "ToolkitOGM-Setup-2.0.15.exe"
+            installer.write_bytes(b"installer")
+            manager = UpdateManager(
+                current_version="2.0.14",
+                download_dir=temp_dir,
+                process_launcher=fake_process_launcher,
+            )
+            manager.launch_installer(installer)
+
+        self.assertEqual(len(calls), 1)
+        command, kwargs = calls[0]
+        self.assertIn("-EncodedCommand", command)
+        self.assertTrue(kwargs["creationflags"])
+        self.assertIsNotNone(kwargs["stdin"])
+
+    @unittest.skipUnless(os.name == "nt", "El lanzador diferido solo existe en Windows")
+    def test_default_launcher_reports_process_creation_failure(self):
+        def failed_process_launcher(*_args, **_kwargs):
+            raise OSError("bloqueado")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            installer = Path(temp_dir) / "ToolkitOGM-Setup-2.0.15.exe"
+            installer.write_bytes(b"installer")
+            manager = UpdateManager(
+                current_version="2.0.14",
+                download_dir=temp_dir,
+                process_launcher=failed_process_launcher,
+            )
+            with self.assertRaises(UpdateError):
+                manager.launch_installer(installer)
 
 
 if __name__ == "__main__":
