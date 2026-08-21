@@ -6,7 +6,12 @@ from datetime import datetime
 import flet as ft
 
 from app_version import get_current_version
-from tools.app_config import append_runtime_log, get as cfg_get, set as cfg_set
+from tools.app_config import (
+    append_runtime_log,
+    get as cfg_get,
+    set as cfg_set,
+    set_many as cfg_set_many,
+)
 from update_manager import UpdateError, UpdateInfo, UpdateManager, UpdateSecurityError
 
 
@@ -22,21 +27,30 @@ class AppUpdaterController:
         *,
         on_installer_launched,
         notify_callback=None,
+        navigate_to_settings=None,
         startup_hidden: bool = False,
         manager: UpdateManager | None = None,
     ):
         self.page = page
         self.on_installer_launched = on_installer_launched
         self.notify_callback = notify_callback or (lambda _title, _message: None)
+        self.navigate_to_settings = navigate_to_settings or (lambda: None)
         self.startup_hidden = startup_hidden
         self.stop_event = threading.Event()
+        self.scheduler_wake_event = threading.Event()
+        self.scheduler_lock = threading.Lock()
+        self.scheduler_thread: threading.Thread | None = None
         self.check_lock = threading.Lock()
         self.download_lock = threading.Lock()
+        self.request_lock = threading.Lock()
+        self.check_requested = False
+        self.download_requested = False
         self.retry_lock = threading.Lock()
         self.retry_timer: threading.Timer | None = None
         self.current_info: UpdateInfo | None = None
         self.installer_path = None
         self.prompted_ready_version = ""
+        self.notified_available_version = ""
         self.state = "idle"
 
         self.manager = manager or UpdateManager(
@@ -68,17 +82,29 @@ class AppUpdaterController:
         self.appbar_button = ft.IconButton(
             icon=ft.icons.SYSTEM_UPDATE_ALT_ROUNDED,
             tooltip="Buscar actualizaciones",
-            on_click=self.manual_action,
+            on_click=self.appbar_action,
             icon_color=ft.colors.ON_SURFACE_VARIANT,
+            badge=ft.Badge(
+                bgcolor=ft.colors.AMBER_400,
+                small_size=9,
+                label_visible=False,
+            ),
         )
+        self.appbar_badge = self.appbar_button.badge
+        auto_check_enabled = bool(cfg_get("update_auto_check"))
+        auto_download_enabled = bool(cfg_get("update_auto_download"))
+        if auto_download_enabled and not auto_check_enabled:
+            auto_check_enabled = True
+            cfg_set_many({"update_auto_check": True, "update_auto_download": True})
+
         self.auto_check = ft.Checkbox(
             label="Buscar actualizaciones automáticamente",
-            value=bool(cfg_get("update_auto_check")),
+            value=auto_check_enabled,
             on_change=self._change_auto_check,
         )
         self.auto_download = ft.Checkbox(
             label="Descargar automáticamente cuando haya una versión nueva",
-            value=bool(cfg_get("update_auto_download")),
+            value=auto_download_enabled,
             on_change=self._change_auto_download,
         )
 
@@ -108,17 +134,60 @@ class AppUpdaterController:
 
     def _change_auto_check(self, e) -> None:
         enabled = bool(e.control.value)
-        cfg_set("update_auto_check", enabled)
-        if enabled and self.state == "error":
-            self._schedule_retry()
-        elif not enabled:
+        if not enabled and bool(self.auto_download.value):
+            self.auto_download.value = False
+            cfg_set_many({
+                "update_auto_check": False,
+                "update_auto_download": False,
+            })
+            self._safe_update(self.auto_download)
+            append_runtime_log(
+                "update",
+                "La descarga automatica se desactivo junto con la busqueda automatica.",
+            )
+        else:
+            cfg_set("update_auto_check", enabled)
+        append_runtime_log(
+            "update",
+            f"Busqueda automatica de actualizaciones: {'activada' if enabled else 'desactivada'}.",
+        )
+        if enabled:
             self._cancel_retry()
+            self.scheduler_wake_event.set()
+            self.check_async(manual=False)
+        else:
+            self._cancel_retry()
+            self.scheduler_wake_event.set()
 
     def _change_auto_download(self, e) -> None:
         enabled = bool(e.control.value)
-        cfg_set("update_auto_download", enabled)
-        if enabled and self.current_info and not self.installer_path:
+        if enabled and not bool(self.auto_check.value):
+            self.auto_check.value = True
+            cfg_set_many({
+                "update_auto_check": True,
+                "update_auto_download": True,
+            })
+            self._safe_update(self.auto_check)
+            append_runtime_log(
+                "update",
+                "La busqueda automatica se activo porque la descarga automatica la necesita.",
+            )
+        else:
+            cfg_set("update_auto_download", enabled)
+        append_runtime_log(
+            "update",
+            f"Descarga automatica de actualizaciones: {'activada' if enabled else 'desactivada'}.",
+        )
+        if not enabled:
+            return
+        if self.state == "checking":
+            self.scheduler_wake_event.set()
+            return
+        if self.current_info and not self.installer_path:
             self.download_async(self.current_info)
+        else:
+            self.scheduler_wake_event.set()
+            self.check_async(manual=False)
 
     def _safe_update(self, *controls) -> None:
         for control in controls:
@@ -155,6 +224,21 @@ class AppUpdaterController:
         self.progress_bar.visible = progress is not None
         self.progress_bar.value = progress
         self.appbar_button.icon_color = color
+        self.appbar_button.tooltip = {
+            "checking": "Buscando actualizaciones...",
+            "downloading": title,
+            "ready": title,
+            "current": "ToolKit SISMED esta actualizado. Haz clic para buscar nuevamente.",
+            "error": "No se pudo comprobar. Haz clic para reintentar.",
+            "available": title,
+            "installing": title,
+        }.get(state, "Buscar actualizaciones")
+        self.appbar_badge.label_visible = state in {"available", "downloading", "ready"}
+        self.appbar_badge.bgcolor = {
+            "available": ft.colors.AMBER_400,
+            "downloading": ft.colors.CYAN_400,
+            "ready": ft.colors.GREEN_400,
+        }.get(state, ft.colors.AMBER_400)
 
         if state == "ready":
             self.action_button.text = "INSTALAR AHORA"
@@ -184,8 +268,11 @@ class AppUpdaterController:
     def _notify(self, title: str, message: str) -> None:
         try:
             self.notify_callback(title, message)
-        except Exception:
-            pass
+        except Exception as exc:
+            append_runtime_log(
+                "update",
+                f"No se pudo mostrar la notificacion de Windows: {type(exc).__name__}: {exc}",
+            )
 
     def _cancel_retry(self) -> None:
         with self.retry_lock:
@@ -218,11 +305,44 @@ class AppUpdaterController:
 
     def _snack(self, message: str) -> None:
         try:
-            self.page.snack_bar = ft.SnackBar(content=ft.Text(message))
-            self.page.snack_bar.open = True
-            self.page.update()
-        except Exception:
-            pass
+            snack = ft.SnackBar(content=ft.Text(message))
+            open_control = getattr(self.page, "open", None)
+            if callable(open_control):
+                open_control(snack)
+            else:
+                self.page.snack_bar = snack
+                snack.open = True
+                self.page.update()
+        except Exception as exc:
+            append_runtime_log(
+                "update",
+                f"No se pudo mostrar el aviso en pantalla: {type(exc).__name__}: {exc}",
+            )
+
+    def _open_settings(self) -> None:
+        try:
+            self.navigate_to_settings()
+        except Exception as exc:
+            append_runtime_log(
+                "update",
+                f"No se pudo abrir la seccion de actualizaciones: {type(exc).__name__}: {exc}",
+            )
+
+    def appbar_action(self, _event=None) -> None:
+        if self.state == "ready" and self.installer_path:
+            self._open_settings()
+            self._show_ready_dialog(force=True)
+            return
+        if self.state == "available" and self.current_info:
+            self._show_available_dialog(navigate_before_download=True)
+            return
+        if self.state in {"checking", "downloading", "installing"}:
+            self._open_settings()
+            self._snack(self.status_detail.value or "El proceso de actualizacion esta en curso.")
+            return
+
+        self._snack("Buscando actualizaciones de ToolKit SISMED...")
+        self.check_async(manual=True, offer_download=True)
 
     def manual_action(self, _event=None) -> None:
         if self.state == "ready" and self.installer_path:
@@ -232,145 +352,268 @@ class AppUpdaterController:
             self.download_async(self.current_info)
             return
         if self.state in {"checking", "downloading", "installing"}:
+            self._snack(self.status_detail.value or "El proceso de actualizacion esta en curso.")
             return
         self.check_async(manual=True)
 
-    def check_async(self, *, manual: bool = False) -> None:
-        if self.check_lock.locked() or self.download_lock.locked():
+    def _reserve_request(self, request_type: str) -> bool:
+        with self.request_lock:
+            if request_type == "check":
+                if (
+                    self.check_requested
+                    or self.check_lock.locked()
+                    or self.download_requested
+                    or self.download_lock.locked()
+                ):
+                    return False
+                self.check_requested = True
+                return True
+
+            if (
+                self.download_requested
+                or self.download_lock.locked()
+                or self.check_requested
+                or self.check_lock.locked()
+            ):
+                return False
+            self.download_requested = True
+            return True
+
+    def _release_request(self, request_type: str) -> None:
+        with self.request_lock:
+            if request_type == "check":
+                self.check_requested = False
+            else:
+                self.download_requested = False
+
+    def check_async(
+        self,
+        *,
+        manual: bool = False,
+        offer_download: bool = False,
+    ) -> bool:
+        if not self._reserve_request("check"):
             if manual:
-                self._snack("Ya se está comprobando una actualización.")
-            return
-        threading.Thread(
+                self._snack("Ya hay una comprobación o descarga en curso.")
+            return False
+
+        worker = threading.Thread(
             target=self._check_worker,
-            args=(manual,),
+            args=(manual, offer_download),
             daemon=True,
             name="ToolkitUpdaterCheck",
-        ).start()
+        )
+        try:
+            worker.start()
+        except Exception:
+            self._release_request("check")
+            raise
+        return True
 
-    def _check_worker(self, manual: bool) -> None:
-        with self.check_lock:
-            self._set_state(
-                "checking",
-                "Buscando actualizaciones",
-                "Comprobando si existe una versión nueva...",
-                None,
-            )
-            try:
-                info = self.manager.check_for_update()
-                self._cancel_retry()
-                cfg_set("update_last_check_at", datetime.now().isoformat(timespec="seconds"))
-                if not info:
-                    self.current_info = None
-                    self.installer_path = None
+    def _check_worker(self, manual: bool, offer_download: bool = False) -> None:
+        download_after_check: UpdateInfo | None = None
+        try:
+            with self.check_lock:
+                self._set_state(
+                    "checking",
+                    "Buscando actualizaciones",
+                    "Comprobando si existe una versión nueva...",
+                    None,
+                )
+                try:
+                    info = self.manager.check_for_update()
+                    self._cancel_retry()
+                    cfg_set("update_last_check_at", datetime.now().isoformat(timespec="seconds"))
+                    if not info:
+                        self.current_info = None
+                        self.installer_path = None
+                        self.notified_available_version = ""
+                        self._set_state(
+                            "current",
+                            "ToolKit SISMED está actualizado",
+                            f"Tiene instalada la versión {self.manager.current_version}.",
+                        )
+                        if manual:
+                            self._snack("ToolKit SISMED ya tiene la versión más reciente.")
+                        return
+
+                    self.current_info = info
                     self._set_state(
-                        "current",
-                        "ToolKit SISMED está actualizado",
-                        f"Tiene instalada la versión {self.manager.current_version}.",
+                        "available",
+                        f"Versión {info.version} disponible",
+                        "La nueva versión está lista para descargarse.",
+                    )
+                    if offer_download:
+                        self._show_available_dialog(navigate_before_download=True)
+                    elif bool(cfg_get("update_auto_download")):
+                        self._notify_available_once(
+                            info,
+                            f"La versión {info.version} se descargará automáticamente.",
+                        )
+                        download_after_check = info
+                    elif manual:
+                        self._show_available_dialog()
+                    else:
+                        self._notify_available_once(
+                            info,
+                            f"La versión {info.version} está disponible para descargar.",
+                        )
+                except (UpdateSecurityError, UpdateError) as exc:
+                    append_runtime_log("update", f"Error comprobando actualizaciones: {exc}")
+                    self._set_state(
+                        "error",
+                        "No se pudo comprobar la actualización",
+                        str(exc),
                     )
                     if manual:
-                        self._snack("No hay una versión más reciente disponible.")
-                    return
+                        self._snack(str(exc))
+                    self._schedule_retry()
+                except Exception as exc:
+                    append_runtime_log(
+                        "update",
+                        f"Error inesperado del actualizador: {type(exc).__name__}: {exc}",
+                    )
+                    self._set_state(
+                        "error",
+                        "No se pudo comprobar la actualización",
+                        "Revise su conexión a internet e inténtelo nuevamente.",
+                    )
+                    if manual:
+                        self._snack(
+                            "No se pudo buscar actualizaciones. Revise su conexión a internet."
+                        )
+                    self._schedule_retry()
+        finally:
+            self._release_request("check")
+        if download_after_check:
+            self.download_async(download_after_check)
 
-                self.current_info = info
-                self._set_state(
-                    "available",
-                    f"Versión {info.version} disponible",
-                    "La nueva versión está lista para descargarse.",
-                )
-                if bool(cfg_get("update_auto_download")):
-                    self.download_async(info)
-                elif manual:
-                    self._show_available_dialog()
-            except (UpdateSecurityError, UpdateError) as exc:
-                append_runtime_log("update", f"Error comprobando actualizaciones: {exc}")
-                self._set_state(
-                    "error",
-                    "No se pudo comprobar la actualización",
-                    str(exc),
-                )
-                if manual:
-                    self._snack(str(exc))
-                self._schedule_retry()
-            except Exception as exc:
-                append_runtime_log("update", f"Error inesperado del actualizador: {type(exc).__name__}: {exc}")
-                self._set_state(
-                    "error",
-                    "No se pudo comprobar la actualización",
-                    "Revise su conexión a internet e inténtelo nuevamente.",
-                )
-
-                self._schedule_retry()
-
-    def download_async(self, info: UpdateInfo) -> None:
-        if self.download_lock.locked():
+    def _notify_available_once(self, info: UpdateInfo, message: str) -> None:
+        if self.notified_available_version == info.version:
             return
-        threading.Thread(
+        self.notified_available_version = info.version
+        self._notify("Nueva actualización disponible", message)
+
+    def download_async(self, info: UpdateInfo) -> bool:
+        if not self._reserve_request("download"):
+            return False
+
+        worker = threading.Thread(
             target=self._download_worker,
             args=(info,),
             daemon=True,
             name="ToolkitUpdaterDownload",
-        ).start()
+        )
+        try:
+            worker.start()
+        except Exception:
+            self._release_request("download")
+            raise
+        return True
 
     def _download_worker(self, info: UpdateInfo) -> None:
-        with self.download_lock:
-            last_percent = [-1]
+        try:
+            with self.download_lock:
+                last_percent = [-1]
 
-            def _progress(downloaded: int, total: int) -> None:
-                percent = min(100, int((downloaded * 100) / max(total, 1)))
-                if percent == last_percent[0] or (percent < 100 and percent % 2):
-                    return
-                last_percent[0] = percent
+                def _progress(downloaded: int, total: int) -> None:
+                    percent = min(100, int((downloaded * 100) / max(total, 1)))
+                    if percent == last_percent[0] or (percent < 100 and percent % 2):
+                        return
+                    last_percent[0] = percent
+                    self._set_state(
+                        "downloading",
+                        f"Descargando versión {info.version}",
+                        f"Descarga en curso: {percent}%",
+                        percent / 100,
+                    )
+
                 self._set_state(
                     "downloading",
                     f"Descargando versión {info.version}",
-                    f"Descarga en curso: {percent}%",
-                    percent / 100,
+                    "Preparando la descarga segura...",
+                    0,
                 )
-
-            self._set_state(
-                "downloading",
-                f"Descargando versión {info.version}",
-                "Preparando la descarga segura...",
-                0,
-            )
-            try:
-                self.installer_path = self.manager.download_update(info, _progress)
-                self._cancel_retry()
-                self._set_state(
-                    "ready",
-                    f"Versión {info.version} lista para instalar",
-                    "La descarga fue verificada correctamente.",
-                )
-                self._notify(
-                    "Actualización lista",
-                    f"ToolKit SISMED {info.version} está listo para instalar.",
-                )
-                self._show_ready_dialog()
-            except (UpdateSecurityError, UpdateError) as exc:
-                append_runtime_log("update", f"Error descargando actualizacion: {exc}")
-                self.installer_path = None
-                self._schedule_retry()
-                self._set_state("error", "No se pudo descargar la actualización", str(exc))
-            except Exception as exc:
-                append_runtime_log("update", f"Error inesperado descargando: {type(exc).__name__}: {exc}")
-                self.installer_path = None
-                self._set_state(
-                    "error",
-                    "No se pudo descargar la actualización",
-                    "Revise su conexión a internet e inténtelo nuevamente.",
-                )
-
-                self._schedule_retry()
+                try:
+                    self.installer_path = self.manager.download_update(info, _progress)
+                    self._cancel_retry()
+                    self._set_state(
+                        "ready",
+                        f"Versión {info.version} lista para instalar",
+                        "La descarga fue verificada correctamente.",
+                    )
+                    self._notify(
+                        "Actualización lista",
+                        f"ToolKit SISMED {info.version} está listo para instalar.",
+                    )
+                    self._show_ready_dialog()
+                except (UpdateSecurityError, UpdateError) as exc:
+                    append_runtime_log("update", f"Error descargando actualizacion: {exc}")
+                    self.installer_path = None
+                    self._schedule_retry()
+                    self._set_state("error", "No se pudo descargar la actualización", str(exc))
+                except Exception as exc:
+                    append_runtime_log(
+                        "update",
+                        f"Error inesperado descargando: {type(exc).__name__}: {exc}",
+                    )
+                    self.installer_path = None
+                    self._set_state(
+                        "error",
+                        "No se pudo descargar la actualización",
+                        "Revise su conexión a internet e inténtelo nuevamente.",
+                    )
+                    self._schedule_retry()
+        finally:
+            self._release_request("download")
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:
         return f"{size_bytes / (1024 * 1024):.1f} MB"
 
     def _close_dialog(self, dialog) -> None:
+        try:
+            close_control = getattr(self.page, "close", None)
+            if callable(close_control):
+                close_control(dialog)
+                return
+        except Exception as exc:
+            append_runtime_log(
+                "update",
+                f"No se pudo cerrar el aviso de actualizacion: {type(exc).__name__}: {exc}",
+            )
         dialog.open = False
         self._safe_update(dialog)
 
-    def _show_available_dialog(self) -> None:
+    def _open_dialog(self, dialog) -> None:
+        try:
+            open_control = getattr(self.page, "open", None)
+            if callable(open_control):
+                open_control(dialog)
+                return
+        except Exception as exc:
+            append_runtime_log(
+                "update",
+                f"No se pudo abrir el aviso de actualizacion: {type(exc).__name__}: {exc}",
+            )
+        if dialog not in self.page.overlay:
+            self.page.overlay.append(dialog)
+        dialog.open = True
+        self._safe_update(self.page)
+
+    def _download_from_dialog(
+        self,
+        dialog,
+        info: UpdateInfo,
+        *,
+        navigate_to_settings: bool,
+    ) -> None:
+        self._close_dialog(dialog)
+        if navigate_to_settings:
+            self._open_settings()
+        self.download_async(info)
+
+    def _show_available_dialog(self, *, navigate_before_download: bool = False) -> None:
         info = self.current_info
         if not info:
             return
@@ -391,14 +634,16 @@ class AppUpdaterController:
                 ft.ElevatedButton(
                     "DESCARGAR",
                     icon=ft.icons.DOWNLOAD_ROUNDED,
-                    on_click=lambda _e: (self._close_dialog(dialog), self.download_async(info)),
+                    on_click=lambda _e: self._download_from_dialog(
+                        dialog,
+                        info,
+                        navigate_to_settings=navigate_before_download,
+                    ),
                 ),
             ],
             shape=ft.RoundedRectangleBorder(radius=8),
         )
-        self.page.overlay.append(dialog)
-        dialog.open = True
-        self._safe_update(self.page)
+        self._open_dialog(dialog)
 
     def _install_now(self, dialog) -> None:
         self._close_dialog(dialog)
@@ -477,9 +722,7 @@ class AppUpdaterController:
             ],
             shape=ft.RoundedRectangleBorder(radius=8),
         )
-        self.page.overlay.append(dialog)
-        dialog.open = True
-        self._safe_update(self.page)
+        self._open_dialog(dialog)
 
     def _periodic_worker(self) -> None:
         initial_delay = (
@@ -487,21 +730,35 @@ class AppUpdaterController:
             if self.startup_hidden
             else self.INTERACTIVE_INITIAL_DELAY_SECONDS
         )
-        if self.stop_event.wait(initial_delay):
-            return
+        self.scheduler_wake_event.wait(initial_delay)
+        self.scheduler_wake_event.clear()
         while not self.stop_event.is_set():
             if bool(cfg_get("update_auto_check")):
                 self.check_async(manual=False)
-            if self.stop_event.wait(self.CHECK_INTERVAL_SECONDS):
-                return
+            self.scheduler_wake_event.wait(self.CHECK_INTERVAL_SECONDS)
+            self.scheduler_wake_event.clear()
 
     def start(self) -> None:
-        threading.Thread(
-            target=self._periodic_worker,
-            daemon=True,
-            name="ToolkitUpdaterScheduler",
-        ).start()
+        with self.scheduler_lock:
+            if self.scheduler_thread and self.scheduler_thread.is_alive():
+                return
+            self.scheduler_thread = threading.Thread(
+                target=self._periodic_worker,
+                daemon=True,
+                name="ToolkitUpdaterScheduler",
+            )
+            self.scheduler_thread.start()
 
     def stop(self) -> None:
         self.stop_event.set()
+        wake_event = getattr(self, "scheduler_wake_event", None)
+        if wake_event:
+            wake_event.set()
         self._cancel_retry()
+        scheduler_thread = getattr(self, "scheduler_thread", None)
+        if (
+            scheduler_thread
+            and scheduler_thread.is_alive()
+            and scheduler_thread is not threading.current_thread()
+        ):
+            scheduler_thread.join(timeout=1)

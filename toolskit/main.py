@@ -662,11 +662,17 @@ def main(page: ft.Page):
         
         menu.update()
 
+    def _navigate_to_update_settings():
+        _restore_main_window()
+        update_sidebar_ui(1)
+        update_content(1)
+
     # AppBar Superior (Estilo Docker Desktop)
     updater_controller = AppUpdaterController(
         page,
         on_installer_launched=_shutdown_after_update,
         notify_callback=_notify_update,
+        navigate_to_settings=_navigate_to_update_settings,
         startup_hidden=startup_hidden_requested,
     )
 
@@ -1502,6 +1508,13 @@ def main(page: ft.Page):
     updater_controller.start()
 
     if install_success_requested:
+        try:
+            updater_controller.manager.cleanup_downloads()
+        except Exception as exc:
+            append_runtime_log(
+                "update",
+                f"No se pudieron limpiar instaladores anteriores: {type(exc).__name__}: {exc}",
+            )
         cfg_set("update_pending_version", "")
         append_runtime_log("update", f"Actualizacion {current_version} instalada correctamente.")
         _show_message("ToolKit SISMED se instaló o actualizó correctamente.")

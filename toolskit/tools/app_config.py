@@ -167,15 +167,17 @@ def get(key: str):
 
 
 def set(key: str, value):
-    data = _load()
-    data[key] = value
-    _save(data)
+    with _CONFIG_LOCK:
+        data = _load()
+        data[key] = value
+        _save(data)
 
 
 def set_many(values: dict):
-    data = _load()
-    data.update(values)
-    _save(data)
+    with _CONFIG_LOCK:
+        data = _load()
+        data.update(values)
+        _save(data)
 
 
 def update_runtime_status(scope: str, status: str, detail: str | None = None):
