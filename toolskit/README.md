@@ -60,7 +60,7 @@ La version de release se toma del archivo `VERSION` en la raiz del repositorio.
 
 ## 🛠️ Herramientas Incluidas
 
-- **Editor de Estados (MEDEST)**: Modifica directamente el campo MEDEST en MMEDICAM.DBF de forma segura.
+- **Editor de Estados (MEDEST)**: Modifica directamente el campo MEDEST en MPRODUCTO.DBF de forma segura.
 - **Reporte de Disponibilidad**: Genera pivots de consumo y stock desde TFORMDET.
 - **Sync SISMED**: Sincronización automática de bases de datos.
 - **Consultas TFORMDET / Guías / Stock**: Generación de reportes avanzados a Excel.

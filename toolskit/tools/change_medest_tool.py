@@ -7,17 +7,17 @@ from tools.base_tool import SismedTool, ToolMetadata
 from tools.app_config import get as cfg_get, set as cfg_set
 
 class ChangeMedestTool(SismedTool):
-    """Herramienta para modificar el estado (MEDEST) de medicamentos en MMEDICAM.DBF."""
+    """Herramienta para modificar el estado (MEDEST) de medicamentos en MPRODUCTO.DBF."""
 
     @property
     def metadata(self) -> ToolMetadata:
         return ToolMetadata(
             nombre="Cambiar Estado Med.",
-            descripcion="Modifica el campo MEDEST de medicamentos en MMEDICAM.DBF",
+            descripcion="Modifica el campo MEDEST de medicamentos en MPRODUCTO.DBF",
             icono=ft.icons.EDIT_NOTE,
             color=ft.colors.ORANGE_400,
             categoria="Edit SISMED",
-            etiquetas=["editar", "mmedicam", "estado", "medest", "sismed", "modificar"],
+            etiquetas=["editar", "mproducto", "estado", "medest", "sismed", "modificar"],
         )
 
     def build_view(self, page: ft.Page, navigate_fn) -> ft.Control:
@@ -314,7 +314,7 @@ class ChangeMedestTool(SismedTool):
             content=ft.Column([
                 self._section_header(
                     ft.icons.EDIT_SQUARE, ft.colors.ORANGE_400,
-                    "Editor de Estados (MEDEST)", "Modifica el campo MEDEST de medicamentos en MMEDICAM.DBF",
+                    "Editor de Estados (MEDEST)", "Modifica el campo MEDEST de medicamentos en MPRODUCTO.DBF",
                     self._back_button("Volver a Edit SISMED", navigate_fn, 11)
                 ),
                 ft.Row([sidebar, main_content], expand=True, spacing=20, vertical_alignment=ft.CrossAxisAlignment.STRETCH),

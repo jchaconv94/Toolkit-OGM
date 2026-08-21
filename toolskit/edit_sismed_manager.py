@@ -5,15 +5,15 @@ from dbf_utils import open_dbf, snapshot_dbf
 
 class EditSismedManager:
     """
-    Gestiona la edición directa de archivos DBF del SISMED.
-    Usa el método de 'Inyección Binaria' para evitar bloqueos y asegurar persistencia,
-    incluso si el SISMED está abierto (en modo compartido).
+    Gestiona la edicion directa de archivos DBF del SISMED.
+    Usa escritura binaria controlada para actualizar campos puntuales.
     """
     def __init__(self, sismed_dir: str):
         self.sismed_dir = sismed_dir.strip()
-        path_datos = os.path.join(self.sismed_dir, "DATOS", "MMEDICAM.DBF")
-        path_root  = os.path.join(self.sismed_dir, "MMEDICAM.DBF")
-        self.mmedicam_path = path_datos if os.path.exists(path_datos) else path_root
+        self.mproducto_path = self._resolve_dbf_path("MPRODUCTO.DBF")
+        # Se conserva por compatibilidad con instalaciones antiguas, pero MEDEST
+        # se lee y modifica exclusivamente desde MPRODUCTO.DBF.
+        self.mmedicam_path = self._resolve_dbf_path("MMEDICAM.DBF")
 
         # ── TMOVIM ──────────────────────────────────────────────────────────────
         path_tmovim_datos = os.path.join(self.sismed_dir, "DATOS", "TMOVIM.DBF")
@@ -23,65 +23,83 @@ class EditSismedManager:
         self._tmovim_record_len  = None
         self._tmovim_field_info  = {}   # {FIELD_NAME: (offset, length, type_char)}
 
+    def _resolve_dbf_path(self, dbf_name: str) -> str:
+        path_datos = os.path.join(self.sismed_dir, "DATOS", dbf_name)
+        path_root = os.path.join(self.sismed_dir, dbf_name)
+        return path_datos if os.path.exists(path_datos) else path_root
+
+    @staticmethod
+    def _medicine_code_keys(value: str) -> set:
+        raw = str(value or "").strip().upper()
+        keys = {raw} if raw else set()
+        if raw.isdigit():
+            keys.add(raw.zfill(5))
+            keys.add(raw.zfill(7))
+        return keys
+
+    def _capture_mproducto_structure(self, table) -> None:
+        self.header_len = table.header.headerlen
+        self.record_len = table.header.recordlen
+        self.medest_offset = -1
+        current_offset = 1
+        for field in table.fields:
+            if field.name.upper() == 'MEDEST':
+                self.medest_offset = current_offset
+                break
+            current_offset += field.length
+
+    @staticmethod
+    def _medicine_result(record_index: int, record: dict) -> dict:
+        return {
+            "id_fisico": record_index,
+            "medcod": str(record.get('MEDCOD') or record.get('medcod') or '').strip(),
+            "mednom": str(record.get('MEDNOM') or record.get('mednom') or '').strip(),
+            "medest": str(record.get('MEDEST') or record.get('medest') or '').strip() or "_",
+            "medpres": str(record.get('MEDPRES') or record.get('medpres') or '').strip(),
+            "medcnc": str(record.get('MEDCNC') or record.get('medcnc') or '').strip(),
+            "medff": str(record.get('MEDFF') or record.get('medff') or '').strip(),
+        }
+
     def search_medicines(self, query: str):
         """
-        Busca medicamentos por código o nombre en MMEDICAM.DBF.
+        Busca medicamentos por código o nombre en MPRODUCTO.DBF.
         Devuelve una lista de diccionarios con el índice físico del registro.
         """
         results = []
-        if not os.path.exists(self.mmedicam_path):
+        if not os.path.exists(self.mproducto_path):
             return results
             
         try:
-            with tempfile.TemporaryDirectory(prefix="toolkit_edit_mmedicam_") as snapshot_dir:
-                read_path = snapshot_dbf(self.mmedicam_path, snapshot_dir)
+            with tempfile.TemporaryDirectory(prefix="toolkit_edit_mproducto_") as snapshot_dir:
+                read_path = snapshot_dbf(self.mproducto_path, snapshot_dir)
                 table = open_dbf(read_path, encoding='latin1', load=True)
                 q = query.strip().upper()
-                
-                self.header_len = table.header.headerlen
-                self.record_len = table.header.recordlen
-                
-                self.medest_offset = -1
-                current_offset = 1 
-                for field in table.fields:
-                    if field.name.upper() == 'MEDEST':
-                        self.medest_offset = current_offset
-                        break
-                    current_offset += field.length
+                self._capture_mproducto_structure(table)
 
                 for i, record in enumerate(table.records):
                     m_cod = str(record.get('MEDCOD') or record.get('medcod') or '').strip()
                     m_nom = str(record.get('MEDNOM') or record.get('mednom') or '').strip()
-                    m_est = str(record.get('MEDEST') or record.get('medest') or '').strip() or "_"
                     
                     if q in m_cod.upper() or q in m_nom.upper():
-                        results.append({
-                            "id_fisico": i,
-                            "medcod": m_cod,
-                            "mednom": m_nom,
-                            "medest": m_est,
-                            "medpres": str(record.get('MEDPRES') or '').strip(),
-                            "medcnc": str(record.get('MEDCNC') or '').strip(),
-                            "medff": str(record.get('MEDFF') or '').strip(),
-                        })
+                        results.append(self._medicine_result(i, record))
         except Exception as e:
-            print(f"Error búsqueda binaria: {e}")
+            print(f"Error búsqueda MPRODUCTO: {e}")
             
         return results
 
     def _patch_binary_field(self, record_index: int, new_value: str):
         """Escribe directamente un carácter en la posición binaria de MEDEST."""
-        if not os.path.exists(self.mmedicam_path):
-            return False, "Archivo no encontrado."
+        if not os.path.exists(self.mproducto_path):
+            return False, "Archivo MPRODUCTO.DBF no encontrado."
 
         if not hasattr(self, 'header_len') or self.medest_offset == -1:
             self._detect_structure()
             if self.medest_offset == -1:
-                return False, "Campo MEDEST no encontrado."
+                return False, "Campo MEDEST no encontrado en MPRODUCTO.DBF."
 
         try:
             target_pos = self.header_len + (record_index * self.record_len) + self.medest_offset
-            with open(self.mmedicam_path, "rb+") as f:
+            with open(self.mproducto_path, "rb+") as f:
                 f.seek(target_pos)
                 current_byte = f.read(1).decode('latin1', errors='ignore')
                 if current_byte not in [' ', '_', 'E', 'S']:
@@ -96,17 +114,10 @@ class EditSismedManager:
 
     def _detect_structure(self):
         try:
-            with tempfile.TemporaryDirectory(prefix="toolkit_edit_mmedicam_") as snapshot_dir:
-                read_path = snapshot_dbf(self.mmedicam_path, snapshot_dir)
+            with tempfile.TemporaryDirectory(prefix="toolkit_edit_mproducto_") as snapshot_dir:
+                read_path = snapshot_dbf(self.mproducto_path, snapshot_dir)
                 table = open_dbf(read_path, encoding='latin1', load=True)
-                self.header_len = table.header.headerlen
-                self.record_len = table.header.recordlen
-                current_offset = 1
-                for field in table.fields:
-                    if field.name.upper() == 'MEDEST':
-                        self.medest_offset = current_offset
-                        break
-                    current_offset += field.length
+                self._capture_mproducto_structure(table)
         except:
             self.medest_offset = -1
 
@@ -124,37 +135,23 @@ class EditSismedManager:
 
     def search_medicines_by_list(self, codes_list: list):
         results = []
-        if not os.path.exists(self.mmedicam_path) or not codes_list:
+        if not os.path.exists(self.mproducto_path) or not codes_list:
             return results
         try:
-            search_set = set(str(c).strip().upper() for c in codes_list)
-            with tempfile.TemporaryDirectory(prefix="toolkit_edit_mmedicam_") as snapshot_dir:
-                read_path = snapshot_dbf(self.mmedicam_path, snapshot_dir)
+            search_set = set()
+            for code in codes_list:
+                search_set.update(self._medicine_code_keys(code))
+            with tempfile.TemporaryDirectory(prefix="toolkit_edit_mproducto_") as snapshot_dir:
+                read_path = snapshot_dbf(self.mproducto_path, snapshot_dir)
                 table = open_dbf(read_path, encoding='latin1', load=True)
-                self.header_len = table.header.headerlen
-                self.record_len = table.header.recordlen
-                self.medest_offset = -1
-                current_offset = 1
-                for field in table.fields:
-                    if field.name.upper() == 'MEDEST':
-                        self.medest_offset = current_offset
-                        break
-                    current_offset += field.length
+                self._capture_mproducto_structure(table)
 
                 for i, record in enumerate(table.records):
                     m_cod = str(record.get('MEDCOD') or '').strip()
-                    if m_cod.upper() in search_set:
-                        results.append({
-                            "id_fisico": i,
-                            "medcod": m_cod,
-                            "mednom": str(record.get('MEDNOM') or '').strip(),
-                            "medest": str(record.get('MEDEST') or '').strip() or "_",
-                            "medpres": str(record.get('MEDPRES') or '').strip(),
-                            "medcnc": str(record.get('MEDCNC') or '').strip(),
-                            "medff": str(record.get('MEDFF') or '').strip(),
-                        })
+                    if self._medicine_code_keys(m_cod) & search_set:
+                        results.append(self._medicine_result(i, record))
         except Exception as e:
-            print(f"Error búsqueda masiva: {e}")
+            print(f"Error búsqueda masiva MPRODUCTO: {e}")
         return results
 
     # ════════════════════════════════════════════════════════════════════════════
