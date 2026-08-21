@@ -234,7 +234,7 @@ class UpdaterBehaviorTests(unittest.TestCase):
         self.assertFalse(controller.appbar_badge.label_visible)
 
     @patch("updater_controller.cfg_get", return_value=False)
-    def test_header_click_checks_and_offers_download(self, _get):
+    def test_header_click_checks_once_without_transient_message(self, _get):
         controller = self._controller()
         calls = []
         controller._snack = lambda message: calls.append(("snack", message))
@@ -242,10 +242,9 @@ class UpdaterBehaviorTests(unittest.TestCase):
 
         controller.appbar_action()
 
-        self.assertEqual(calls[0][0], "snack")
         self.assertEqual(
-            calls[1],
-            ("check", {"manual": True, "offer_download": True}),
+            calls,
+            [("check", {"manual": True, "offer_download": True})],
         )
 
     @patch("updater_controller.cfg_get", return_value=False)

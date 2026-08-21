@@ -341,7 +341,6 @@ class AppUpdaterController:
             self._snack(self.status_detail.value or "El proceso de actualizacion esta en curso.")
             return
 
-        self._snack("Buscando actualizaciones de ToolKit SISMED...")
         self.check_async(manual=True, offer_download=True)
 
     def manual_action(self, _event=None) -> None:
