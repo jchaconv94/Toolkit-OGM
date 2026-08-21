@@ -14,6 +14,7 @@ $iconIco = Join-Path $scriptDir "ToolkitOGM.ico"
 $versionInfoFile = Join-Path $scriptDir "ToolkitOGM.version.txt"
 $specFile = Join-Path $scriptDir "ToolkitOGM.spec"
 $issFile = Join-Path $scriptDir "ToolkitOGM.iss"
+$updaterSource = Join-Path $scriptDir "ToolkitUpdater.cs"
 $distDir = Join-Path $repoRoot "dist"
 $buildDir = Join-Path $repoRoot "build\pyinstaller"
 $appDistDir = Join-Path $distDir "ToolkitOGM"
@@ -143,6 +144,26 @@ Remove-DirectoryWithRetries -Path $appDistDir
 Write-Host "==> Empaquetando ejecutable con PyInstaller..." -ForegroundColor Cyan
 & $pythonExe -m PyInstaller --noconfirm --clean --distpath $distDir --workpath $buildDir $specFile
 Assert-LastExitCode "Fallo el empaquetado con PyInstaller"
+
+Write-Host "==> Generando auxiliar nativo de actualizacion..." -ForegroundColor Cyan
+$cscCandidates = @(
+    "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
+    "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+)
+$cscPath = $cscCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $cscPath) {
+    throw "No se encontro el compilador C# de Windows necesario para ToolkitUpdater.exe"
+}
+if (-not (Test-Path -LiteralPath $updaterSource)) {
+    throw "No se encontro el codigo fuente del auxiliar: $updaterSource"
+}
+
+$updaterExe = Join-Path $appDistDir "ToolkitUpdater.exe"
+& $cscPath /nologo /target:winexe /optimize+ "/out:$updaterExe" $updaterSource
+Assert-LastExitCode "Fallo la compilacion de ToolkitUpdater.exe"
+if (-not (Test-Path -LiteralPath $updaterExe)) {
+    throw "No se genero el auxiliar esperado: $updaterExe"
+}
 
 $possibleIscc = @()
 
