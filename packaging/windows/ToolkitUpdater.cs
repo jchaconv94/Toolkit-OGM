@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
-using System.Threading;
 using System.Windows.Forms;
 
 internal static class ToolkitUpdateHost
@@ -86,7 +85,6 @@ internal static class ToolkitUpdateHost
             WriteLog(logPath, "La aplicacion no termino de cerrarse. No se modifico la instalacion.");
             return 16;
         }
-        Thread.Sleep(1000);
 
         string backupDirectory = Path.Combine(
             updateDirectory,
@@ -643,7 +641,7 @@ internal static class ToolkitUpdateHost
             startInfo.WorkingDirectory = Path.GetDirectoryName(applicationPath);
             startInfo.UseShellExecute = true;
             Process.Start(startInfo);
-            WriteLog(logPath, "Se volvio a abrir la version anterior de ToolKit SISMED.");
+            WriteLog(logPath, "Se abrio ToolKit SISMED despues de finalizar el proceso de actualizacion.");
         }
         catch (Exception exception)
         {

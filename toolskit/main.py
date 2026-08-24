@@ -31,6 +31,7 @@ def _bootstrap_runtime_directory():
 _bootstrap_runtime_directory()
 
 from tools.app_config import append_runtime_log, get as cfg_get, get_config_log_path, get_startup_log_path, set as cfg_set, update_runtime_status
+from update_shutdown import arm_update_exit_watchdog
 from tools.tool_registry import TOOLS_REGISTRY, get_tool_by_name
 from app_version import get_current_version
 from updater_controller import AppUpdaterController
@@ -517,10 +518,14 @@ def main(page: ft.Page):
 
     def _shutdown_after_update():
         append_runtime_log("update", "Cerrando ToolKit SISMED antes de iniciar el instalador.")
+        append_runtime_log(
+            "update",
+            "Se activo el cierre rapido protegido; el proceso anterior terminara en un maximo de 3 segundos.",
+        )
+        arm_update_exit_watchdog(delay_seconds=3.0)
         try:
             page.window.prevent_close = False
             page.window.visible = False
-            page.update()
         except Exception:
             pass
         _stop_sync_services()
