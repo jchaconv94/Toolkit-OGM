@@ -69,9 +69,17 @@ jobs:
         shell: pwsh
         run: .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 
+      - name: Probar recuperacion del actualizador
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File tests/test_windows_update_host.ps1
+
       - name: Generar ejecutable e instalador
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1 -Version "${{ steps.release.outputs.version }}"
+
+      - name: Probar actualizacion real en una instalacion aislada
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File tests/test_windows_installer_upgrade.ps1 -Version "${{ steps.release.outputs.version }}"
 
       - name: Verificar instalador y huella SHA-256
         id: artifacts

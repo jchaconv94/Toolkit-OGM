@@ -160,15 +160,31 @@ class UpdateManagerIntegrationTests(unittest.TestCase):
                 )
                 self.assertIsNone(manager.check_for_update())
 
-    def test_native_helper_waits_for_parent_before_requesting_elevation(self):
+    def test_native_helper_waits_backs_up_verifies_and_can_restore(self):
         source = (ROOT / "packaging" / "windows" / "ToolkitUpdater.cs").read_text(
             encoding="utf-8"
         )
 
         self.assertIn("WaitForExit(ParentWaitMilliseconds)", source)
-        self.assertIn('startInfo.Verb = "runas"', source)
+        self.assertIn("CreateVerifiedBackup", source)
+        self.assertIn("RecoverPreviousInstallation", source)
+        self.assertIn("HasExpectedVersion", source)
+        self.assertIn("installer.WaitForExit()", source)
+        self.assertIn('"/DIR=" + Quote(installDirectory)', source)
         self.assertIn("/AUTOUPDATE", source)
-        self.assertLess(source.index("WaitForParent"), source.index("Process.Start(startInfo)"))
+        self.assertIn("/SAFEUPDATE", source)
+        self.assertNotIn("/SUPPRESSMSGBOXES", source)
+        self.assertLess(source.index("WaitForParent"), source.index("RunInstaller("))
+
+    def test_inno_setup_preserves_existing_installation_directory(self):
+        source = (ROOT / "packaging" / "windows" / "ToolkitOGM.iss").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("UsePreviousAppDir=yes", source)
+        self.assertIn("PrivilegesRequiredOverridesAllowed=commandline", source)
+        self.assertNotIn("UsePreviousAppDir=no", source)
+        self.assertNotIn("[InstallDelete]", source)
 
     @unittest.skipUnless(os.name == "nt", "El lanzador diferido solo existe en Windows")
     def test_default_launcher_starts_hidden_detached_helper(self):
@@ -179,24 +195,36 @@ class UpdateManagerIntegrationTests(unittest.TestCase):
             return object()
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            installer = Path(temp_dir) / "ToolkitOGM-Setup-2.0.15.exe"
-            helper = Path(temp_dir) / UPDATER_HELPER_NAME
+            root = Path(temp_dir)
+            update_dir = root / "updates"
+            install_dir = root / "installed"
+            update_dir.mkdir()
+            install_dir.mkdir()
+            installer = update_dir / "ToolkitOGM-Setup-2.0.15.exe"
+            helper = install_dir / UPDATER_HELPER_NAME
+            app = install_dir / "ToolkitOGM.exe"
             installer.write_bytes(b"installer")
             helper.write_bytes(b"helper")
+            app.write_bytes(b"application")
             manager = UpdateManager(
                 current_version="2.0.14",
-                download_dir=temp_dir,
+                download_dir=update_dir,
                 process_launcher=fake_process_launcher,
                 helper_path=helper,
+                install_dir=install_dir,
             )
             manager.launch_installer(installer)
 
         self.assertEqual(len(calls), 1)
         command, kwargs = calls[0]
-        self.assertEqual(Path(command[0]), helper.resolve())
+        self.assertEqual(Path(command[0]).parent, update_dir.resolve())
+        self.assertNotEqual(Path(command[0]), helper.resolve())
+        self.assertTrue(Path(command[0]).name.startswith("ToolkitUpdateHost-"))
         self.assertEqual(Path(command[1]), installer.resolve())
         self.assertTrue(command[2].isdigit())
         self.assertEqual(Path(command[3]).name, "launcher.log")
+        self.assertEqual(Path(command[4]), install_dir.resolve())
+        self.assertEqual(command[5], "2.0.15")
         self.assertNotIn("powershell.exe", " ".join(command).lower())
         self.assertTrue(kwargs["creationflags"])
         self.assertIsNotNone(kwargs["stdin"])
@@ -207,18 +235,56 @@ class UpdateManagerIntegrationTests(unittest.TestCase):
             raise OSError("bloqueado")
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            installer = Path(temp_dir) / "ToolkitOGM-Setup-2.0.15.exe"
-            helper = Path(temp_dir) / UPDATER_HELPER_NAME
+            root = Path(temp_dir)
+            update_dir = root / "updates"
+            install_dir = root / "installed"
+            update_dir.mkdir()
+            install_dir.mkdir()
+            installer = update_dir / "ToolkitOGM-Setup-2.0.15.exe"
+            helper = install_dir / UPDATER_HELPER_NAME
             installer.write_bytes(b"installer")
             helper.write_bytes(b"helper")
+            (install_dir / "ToolkitOGM.exe").write_bytes(b"application")
             manager = UpdateManager(
                 current_version="2.0.14",
-                download_dir=temp_dir,
+                download_dir=update_dir,
                 process_launcher=failed_process_launcher,
                 helper_path=helper,
+                install_dir=install_dir,
             )
             with self.assertRaises(UpdateError):
                 manager.launch_installer(installer)
+            self.assertEqual(list(update_dir.glob("ToolkitUpdateHost-*.exe")), [])
+
+    @unittest.skipUnless(os.name == "nt", "El lanzador diferido solo existe en Windows")
+    def test_update_files_inside_installation_are_rejected_before_launch(self):
+        calls = []
+
+        def fake_process_launcher(*args, **kwargs):
+            calls.append((args, kwargs))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            install_dir = Path(temp_dir) / "installed"
+            update_dir = install_dir / "updates"
+            update_dir.mkdir(parents=True)
+            installer = update_dir / "ToolkitOGM-Setup-2.0.15.exe"
+            helper = install_dir / UPDATER_HELPER_NAME
+            installer.write_bytes(b"installer")
+            helper.write_bytes(b"helper")
+            (install_dir / "ToolkitOGM.exe").write_bytes(b"application")
+            manager = UpdateManager(
+                current_version="2.0.14",
+                download_dir=update_dir,
+                process_launcher=fake_process_launcher,
+                helper_path=helper,
+                install_dir=install_dir,
+            )
+
+            with self.assertRaisesRegex(UpdateError, "no puede estar dentro"):
+                manager.launch_installer(installer)
+
+            self.assertEqual(calls, [])
+            self.assertEqual(list(update_dir.glob("ToolkitUpdateHost-*.exe")), [])
 
     @unittest.skipUnless(os.name == "nt", "El lanzador diferido solo existe en Windows")
     def test_missing_native_helper_is_reported_before_closing_app(self):
@@ -229,6 +295,7 @@ class UpdateManagerIntegrationTests(unittest.TestCase):
                 current_version="2.0.14",
                 download_dir=temp_dir,
                 helper_path=Path(temp_dir) / UPDATER_HELPER_NAME,
+                install_dir=temp_dir,
             )
 
             with self.assertRaisesRegex(UpdateError, "auxiliar de actualizacion"):

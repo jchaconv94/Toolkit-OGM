@@ -1,5 +1,9 @@
-#define MyAppId "{{E2C6BAA5-3F07-43F5-9B83-9A0F912C3B24}"
-#define MyAppName "ToolKit SISMED"
+#ifndef MyAppId
+  #define MyAppId "{{E2C6BAA5-3F07-43F5-9B83-9A0F912C3B24}"
+#endif
+#ifndef MyAppName
+  #define MyAppName "ToolKit SISMED"
+#endif
 #ifndef MyAppVersion
   #define MyAppVersion "1.0.0"
 #endif
@@ -9,7 +13,12 @@
 #define MyAppExeName "ToolkitOGM.exe"
 #define MyAppMutex "ToolkitOGM_SingleInstanceMutex_v1"
 #define MyBuildDir RepoRoot + "\dist\ToolkitOGM"
-#define MyInstallerDir RepoRoot + "\dist\installer"
+#ifndef MyInstallerDir
+  #define MyInstallerDir RepoRoot + "\dist\installer"
+#endif
+#ifndef MyDefaultDirName
+  #define MyDefaultDirName "{autopf}\ToolKit SISMED"
+#endif
 #define MyIconFile RepoRoot + "\packaging\windows\ToolkitOGM.ico"
 
 [Setup]
@@ -17,11 +26,13 @@ AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher=Jordan Chacon Villacis
-DefaultDirName={autopf}\ToolKit SISMED
+DefaultDirName={#MyDefaultDirName}
 DefaultGroupName={#MyAppName}
 DisableDirPage=yes
 DisableProgramGroupPage=yes
-UsePreviousAppDir=no
+; Una actualizacion debe conservar la carpeta registrada por la instalacion anterior.
+; El auxiliar tambien envia /DIR con la ruta exacta como segunda proteccion.
+UsePreviousAppDir=yes
 OutputDir={#MyInstallerDir}
 OutputBaseFilename=ToolkitOGM-Setup-{#MyAppVersion}
 Compression=lzma
@@ -31,6 +42,7 @@ SetupIconFile={#MyIconFile}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
 PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=commandline
 MinVersion=10.0
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -68,7 +80,9 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--install-success"; Description: "Ejecutar {#MyAppName}"; Flags: nowait postinstall skipifsilent
-Filename: "{app}\{#MyAppExeName}"; Parameters: "--install-success"; Flags: nowait; Check: IsAutoUpdateMode
+; Las versiones anteriores del auxiliar solo enviaban /AUTOUPDATE y necesitan este arranque.
+; El auxiliar seguro envia tambien /SAFEUPDATE y abre la app despues de verificarla.
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--install-success"; Flags: nowait; Check: IsLegacyAutoUpdateMode
 
 [Code]
 function IsAutoUpdateMode: Boolean;
@@ -84,6 +98,26 @@ begin
       Exit;
     end;
   end;
+end;
+
+function IsSafeUpdateMode: Boolean;
+var
+  Index: Integer;
+begin
+  Result := False;
+  for Index := 1 to ParamCount do
+  begin
+    if CompareText(ParamStr(Index), '/SAFEUPDATE') = 0 then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+function IsLegacyAutoUpdateMode: Boolean;
+begin
+  Result := IsAutoUpdateMode and (not IsSafeUpdateMode);
 end;
 
 function GetAppMutex(Param: String): String;

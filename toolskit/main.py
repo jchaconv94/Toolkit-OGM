@@ -319,6 +319,7 @@ def is_startup_enabled() -> bool:
 def main(page: ft.Page):
     startup_hidden_requested = "--autorun" in sys.argv
     install_success_requested = "--install-success" in sys.argv
+    update_failure_requested = "--update-failed" in sys.argv
     startup_state = {
         "restore_listener_ready": threading.Event(),
         "tray_ready": threading.Event(),
@@ -1518,6 +1519,16 @@ def main(page: ft.Page):
         cfg_set("update_pending_version", "")
         append_runtime_log("update", f"Actualizacion {current_version} instalada correctamente.")
         _show_message("ToolKit SISMED se instaló o actualizó correctamente.")
+    elif update_failure_requested:
+        cfg_set("update_pending_version", "")
+        append_runtime_log(
+            "update",
+            "La actualizacion no se completo. El auxiliar restauro la instalacion anterior.",
+        )
+        _show_message(
+            "La actualización no pudo completarse. "
+            "ToolKit SISMED restauró la versión anterior para proteger la instalación."
+        )
 
 if __name__ == "__main__":
     if _acquire_single_instance():

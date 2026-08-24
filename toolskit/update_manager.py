@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -26,10 +28,10 @@ INSTALLER_PATTERN = re.compile(
 SHA256_PATTERN = re.compile(r"\b([a-fA-F0-9]{64})\b")
 MAX_INSTALLER_BYTES = 600 * 1024 * 1024
 INSTALLER_ARGUMENTS = (
-    "/SP- /SILENT /SUPPRESSMSGBOXES /NORESTART "
+    "/SP- /SILENT /NORESTART /NORESTARTAPPLICATIONS "
     "/CLOSEAPPLICATIONS /FORCECLOSEAPPLICATIONS /AUTOUPDATE"
 )
-UPDATER_HELPER_NAME = "ToolkitUpdater.exe"
+UPDATER_HELPER_NAME = "ToolkitUpdateHost.exe"
 
 
 class UpdateError(RuntimeError):
@@ -70,6 +72,7 @@ class UpdateManager:
         launcher: Callable[[str, str], bool] | None = None,
         process_launcher=None,
         helper_path: str | os.PathLike | None = None,
+        install_dir: str | os.PathLike | None = None,
         logger: Callable[[str], None] | None = None,
     ):
         self.api_url = (
@@ -89,6 +92,7 @@ class UpdateManager:
         self.launcher = launcher
         self.process_launcher = process_launcher or subprocess.Popen
         self.helper_path = Path(helper_path) if helper_path else None
+        self.install_dir = Path(install_dir) if install_dir else None
         self.logger = logger or (lambda _message: None)
 
     def _log(self, message: str) -> None:
@@ -319,6 +323,46 @@ class UpdateManager:
             return Path(sys.executable).resolve().parent / UPDATER_HELPER_NAME
         return Path(__file__).resolve().parent / UPDATER_HELPER_NAME
 
+    def _application_directory(self) -> Path:
+        if self.install_dir:
+            return self.install_dir.resolve()
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent
+        return Path(__file__).resolve().parent
+
+    @staticmethod
+    def _path_is_inside(candidate: Path, parent: Path) -> bool:
+        try:
+            candidate_value = os.path.normcase(str(candidate.resolve()))
+            parent_value = os.path.normcase(str(parent.resolve()))
+            return os.path.commonpath([candidate_value, parent_value]) == parent_value
+        except (OSError, ValueError):
+            return False
+
+    def _stage_updater_helper(self, helper: Path) -> Path:
+        staged_name = (
+            f"ToolkitUpdateHost-{os.getpid()}-{uuid.uuid4().hex[:10]}.exe"
+        )
+        staged_helper = self.download_dir / staged_name
+        try:
+            shutil.copy2(helper, staged_helper)
+            if (
+                not staged_helper.is_file()
+                or staged_helper.stat().st_size != helper.stat().st_size
+                or self._file_sha256(staged_helper) != self._file_sha256(helper)
+            ):
+                raise OSError("la copia del auxiliar no coincide con el original")
+            return staged_helper.resolve()
+        except OSError as exc:
+            try:
+                staged_helper.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise UpdateError(
+                "No se pudo preparar una copia segura del actualizador. "
+                "ToolKit SISMED permanecera instalado y abierto."
+            ) from exc
+
     def launch_installer(self, installer_path: str | os.PathLike) -> None:
         path = str(Path(installer_path).resolve())
         if not Path(path).is_file():
@@ -340,16 +384,38 @@ class UpdateManager:
                 "La instalacion de ToolKit SISMED no contiene el auxiliar de actualizacion. "
                 "Instale manualmente la version mas reciente."
             )
+        installer_match = INSTALLER_PATTERN.fullmatch(Path(path).name)
+        if not installer_match:
+            raise UpdateSecurityError("El nombre del instalador descargado no es valido.")
+
+        install_directory = self._application_directory()
+        installed_executable = install_directory / "ToolkitOGM.exe"
+        if not installed_executable.is_file():
+            raise UpdateError(
+                "No se pudo identificar la instalacion actual de ToolKit SISMED. "
+                "La actualizacion fue cancelada sin modificar ningun archivo."
+            )
+        if self._path_is_inside(Path(path), install_directory) or self._path_is_inside(
+            self.download_dir, install_directory
+        ):
+            raise UpdateError(
+                "La carpeta temporal de la actualizacion no puede estar dentro de la "
+                "instalacion actual. No se modifico ni se cerro ToolKit SISMED."
+            )
+
+        staged_helper = self._stage_updater_helper(helper)
         creation_flags = (
             getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             | getattr(subprocess, "DETACHED_PROCESS", 0)
             | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         )
         command = [
-            str(helper),
+            str(staged_helper),
             path,
             str(os.getpid()),
             str(launcher_log.resolve()),
+            str(install_directory),
+            installer_match.group(1),
         ]
         try:
             self.process_launcher(
@@ -361,6 +427,10 @@ class UpdateManager:
                 creationflags=creation_flags,
             )
         except OSError as exc:
+            try:
+                staged_helper.unlink(missing_ok=True)
+            except OSError:
+                pass
             raise UpdateError(
                 "No se pudo preparar el instalador. Reinicie ToolKit SISMED e intentelo nuevamente."
             ) from exc

@@ -152,15 +152,15 @@ $cscCandidates = @(
 )
 $cscPath = $cscCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $cscPath) {
-    throw "No se encontro el compilador C# de Windows necesario para ToolkitUpdater.exe"
+    throw "No se encontro el compilador C# de Windows necesario para ToolkitUpdateHost.exe"
 }
 if (-not (Test-Path -LiteralPath $updaterSource)) {
     throw "No se encontro el codigo fuente del auxiliar: $updaterSource"
 }
 
-$updaterExe = Join-Path $appDistDir "ToolkitUpdater.exe"
-& $cscPath /nologo /target:winexe /optimize+ "/out:$updaterExe" $updaterSource
-Assert-LastExitCode "Fallo la compilacion de ToolkitUpdater.exe"
+$updaterExe = Join-Path $appDistDir "ToolkitUpdateHost.exe"
+& $cscPath /nologo /target:winexe /optimize+ /reference:System.Windows.Forms.dll "/out:$updaterExe" $updaterSource
+Assert-LastExitCode "Fallo la compilacion de ToolkitUpdateHost.exe"
 if (-not (Test-Path -LiteralPath $updaterExe)) {
     throw "No se genero el auxiliar esperado: $updaterExe"
 }
