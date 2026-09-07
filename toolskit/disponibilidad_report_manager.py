@@ -13,7 +13,9 @@ Configuraciones soportadas:
   4. Por Red         → consolida todo por RED, sin desglosar por EESS
   5. Meses           → período de N meses hacia atrás desde hoy
 
-Columnas pivot: ANNOMES (yyyymm) → columnas dinámicas con Consumo = venta+sis+intersan
+Columnas pivot: ANNOMES (yyyymm) → columnas dinámicas con
+Consumo = VENTA + SIS + INTERSAN + SOAT + CREDHOSP + OTR_CONV.
+REINGRE no se considera consumo porque representa el retorno de existencias.
 Columna extra: PRECIO = último precio del período | STOCK_FIN = stock del mes seleccionado
 """
 
@@ -48,6 +50,15 @@ class DisponibilidadReportManager:
     COLS_RED   = ["RED",
                   "MED COD", "DESCRIPCION DEL PRODUCTO", "MEDFF", "PRECIO",
                   "MEDTIP", "MEDPET", "MEDEST"]
+
+    CONSUMPTION_FIELDS = (
+        "VENTA",
+        "SIS",
+        "INTERSAN",
+        "SOAT",
+        "CREDHOSP",
+        "OTR_CONV",
+    )
 
     def __init__(self, sismed_dir: str, log_callback=None):
         self.sismed_dir = sismed_dir.strip()
@@ -89,6 +100,10 @@ class DisponibilidadReportManager:
             return float(val or 0)
         except (ValueError, TypeError):
             return 0.0
+
+    def _calculate_consumption(self, record) -> float:
+        """Suma solo los movimientos que representan consumo o salida."""
+        return sum(self._f(record.get(field)) for field in self.CONSUMPTION_FIELDS)
 
     @staticmethod
     def _strip_farmacia(codigo: str) -> str:
@@ -417,15 +432,7 @@ class DisponibilidadReportManager:
                 if cod_med not in cat_med:
                     continue
 
-                # Calcular consumo
-                venta     = self._f(rec.get("VENTA"))
-                sis       = self._f(rec.get("SIS"))
-                intersan  = self._f(rec.get("INTERSAN"))
-                reingre   = self._f(rec.get("REINGRE"))
-                soat      = self._f(rec.get("SOAT"))
-                credhosp  = self._f(rec.get("CREDHOSP"))
-                otr_conv  = self._f(rec.get("OTR_CONV"))
-                consumo = venta + sis + intersan + reingre + soat + credhosp + otr_conv
+                consumo = self._calculate_consumption(rec)
 
                 precio    = self._f(rec.get("PRECIO"))
                 stock_fin = self._f(rec.get("STOCK_FIN"))
