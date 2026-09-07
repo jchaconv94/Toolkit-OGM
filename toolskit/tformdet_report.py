@@ -7,6 +7,21 @@ import traceback
 
 from dbf_utils import open_dbf, snapshot_dbf
 
+
+ADDITIONAL_TFORMDET_COLUMNS = (
+    'DO_SALDO',
+    'DO_INGRE',
+    'DO_CON',
+    'DO_OTR',
+    'DO_TOT',
+    'DO_STK',
+    'ING_REGULA',
+    'SAL_REGULA',
+    'SAL_CONINS',
+    'ESSALUD',
+)
+
+
 class TformdetManager:
     def __init__(self, sismed_dir, log_callback=None):
         self.sismed_dir = sismed_dir
@@ -74,7 +89,7 @@ class TformdetManager:
                     'FAC_PERD', 'DEFNAC', 'EXO', 'SOAT', 'CREDHOSP', 
                     'OTR_CONV', 'DEVOL', 'VENCIDO', 'MERMA', 'DISTRI', 
                     'TRANSF', 'VENTAINST', 'DEV_VEN', 'DEV_MERMA', 'OTRAS_SAL', 
-                    'STOCK_FIN', 'TOTAL'
+                    'STOCK_FIN', 'TOTAL', *ADDITIONAL_TFORMDET_COLUMNS
                 ]
                 
                 # Solo agregar ANNOMES si es más de un periodo
