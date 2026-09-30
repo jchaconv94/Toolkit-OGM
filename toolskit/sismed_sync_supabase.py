@@ -82,6 +82,17 @@ class SismedSyncSupabaseManager(SismedSyncManager):
         self.log(f"  ✓ Validación IPRESS correcta: {expected}")
         return True, ""
 
+    def _request_params(self) -> dict:
+        # La clave y el equipo son del script de Google Sheets. Sync SISMED 2.0 se autentica
+        # con su token de instalación y no debe mandar la clave a otro servicio.
+        params = super()._request_params()
+        for key in ("clave", "equipo", "equipo_id"):
+            params.pop(key, None)
+        return params
+
+    def _send_key_blocks(self, response) -> list[tuple[str, str]]:
+        return []
+
     def _request_headers(self) -> dict:
         headers = {
             "Content-Type": "application/json",
