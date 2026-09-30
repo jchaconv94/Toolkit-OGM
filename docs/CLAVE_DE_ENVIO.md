@@ -48,9 +48,27 @@ actualización automática del Toolkit.
 Si la web no responde, pasa solo lo que la web aprobó la última vez a esta PC con esta
 clave; lo que nunca tuvo clave se envía como siempre.
 
-**Límite conocido:** protege contra otra PC con el Toolkit (el caso real: una copia vieja
-del SISMED en otra máquina). No impide que alguien envíe a mano a la dirección del script
-sin usar el Toolkit; eso solo se cierra en el script y queda como pendiente aparte.
+## También en el script de Google (v3)
+
+El Toolkit verifica antes de enviar, pero eso no impide que alguien mande datos a mano a la
+dirección del script, o que lo haga un Toolkit anterior a la 2.1.10. Para eso está el script
+v3 (`docs/apps-script/sync_sismed_google_sheets.gs`): antes de escribir la pestaña de un
+establecimiento con clave, pregunta a la web (`app_send_key_verify`, en
+`SUPABASE_CLAVE_ENVIO_SCRIPT.sql` de ToolkitSISMED) si la clave y la PC del envío son las
+vigentes. Si no lo son, no toca la pestaña y responde `BLOQUEADO: código=motivo`, que el
+Toolkit ya sabe mostrar.
+
+- Esa consulta solo lee: no vincula PC ni anota intentos (eso lo hace el Toolkit).
+- Una sola consulta por envío. Un código que no tiene clave se recuerda 5 minutos sin
+  volver a preguntar.
+- Si la web no responde, el envío pasa como siempre (decisión del 2026-09-30).
+- Sin propiedades que configurar: la clave pública va escrita en el código
+  (`WEB_CLAVE_PUBLICA`). En el repositorio queda como `__CLAVE_PUBLICA__`; mientras siga así,
+  el script funciona igual que la versión 2.
+
+**Instalación en cada UNGET, una sola vez:** pegar el código, **Implementar → Administrar
+implementaciones → editar → Versión: nueva versión → Implementar**. Google pide autorizar
+«conectarse a un servicio externo» la primera vez. La dirección del script no cambia.
 
 ## Clave pública de Supabase
 
