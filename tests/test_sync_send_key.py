@@ -168,6 +168,18 @@ class SendKeyCheckerTests(unittest.TestCase):
         self.assertEqual(kwargs["json"]["p_device_id"], "win-A")
         self.assertEqual(kwargs["json"]["p_rows"], 14)
 
+    def test_sends_the_toolkit_version(self):
+        with patch.object(self.mod, "get_current_version", return_value="2.2.0"):
+            _, post = self._check([_Resp(200, {"permitido": True, "protegido": False})])
+        self.assertEqual(post.call_args.kwargs["json"]["p_version"], "2.2.0")
+
+    def test_falls_back_when_the_database_lacks_the_version_function(self):
+        with patch.object(self.mod, "get_current_version", return_value="2.2.0"):
+            result, post = self._check([_Resp(404, {"code": "PGRST202"}), _Resp(200, {"permitido": False, "protegido": True, "motivo": "SIN_CLAVE"})])
+        self.assertEqual(result, {"030S05": (False, "SIN_CLAVE")})
+        self.assertEqual(post.call_count, 2)
+        self.assertNotIn("p_version", post.call_args_list[1].kwargs["json"])
+
     def test_blocked_by_the_web(self):
         result, _ = self._check([_Resp(200, {"permitido": False, "protegido": True, "motivo": "OTRO_EQUIPO"})])
         self.assertEqual(result, {"030S05": (False, "OTRO_EQUIPO")})
