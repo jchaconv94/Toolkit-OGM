@@ -66,3 +66,15 @@ Desde la 2.2.0, la misma consulta de la clave manda también `p_version`. La web
 envía cada establecimiento y con qué versión (`SUPABASE_EQUIPOS_TOOLKIT.sql` en
 ToolkitSISMED). Si la base todavía no tiene esa consulta, el Toolkit repite la pregunta sin
 versión y la clave de envío sigue funcionando igual.
+
+## Versión del SISMED (misma pestaña)
+
+Desde la versión posterior a la 2.2.0, el Toolkit manda también `p_sismed`: el valor de la
+fila `CFGCODMOD = 'SIS'`, `CFGCODIGO = 'AB'` de `DATOS\MCONFIG.DBF` («FECHA ULTIMA VERSION
+SISMED», p. ej. `V2.5.3 vf 12/01/2026`), leído en `toolskit/sismed_version.py`. Esa tabla
+guarda también claves de los servicios web del SISMED: **solo sale esa fila**. Si no se puede
+leer, va vacío y no cambia nada.
+
+La web toma como vigente la versión de SISMED más alta que reporte alguna PC
+(`SUPABASE_EQUIPOS_SISMED.sql` en ToolkitSISMED). Si la base todavía no tiene esa consulta,
+el Toolkit pregunta sin `p_sismed`, y si tampoco tiene la de versión, como antes.

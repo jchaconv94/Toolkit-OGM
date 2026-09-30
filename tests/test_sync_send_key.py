@@ -1,4 +1,7 @@
+import os
+import struct
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +15,7 @@ if str(TOOLKIT_DIR) not in sys.path:
 
 import sismed_sync  # noqa: E402
 import sync_device_id  # noqa: E402
+import sismed_version  # noqa: E402
 from sismed_sync import SismedSyncManager  # noqa: E402
 
 
@@ -180,6 +184,35 @@ class SendKeyCheckerTests(unittest.TestCase):
         self.assertEqual(post.call_count, 2)
         self.assertNotIn("p_version", post.call_args_list[1].kwargs["json"])
 
+    def test_sends_the_sismed_version(self):
+        with patch.object(self.mod, "get_current_version", return_value="2.2.1"), \
+                patch.object(self.mod.requests, "post", return_value=_Resp(200, {"permitido": True, "protegido": False})) as post:
+            self.mod.SendKeyChecker().check({"030S05": 14}, "", "win-A", "PC", sismed="V2.5.3 vf 12/01/2026")
+        body = post.call_args.kwargs["json"]
+        self.assertEqual((body["p_version"], body["p_sismed"]), ("2.2.1", "V2.5.3 vf 12/01/2026"))
+
+    def test_without_the_sismed_function_retries_once_and_remembers(self):
+        respuestas = [_Resp(404, {}), _Resp(200, {"permitido": True, "protegido": False}),
+                      _Resp(200, {"permitido": True, "protegido": False})]
+        with patch.object(self.mod, "get_current_version", return_value="2.2.1"), \
+                patch.object(self.mod.requests, "post", side_effect=respuestas) as post:
+            self.mod.SendKeyChecker().check({"030S05": 14, "06519": 2}, "", "win-A", "PC", sismed="V2.5.3")
+        enviados = [c.kwargs["json"] for c in post.call_args_list]
+        self.assertEqual(len(enviados), 3)
+        self.assertIn("p_sismed", enviados[0])
+        self.assertNotIn("p_sismed", enviados[1])
+        self.assertEqual(enviados[1]["p_version"], "2.2.1")
+        # El segundo establecimiento ya no repite el intento.
+        self.assertNotIn("p_sismed", enviados[2])
+
+    def test_without_both_functions_falls_back_to_the_simple_query(self):
+        respuestas = [_Resp(404, {}), _Resp(404, {}), _Resp(200, {"permitido": False, "protegido": True, "motivo": "SIN_CLAVE"})]
+        with patch.object(self.mod, "get_current_version", return_value="2.2.1"), \
+                patch.object(self.mod.requests, "post", side_effect=respuestas) as post:
+            result = self.mod.SendKeyChecker().check({"030S05": 14}, "", "win-A", "PC", sismed="V2.5.3")
+        self.assertEqual(result, {"030S05": (False, "SIN_CLAVE")})
+        self.assertEqual(set(post.call_args_list[2].kwargs["json"]), {"p_code", "p_key", "p_device_id", "p_device_name", "p_rows"})
+
     def test_blocked_by_the_web(self):
         result, _ = self._check([_Resp(200, {"permitido": False, "protegido": True, "motivo": "OTRO_EQUIPO"})])
         self.assertEqual(result, {"030S05": (False, "OTRO_EQUIPO")})
@@ -205,6 +238,56 @@ class SendKeyCheckerTests(unittest.TestCase):
         self._check([_Resp(200, {"permitido": True, "protegido": False})])
         result, _ = self._check(ConnectionError("sin red"), clave="")
         self.assertEqual(result, {"030S05": (True, "")})
+
+
+def _write_dbf(path, fields, records):
+    """DBF mínimo (dBase III) solo con campos de texto."""
+    header_len = 32 + 32 * len(fields) + 1
+    record_len = 1 + sum(size for _name, size in fields)
+    with open(path, "wb") as fh:
+        fh.write(struct.pack("<BBBBIHH20x", 0x03, 126, 9, 30, len(records), header_len, record_len))
+        for name, size in fields:
+            fh.write(struct.pack("<11sc4xB15x", name.encode("ascii"), b"C", size))
+        fh.write(b"\r")
+        for record in records:
+            fh.write(b" ")
+            for (name, size), value in zip(fields, record):
+                fh.write(value.encode("cp1252").ljust(size)[:size])
+        fh.write(b"\x1a")
+
+
+class SismedVersionTests(unittest.TestCase):
+    FIELDS = [("CFGCODMOD", 3), ("CFGCODIGO", 2), ("CFGDESCRIP", 40), ("CFGVALACT", 99)]
+
+    def _base(self, records):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        os.makedirs(os.path.join(tmp.name, "DATOS"))
+        _write_dbf(os.path.join(tmp.name, "DATOS", "MCONFIG.DBF"), self.FIELDS, records)
+        return tmp.name
+
+    def test_reads_only_the_sis_ab_row(self):
+        base = self._base([
+            ("HTP", "A5", "http_password ACTUALIZA-STOCK", "secreto"),
+            ("SIS", "BD", "SERVICIO RENIEC EN LINEA S/N", "S"),
+            ("SIS", "AB", "FECHA ULTIMA VERSION SISMED", "V2.5.3 vf 12/01/2026"),
+        ])
+        self.assertEqual(sismed_version.read_sismed_version(base), "V2.5.3 vf 12/01/2026")
+
+    def test_missing_table_or_row_gives_empty(self):
+        self.assertEqual(sismed_version.read_sismed_version(tempfile.gettempdir() + "/no-existe"), "")
+        base = self._base([("SIS", "BD", "SERVICIO RENIEC", "S")])
+        self.assertEqual(sismed_version.read_sismed_version(base), "")
+
+    def test_sync_sends_it_with_the_key_check(self):
+        base = self._base([("SIS", "AB", "FECHA ULTIMA VERSION SISMED", "V2.5.3 vf 12/01/2026")])
+        manager = SismedSyncManager()
+        manager.base_dir = base
+        manager._last_reported_almcods = []
+        with patch.object(sismed_sync.SendKeyChecker, "check", return_value={"030S05": (True, "")}) as check, \
+                patch.object(sismed_sync, "get_device_id", return_value="win-A"):
+            manager._apply_send_key_check([{"almcod": "030S0501"}])
+        self.assertEqual(check.call_args.kwargs["sismed"], "V2.5.3 vf 12/01/2026")
 
 
 class ApplySendKeyCheckTests(unittest.TestCase):

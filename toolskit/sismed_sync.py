@@ -15,6 +15,7 @@ from dbf_utils import DbfReadMetrics, iter_dbf_records, open_dbf, snapshot_dbf
 from tools.app_config import set_many, update_runtime_status
 from sync_device_id import get_device_id
 from send_key_check import SendKeyChecker
+from sismed_version import read_sismed_version
 
 SYNC_DBF_ABORT_MIN_BAD_RECORDS = 15
 SYNC_DBF_ABORT_BAD_RATIO = 0.05
@@ -250,6 +251,7 @@ class SismedSyncManager:
             self._clave_envio_normalizada(),
             get_device_id(),
             self._equipo_name(),
+            sismed=read_sismed_version(self.base_dir),
         )
         blocked = sorted(code for code, (allowed, _motivo) in result.items() if not allowed)
         if not blocked:
