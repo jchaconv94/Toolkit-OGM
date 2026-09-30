@@ -65,6 +65,9 @@ def key_hash(value: str) -> str:
 class SendKeyChecker:
     def __init__(self, log=None):
         self.log = log or (lambda _msg: None)
+        # Cuántos datos opcionales acepta la base (versión del Toolkit, versión del SISMED).
+        # Se aprende en la primera consulta para no repetir el intento en cada establecimiento.
+        self._optional_level: int | None = None
 
     def _load_cache(self) -> dict:
         try:
@@ -81,7 +84,7 @@ class SendKeyChecker:
         except Exception:
             pass
 
-    def _ask(self, public_key: str, code: str, key: str, device_id: str, device_name: str, rows: int):
+    def _ask(self, public_key: str, code: str, key: str, device_id: str, device_name: str, rows: int, sismed: str = ""):
         body = {
             "p_code": code,
             "p_key": key,
@@ -89,19 +92,31 @@ class SendKeyChecker:
             "p_device_name": device_name,
             "p_rows": rows,
         }
-        # La versión le permite a la web mostrar qué Toolkit tiene cada PC (pestaña «Equipos»).
+        # Las versiones del Toolkit y del SISMED le permiten a la web mostrar qué tiene cada PC
+        # (pestaña «Equipos»).
         try:
             version = get_current_version()
         except Exception:
             version = ""
+        sismed = str(sismed or "").strip()
+        # De más completa a más simple. Si la base todavía no tiene la consulta con esos datos
+        # (SUPABASE_EQUIPOS_SISMED.sql o SUPABASE_EQUIPOS_TOOLKIT.sql), responde 404 y se
+        # pregunta con menos, para que la clave de envío siga funcionando.
+        bodies = [body]
+        if version:
+            bodies.insert(0, {**body, "p_version": version})
+            if sismed:
+                bodies.insert(0, {**body, "p_version": version, "p_sismed": sismed})
+        start = max(0, len(bodies) - 1 - self._optional_level) if self._optional_level is not None else 0
+
         url = f"{SUPABASE_URL}/rest/v1/rpc/app_send_key_check"
         headers = {"apikey": public_key, "Content-Type": "application/json"}
-        response = requests.post(url, headers=headers, json={**body, "p_version": version} if version else body,
-                                 timeout=CHECK_TIMEOUT_SECONDS)
-        if response.status_code == 404 and version:
-            # La base todavía no tiene la consulta con versión (SUPABASE_EQUIPOS_TOOLKIT.sql):
-            # se pregunta como antes para que la clave de envío siga funcionando.
-            response = requests.post(url, headers=headers, json=body, timeout=CHECK_TIMEOUT_SECONDS)
+        for index in range(start, len(bodies)):
+            response = requests.post(url, headers=headers, json=bodies[index], timeout=CHECK_TIMEOUT_SECONDS)
+            if response.status_code != 404 or index == len(bodies) - 1:
+                break
+        if response.status_code == 200:
+            self._optional_level = len(bodies) - 1 - index
         if response.status_code != 200:
             raise RuntimeError(f"HTTP {response.status_code}: {(response.text or '')[:200]}")
         data = response.json()
@@ -109,7 +124,8 @@ class SendKeyChecker:
             raise RuntimeError("respuesta inesperada")
         return data
 
-    def check(self, rows_by_code: dict[str, int], keys: str, device_id: str, device_name: str) -> dict[str, tuple[bool, str]]:
+    def check(self, rows_by_code: dict[str, int], keys: str, device_id: str, device_name: str,
+              sismed: str = "") -> dict[str, tuple[bool, str]]:
         """Devuelve {código: (permitido, motivo)} para cada establecimiento del envío."""
         result = {code: (True, "") for code in rows_by_code}
         public_key = supabase_public_key()
@@ -123,7 +139,7 @@ class SendKeyChecker:
         for code, rows in rows_by_code.items():
             key = claves.get(code, "")
             try:
-                data = self._ask(public_key, code, key, device_id, device_name, rows)
+                data = self._ask(public_key, code, key, device_id, device_name, rows, sismed)
             except Exception as exc:
                 previous = cache.get(code)
                 if not previous:
