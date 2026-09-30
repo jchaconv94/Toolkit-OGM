@@ -73,6 +73,22 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File tests/test_windows_update_host.ps1
 
+      - name: Incluir la clave publica de Supabase (claves de envio)
+        shell: pwsh
+        env:
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          $key = "$env:SUPABASE_ANON_KEY".Trim()
+          if ([string]::IsNullOrWhiteSpace($key)) {
+            Write-Warning "Falta el secreto SUPABASE_ANON_KEY: el Toolkit no verificara las claves de envio."
+            exit 0
+          }
+          if ($key -notmatch '^[A-Za-z0-9._\-]+$') {
+            throw "SUPABASE_ANON_KEY tiene caracteres inesperados."
+          }
+          Set-Content -LiteralPath toolskit/send_key_config.py -Value "SUPABASE_ANON_KEY = `"$key`"" -Encoding utf8NoBOM
+          Write-Host "Clave publica de Supabase incluida."
+
       - name: Generar ejecutable e instalador
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1 -Version "${{ steps.release.outputs.version }}"

@@ -23,3 +23,6 @@ packaging/windows/ToolkitOGM.version.txt
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Clave pública de Supabase: la genera el flujo de publicación desde un secreto
+toolskit/send_key_config.py

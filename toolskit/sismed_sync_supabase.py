@@ -93,6 +93,10 @@ class SismedSyncSupabaseManager(SismedSyncManager):
     def _send_key_blocks(self, response) -> list[tuple[str, str]]:
         return []
 
+    def _apply_send_key_check(self, payload_data):
+        # Sync SISMED 2.0 se autentica con su token de instalación; la clave es solo de Google.
+        return payload_data, []
+
     def _request_headers(self) -> dict:
         headers = {
             "Content-Type": "application/json",

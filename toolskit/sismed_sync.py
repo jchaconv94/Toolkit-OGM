@@ -14,6 +14,7 @@ from app_version import get_current_version
 from dbf_utils import DbfReadMetrics, iter_dbf_records, open_dbf, snapshot_dbf
 from tools.app_config import set_many, update_runtime_status
 from sync_device_id import get_device_id
+from send_key_check import SendKeyChecker
 
 SYNC_DBF_ABORT_MIN_BAD_RECORDS = 15
 SYNC_DBF_ABORT_BAD_RATIO = 0.05
@@ -193,6 +194,7 @@ class SismedSyncManager:
         "SIN_CLAVE": "esta PC no tiene configurada la clave de envío",
         "CLAVE_INCORRECTA": "la clave de envío no es la vigente",
         "OTRO_EQUIPO": "el establecimiento está vinculado a otra PC",
+        "SIN_VERIFICAR": "no se pudo consultar la clave en la web y esta PC no es la última aprobada",
     }
 
     @staticmethod
@@ -218,12 +220,54 @@ class SismedSyncManager:
             for codigo, motivo in bloqueos
         )
         return (
-            f"Envío bloqueado por la clave de envío ({detalle}). Esas pestañas no se modificaron. "
+            f"Envío bloqueado por la clave de envío ({detalle}). No se envió ese stock y su pestaña no se modificó. "
             "Pida al informático SISMED que lo revise en ToolkitSISMED Web → «Claves de envío»."
         )
 
     def _validate_payload_before_send(self, payload_data: list[dict]) -> tuple[bool, str]:
         return True, ""
+
+    def _apply_send_key_check(self, payload_data: list[dict]) -> tuple[list[dict], list[tuple[str, str]]]:
+        """Consulta la clave de envío en la web y quita lo que esta PC no puede enviar.
+
+        Devuelve el envío que sí puede salir y los establecimientos bloqueados con su motivo.
+        Los bloqueados tampoco se reportan para vaciar: su pestaña queda intacta.
+        """
+        rows_by_code: dict[str, int] = {}
+        for item in payload_data:
+            code = self._facility_from_almcod(str(item.get("almcod", "")))
+            if code:
+                rows_by_code[code] = rows_by_code.get(code, 0) + 1
+        for almcod in self._last_reported_almcods:
+            code = self._facility_from_almcod(almcod)
+            if code:
+                rows_by_code.setdefault(code, 0)
+        if not rows_by_code:
+            return payload_data, []
+
+        result = SendKeyChecker(log=self.log).check(
+            rows_by_code,
+            self._clave_envio_normalizada(),
+            get_device_id(),
+            self._equipo_name(),
+        )
+        blocked = sorted(code for code, (allowed, _motivo) in result.items() if not allowed)
+        if not blocked:
+            return payload_data, []
+
+        blocked_set = set(blocked)
+        payload_data = [
+            item for item in payload_data
+            if self._facility_from_almcod(str(item.get("almcod", ""))) not in blocked_set
+        ]
+        self._last_reported_almcods = [
+            almcod for almcod in self._last_reported_almcods
+            if self._facility_from_almcod(almcod) not in blocked_set
+        ]
+        self._last_reported_facility_codes = [
+            code for code in self._last_reported_facility_codes if code not in blocked_set
+        ]
+        return payload_data, [(code, result[code][1]) for code in blocked]
 
     def _set_reported_scope(self, payload_data: list[dict]):
         almcods = sorted({
@@ -850,6 +894,19 @@ class SismedSyncManager:
                         records=len(payload_data),
                     )
                     return
+
+                payload_data, bloqueos_clave = self._apply_send_key_check(payload_data)
+                if bloqueos_clave:
+                    message = self._send_key_block_message(bloqueos_clave)
+                    self.log(f"[{time.strftime('%H:%M:%S')}] ✗ {message}")
+                    if not payload_data and not self._last_reported_almcods:
+                        self._record_cycle_result(
+                            "send-key-blocked",
+                            message,
+                            error_kind="send-key-blocked",
+                            records=0,
+                        )
+                        return
 
                 self._stamp_payload_host_time(payload_data)
                 self.log(f"[{time.strftime('%H:%M:%S')}] Subiendo a la nube ({self.destination_label})...")

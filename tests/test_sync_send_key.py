@@ -77,6 +77,10 @@ class SendKeyBlockTests(unittest.TestCase):
         self.assertIn("030S05: el establecimiento está vinculado a otra PC", message)
         self.assertIn("Claves de envío", message)
 
+    def test_unverified_reason_is_explained(self):
+        message = SismedSyncManager()._send_key_block_message([("030S05", "SIN_VERIFICAR")])
+        self.assertIn("no se pudo consultar la clave", message)
+
 
 class DeviceIdTests(unittest.TestCase):
     def setUp(self):
@@ -114,6 +118,118 @@ class DeviceIdTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertTrue(first.startswith("cfg-"))
         self.assertIn("sync_device_fallback_id", store)
+
+
+class _Resp:
+    def __init__(self, status, data):
+        self.status_code = status
+        self._data = data
+        self.text = str(data)
+
+    def json(self):
+        return self._data
+
+
+class SendKeyCheckerTests(unittest.TestCase):
+    def setUp(self):
+        import send_key_check
+        self.mod = send_key_check
+        self.store = {}
+        self.patches = [
+            patch.object(send_key_check, "supabase_public_key", return_value="sb_publishable_x"),
+            patch.object(send_key_check, "cfg_get", side_effect=self.store.get),
+            patch.object(send_key_check, "cfg_set", side_effect=self.store.__setitem__),
+        ]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+
+    def _check(self, respuesta, clave="030S05-K7QM-4XPA-93RD"):
+        with patch.object(self.mod.requests, "post", side_effect=respuesta) as post:
+            result = self.mod.SendKeyChecker().check({"030S05": 14}, clave, "win-A", "PC-ALMACEN")
+        return result, post
+
+    def test_without_public_key_nothing_is_checked(self):
+        with patch.object(self.mod, "supabase_public_key", return_value=""), \
+                patch.object(self.mod.requests, "post") as post:
+            result = self.mod.SendKeyChecker().check({"030S05": 14}, "", "win-A", "PC")
+        self.assertEqual(result, {"030S05": (True, "")})
+        post.assert_not_called()
+
+    def test_sends_code_key_and_device_with_only_the_apikey_header(self):
+        result, post = self._check([_Resp(200, {"permitido": True, "protegido": True, "motivo": "ACEPTADO"})])
+        self.assertEqual(result, {"030S05": (True, "ACEPTADO")})
+        kwargs = post.call_args.kwargs
+        self.assertEqual(kwargs["headers"], {"apikey": "sb_publishable_x", "Content-Type": "application/json"})
+        self.assertEqual(kwargs["json"]["p_key"], "030S05-K7QM-4XPA-93RD")
+        self.assertEqual(kwargs["json"]["p_device_id"], "win-A")
+        self.assertEqual(kwargs["json"]["p_rows"], 14)
+
+    def test_blocked_by_the_web(self):
+        result, _ = self._check([_Resp(200, {"permitido": False, "protegido": True, "motivo": "OTRO_EQUIPO"})])
+        self.assertEqual(result, {"030S05": (False, "OTRO_EQUIPO")})
+
+    def test_web_down_only_the_last_approved_pc_and_key_pass(self):
+        self._check([_Resp(200, {"permitido": True, "protegido": True, "motivo": "ACEPTADO"})])
+        result, _ = self._check(ConnectionError("sin red"))
+        self.assertEqual(result, {"030S05": (True, "ACEPTADO_SIN_VERIFICAR")})
+        result, _ = self._check(ConnectionError("sin red"), clave="030S05-OTRA-CLAV-EXXX")
+        self.assertEqual(result, {"030S05": (False, "SIN_VERIFICAR")})
+
+    def test_web_down_after_a_block_stays_blocked(self):
+        self._check([_Resp(200, {"permitido": False, "protegido": True, "motivo": "SIN_CLAVE"})])
+        result, _ = self._check(ConnectionError("sin red"), clave="")
+        self.assertEqual(result, {"030S05": (False, "SIN_VERIFICAR")})
+
+    def test_web_down_without_history_sends_as_always(self):
+        result, _ = self._check(ConnectionError("sin red"))
+        self.assertEqual(result, {"030S05": (True, "")})
+
+    def test_unprotected_forgets_the_cache(self):
+        self._check([_Resp(200, {"permitido": True, "protegido": True, "motivo": "ACEPTADO"})])
+        self._check([_Resp(200, {"permitido": True, "protegido": False})])
+        result, _ = self._check(ConnectionError("sin red"), clave="")
+        self.assertEqual(result, {"030S05": (True, "")})
+
+
+class ApplySendKeyCheckTests(unittest.TestCase):
+    def _manager(self):
+        manager = SismedSyncManager()
+        manager._last_reported_almcods = ["030S0501", "06519F0101"]
+        manager._last_reported_facility_codes = ["030S05", "06519"]
+        return manager
+
+    def test_blocked_facility_is_removed_from_payload_and_clear_list(self):
+        manager = self._manager()
+        payload = [{"almcod": "030S0501"}] * 14 + [{"almcod": "06519F0101"}] * 2
+        verdict = {"030S05": (False, "SIN_CLAVE"), "06519": (True, "")}
+        with patch.object(sismed_sync.SendKeyChecker, "check", return_value=verdict) as check, \
+                patch.object(sismed_sync, "get_device_id", return_value="win-B"):
+            restante, bloqueos = manager._apply_send_key_check(payload)
+        self.assertEqual(check.call_args.args[0], {"030S05": 14, "06519": 2})
+        self.assertEqual(len(restante), 2)
+        self.assertEqual(bloqueos, [("030S05", "SIN_CLAVE")])
+        self.assertEqual(manager._last_reported_almcods, ["06519F0101"])
+        self.assertEqual(manager._last_reported_facility_codes, ["06519"])
+
+    def test_nothing_blocked_keeps_everything(self):
+        manager = self._manager()
+        payload = [{"almcod": "030S0501"}]
+        with patch.object(sismed_sync.SendKeyChecker, "check", return_value={"030S05": (True, ""), "06519": (True, "")}), \
+                patch.object(sismed_sync, "get_device_id", return_value="win-A"):
+            restante, bloqueos = manager._apply_send_key_check(payload)
+        self.assertEqual((restante, bloqueos), (payload, []))
+
+    def test_supabase_sync_is_never_checked(self):
+        from sismed_sync_supabase import SismedSyncSupabaseManager
+
+        payload = [{"almcod": "030S0501"}]
+        with patch.object(sismed_sync.SendKeyChecker, "check") as check:
+            self.assertEqual(SismedSyncSupabaseManager()._apply_send_key_check(payload), (payload, []))
+        check.assert_not_called()
 
 
 if __name__ == "__main__":
