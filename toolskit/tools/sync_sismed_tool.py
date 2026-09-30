@@ -68,6 +68,7 @@ class SyncSismedTool(SismedTool):
         self.sync_manager.modo_consolidado = self._cfg_bool("sync_modo_consolidado", False)
         self.sync_manager.omitir_stock_cero = self._cfg_bool("sync_omit_zero_stock", True)
         self.sync_manager.apps_script_url = (cfg_get("sync_apps_script_url") or "").strip()
+        self.sync_manager.clave_envio = (cfg_get("sync_send_key") or "").strip()
 
     def _validate_sync_settings(self):
         if not self.sync_manager:
@@ -292,6 +293,20 @@ class SyncSismedTool(SismedTool):
             )
         )
 
+        input_clave_envio = ft.TextField(
+            label="Clave de envío",
+            hint_text="La entrega el informático de la UNGET (ej. 06519-3f9a2c7d41b8e605)",
+            value=self.sync_manager.clave_envio,
+            expand=True, border_radius=8, filled=True,
+            border_color=ft.colors.OUTLINE_VARIANT,
+            prefix_icon=ft.icons.KEY_ROUNDED,
+            password=True, can_reveal_password=True,
+            on_change=lambda e: (
+                setattr(self.sync_manager, "clave_envio", e.control.value.strip()),
+                cfg_set("sync_send_key", e.control.value.strip())
+            ),
+        )
+
         def _on_sismed_dir(e: ft.FilePickerResultEvent):
             if e.path:
                 input_sismed_dir.value = e.path
@@ -335,11 +350,13 @@ class SyncSismedTool(SismedTool):
                 self.sync_manager.modo_consolidado = switch_consolidado.value
                 self.sync_manager.omitir_stock_cero = bool(chk_omit_zero_stock.value)
                 self.sync_manager.apps_script_url = input_apps_script.value.strip()
+                self.sync_manager.clave_envio = (input_clave_envio.value or "").strip()
                 self.sync_manager.base_dir = input_sismed_dir.value.strip()
                 cfg_set("sync_interval_minutes", self.sync_manager.intervalo_minutos)
                 cfg_set("sync_modo_consolidado", bool(self.sync_manager.modo_consolidado))
                 cfg_set("sync_omit_zero_stock", bool(self.sync_manager.omitir_stock_cero))
                 cfg_set("sync_apps_script_url", self.sync_manager.apps_script_url)
+                cfg_set("sync_send_key", self.sync_manager.clave_envio)
                 cfg_set("sync_sismed_dir", self.sync_manager.base_dir)
                 cfg_set("sync_auto_start", bool(chk_auto_sync.value))
 
@@ -434,6 +451,7 @@ class SyncSismedTool(SismedTool):
                             ),
                             ft.Container(content=input_intervalo, padding=ft.padding.symmetric(vertical=8)),
                             ft.Container(content=input_apps_script, padding=ft.padding.symmetric(vertical=8)),
+                            ft.Container(content=input_clave_envio, padding=ft.padding.symmetric(vertical=8)),
                             ft.Divider(height=20, color=ft.colors.OUTLINE_VARIANT),
                             ft.Container(content=chk_auto_sync, padding=ft.padding.only(top=5))
                         ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.START)

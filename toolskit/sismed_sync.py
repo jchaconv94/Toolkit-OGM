@@ -43,6 +43,10 @@ class SismedSyncManager:
         self.base_dir = r"C:\SISMEDV2"
         self.modo_consolidado = False
         self.omitir_stock_cero = True
+        # Clave de envío que da el informático de la UNGET (una por establecimiento, con la
+        # forma «06519-3f9a2c7d41b8e605»). El script de Google solo deja escribir en las
+        # pestañas del código de la clave. Vacía = se envía sin clave (período de transición).
+        self.clave_envio = ""
         self.intervalo_minutos = 5
         self.destination_name = "Google"
         self.destination_label = "Google Sheets"
@@ -127,8 +131,32 @@ class SismedSyncManager:
     def _request_headers(self) -> dict:
         return {'Content-Type': 'application/json'}
 
+    @staticmethod
+    def _equipo_name() -> str:
+        """Nombre de la PC, para que el registro del script diga qué equipo envió."""
+        try:
+            name = socket.gethostname() or os.environ.get("COMPUTERNAME", "")
+        except Exception:
+            name = os.environ.get("COMPUTERNAME", "")
+        return re.sub(r"[^0-9A-Za-z._-]", "", str(name or ""))[:64]
+
+    def _clave_envio_normalizada(self) -> str:
+        claves = re.split(r"[\s,;]+", str(self.clave_envio or "").strip())
+        return ",".join(clave for clave in claves if clave)
+
+    def _clave_envio_resumen(self) -> str:
+        """Para el log: los códigos de la clave, nunca la clave completa."""
+        codigos = [clave.split("-", 1)[0] for clave in self._clave_envio_normalizada().split(",") if clave]
+        return ", ".join(codigos)
+
     def _request_params(self) -> dict:
         params = {}
+        equipo = self._equipo_name()
+        if equipo:
+            params["equipo"] = equipo
+        clave = self._clave_envio_normalizada()
+        if clave:
+            params["clave"] = clave
         if self.omitir_stock_cero:
             params["omit_zero_stock"] = "1"
         if self._last_reported_almcods:
@@ -505,6 +533,9 @@ class SismedSyncManager:
         self.log("▶ Iniciando sincronizador SISMED SYNC...")
         self.log(f"  Modo Consolidado: {'ACTIVADO' if self.modo_consolidado else 'DESACTIVADO (Detallado)'}")
         self.log(f"  Intervalo: {self.intervalo_minutos} minutos")
+        self.log(f"  Equipo: {self._equipo_name() or 'sin nombre'}")
+        resumen_clave = self._clave_envio_resumen()
+        self.log(f"  Clave de envío: {'configurada para ' + resumen_clave if resumen_clave else 'NO configurada'}")
         self.log("="*50)
         
         self.thread = threading.Thread(target=self._sync_loop, daemon=True)
