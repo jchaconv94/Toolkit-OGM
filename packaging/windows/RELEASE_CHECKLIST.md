@@ -3,6 +3,10 @@
 ## Antes del build
 
 - Actualizar VERSION en la raiz del repositorio.
+  Regla de numeracion (acordada el 2026-09-30): el ultimo numero llega hasta 10 y luego
+  sube el del medio; el del medio llega hasta 10 y luego sube el primero.
+  Ejemplos: 2.1.10 -> 2.2.0 -> 2.2.1 ... 2.10.10 -> 3.0.0. El actualizador compara las
+  versiones como numeros, asi que 2.2.0 se reconoce como mas nueva que 2.1.10.
 - Confirmar que la app abre desde `toolskit/main.py` sin errores del editor.
 - Confirmar que `toolskit/requirements.txt` contiene solo dependencias de runtime.
 - Revisar que no existan cambios sin commit ajenos al release.

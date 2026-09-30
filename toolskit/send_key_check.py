@@ -27,6 +27,7 @@ import re
 
 import requests
 
+from app_version import get_current_version
 from tools.app_config import get as cfg_get, set as cfg_set
 
 SUPABASE_URL = "https://ujknopysvgqqvkmgrfhp.supabase.co"
@@ -81,18 +82,26 @@ class SendKeyChecker:
             pass
 
     def _ask(self, public_key: str, code: str, key: str, device_id: str, device_name: str, rows: int):
-        response = requests.post(
-            f"{SUPABASE_URL}/rest/v1/rpc/app_send_key_check",
-            headers={"apikey": public_key, "Content-Type": "application/json"},
-            json={
-                "p_code": code,
-                "p_key": key,
-                "p_device_id": device_id,
-                "p_device_name": device_name,
-                "p_rows": rows,
-            },
-            timeout=CHECK_TIMEOUT_SECONDS,
-        )
+        body = {
+            "p_code": code,
+            "p_key": key,
+            "p_device_id": device_id,
+            "p_device_name": device_name,
+            "p_rows": rows,
+        }
+        # La versión le permite a la web mostrar qué Toolkit tiene cada PC (pestaña «Equipos»).
+        try:
+            version = get_current_version()
+        except Exception:
+            version = ""
+        url = f"{SUPABASE_URL}/rest/v1/rpc/app_send_key_check"
+        headers = {"apikey": public_key, "Content-Type": "application/json"}
+        response = requests.post(url, headers=headers, json={**body, "p_version": version} if version else body,
+                                 timeout=CHECK_TIMEOUT_SECONDS)
+        if response.status_code == 404 and version:
+            # La base todavía no tiene la consulta con versión (SUPABASE_EQUIPOS_TOOLKIT.sql):
+            # se pregunta como antes para que la clave de envío siga funcionando.
+            response = requests.post(url, headers=headers, json=body, timeout=CHECK_TIMEOUT_SECONDS)
         if response.status_code != 200:
             raise RuntimeError(f"HTTP {response.status_code}: {(response.text or '')[:200]}")
         data = response.json()

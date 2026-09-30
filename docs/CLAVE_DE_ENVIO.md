@@ -59,3 +59,10 @@ la web). No va en el código: el flujo de publicación la toma del secreto
 `SUPABASE_ANON_KEY` del repositorio y genera `toolskit/send_key_config.py` (ignorado por
 git). Sin ese secreto el Toolkit no verifica nada y envía como antes. Para pruebas locales
 se puede usar la variable de entorno `TOOLKIT_SUPABASE_ANON_KEY`.
+
+## Versión del Toolkit (pestaña «Equipos» de la web)
+
+Desde la 2.2.0, la misma consulta de la clave manda también `p_version`. La web anota qué PC
+envía cada establecimiento y con qué versión (`SUPABASE_EQUIPOS_TOOLKIT.sql` en
+ToolkitSISMED). Si la base todavía no tiene esa consulta, el Toolkit repite la pregunta sin
+versión y la clave de envío sigue funcionando igual.
