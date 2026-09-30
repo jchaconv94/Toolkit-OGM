@@ -11,6 +11,7 @@ class SismedSyncSupabaseManager(SismedSyncManager):
 
     def __init__(self, log_callback=None, on_stop_callback=None):
         super().__init__(log_callback=log_callback, on_stop_callback=on_stop_callback)
+        self.backup_connection_supported = False
         self.destination_name = "Supabase"
         self.destination_label = "Supabase"
         self.modo_consolidado = False

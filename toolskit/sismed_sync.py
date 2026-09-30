@@ -16,6 +16,7 @@ from tools.app_config import set_many, update_runtime_status
 from sync_device_id import get_device_id
 from send_key_check import SendKeyChecker
 from sismed_version import read_sismed_version
+from backup_connection import BackupConnection
 
 SYNC_DBF_ABORT_MIN_BAD_RECORDS = 15
 SYNC_DBF_ABORT_BAD_RATIO = 0.05
@@ -33,6 +34,9 @@ class SismedSyncManager:
         self.log_callback = log_callback
         self.on_stop_callback = on_stop_callback
         self.thread = None
+        # Conexión inmediata con la web (backups SISMED). Sync SISMED 2.0 no la usa.
+        self.backup_connection_supported = True
+        self._backup_connection = None
         self._state_lock = threading.RLock()
         self._stop_event = threading.Event()
         self.run_state = "idle"
@@ -624,7 +628,30 @@ class SismedSyncManager:
         
         self.thread = threading.Thread(target=self._sync_loop, daemon=True)
         self.thread.start()
+        self._start_backup_connection()
         return True
+
+    def _start_backup_connection(self):
+        if not self.backup_connection_supported:
+            return
+        try:
+            if self._backup_connection is None:
+                self._backup_connection = BackupConnection(
+                    log=self.log,
+                    get_keys=self._clave_envio_normalizada,
+                    get_device_id=get_device_id,
+                    get_equipo=self._equipo_name,
+                )
+            self._backup_connection.start()
+        except Exception as exc:
+            self.log(f"  ⚠ No se pudo iniciar la conexión inmediata con la web: {exc}")
+
+    def _stop_backup_connection(self):
+        if self._backup_connection is not None:
+            try:
+                self._backup_connection.stop()
+            except Exception:
+                pass
 
     def stop_sync(self):
         with self._state_lock:
@@ -650,6 +677,7 @@ class SismedSyncManager:
                 if self._stop_event.wait(wait_seconds):
                     break
         finally:
+            self._stop_backup_connection()
             self._set_run_state("idle", "Hilo de sincronizacion detenido")
             self.log("❌ Sincronizador completamente detenido.")
             if self.on_stop_callback:

@@ -28,6 +28,8 @@ hiddenimports = [
     "pystray._win32",
     # Clave pública de Supabase para las claves de envío (la genera el flujo de publicación).
     "send_key_config",
+    # Conexión inmediata con la web (backups SISMED).
+    "websocket",
 ]
 hiddenimports += collect_submodules("pdf2docx")
 

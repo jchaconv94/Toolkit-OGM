@@ -96,3 +96,17 @@ leer, va vacío y no cambia nada.
 La web toma como vigente la versión de SISMED más alta que reporte alguna PC
 (`SUPABASE_EQUIPOS_SISMED.sql` en ToolkitSISMED). Si la base todavía no tiene esa consulta,
 el Toolkit pregunta sin `p_sismed`, y si tampoco tiene la de versión, como antes.
+
+## Conexión inmediata con la web (Backups SISMED · etapa 1)
+
+`toolskit/backup_connection.py` abre una conexión con el servicio `sismed-conexion` de
+Cloudflare (ToolkitSISMED: `cloudflare/conexion`) para que la web pueda avisarle algo a
+esta PC al instante. Arranca y se detiene con Sync SISMED; Sync SISMED 2.0 no la usa.
+
+- Solo se conecta si esta PC tiene **clave de envío** y la web la tiene habilitada
+  (`app_backup_pc_enabled`; durante el piloto, solo `backup_pilot_codes`). El servicio
+  vuelve a comprobar la clave y que esta sea la PC vinculada.
+- Manda el texto «ping» cada 50 s; sin respuesta en 2 minutos, se reconecta.
+- En la etapa 1 solo responde el «aviso de prueba». Plan completo en
+  `docs/BACKUPS_SISMED.md` de ToolkitSISMED.
+

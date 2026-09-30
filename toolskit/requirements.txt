@@ -14,3 +14,4 @@ PyPDF2==3.0.1
 pdf2docx==0.5.12
 python-docx==1.2.0
 xlsxwriter==3.2.9
+websocket-client==1.9.2
