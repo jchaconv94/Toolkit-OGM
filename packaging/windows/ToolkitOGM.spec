@@ -26,6 +26,8 @@ hiddenimports = [
     "PyPDF2",
     "xlsxwriter",
     "pystray._win32",
+    # Clave pública de Supabase para las claves de envío (la genera el flujo de publicación).
+    "send_key_config",
 ]
 hiddenimports += collect_submodules("pdf2docx")
 

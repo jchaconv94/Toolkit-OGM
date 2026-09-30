@@ -28,14 +28,34 @@ En la dirección (un `doPost` de Apps Script no puede leer cabeceras):
 
 Sync SISMED 2.0 (Supabase) no manda ninguno de los tres.
 
-## Qué responde el script
+## Dónde se verifica: en el propio Toolkit
 
-Si rechaza algún establecimiento, la respuesta incluye
-`BLOQUEADO: 030S05=OTRO_EQUIPO,06519=SIN_CLAVE`. El Toolkit lo muestra en el log con el motivo
-y lo registra como `send-key-blocked`, sin darlo por sincronizado.
+Antes de subir el stock, el Toolkit pregunta a ToolkitSISMED (`app_send_key_check` en
+Supabase) si esta PC puede enviar cada establecimiento (`toolskit/send_key_check.py`). Lo
+que no puede, **no se envía** —ni para reemplazar ni para vaciar la pestaña— y el log dice
+el motivo. El ciclo queda como `send-key-blocked`.
+
+**No se toca el script de Google de ninguna UNGET.** La regla llega a todas las PC con la
+actualización automática del Toolkit.
 
 | Motivo             | Qué significa |
 |--------------------|---------------|
 | `SIN_CLAVE`        | El establecimiento tiene clave y esta PC no la tiene configurada. |
 | `CLAVE_INCORRECTA` | La clave no es la vigente (se regeneró o está mal copiada). |
 | `OTRO_EQUIPO`      | La clave es correcta, pero el establecimiento está vinculado a otra PC. |
+| `SIN_VERIFICAR`    | La web no respondió y esta PC no es la última que la web aprobó. |
+
+Si la web no responde, pasa solo lo que la web aprobó la última vez a esta PC con esta
+clave; lo que nunca tuvo clave se envía como siempre.
+
+**Límite conocido:** protege contra otra PC con el Toolkit (el caso real: una copia vieja
+del SISMED en otra máquina). No impide que alguien envíe a mano a la dirección del script
+sin usar el Toolkit; eso solo se cierra en el script y queda como pendiente aparte.
+
+## Clave pública de Supabase
+
+El Toolkit necesita la clave pública de Supabase (la «Publishable key», la misma que ya usa
+la web). No va en el código: el flujo de publicación la toma del secreto
+`SUPABASE_ANON_KEY` del repositorio y genera `toolskit/send_key_config.py` (ignorado por
+git). Sin ese secreto el Toolkit no verifica nada y envía como antes. Para pruebas locales
+se puede usar la variable de entorno `TOOLKIT_SUPABASE_ANON_KEY`.
