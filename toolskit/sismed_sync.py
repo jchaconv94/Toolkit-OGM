@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from app_version import get_current_version
 from dbf_utils import DbfReadMetrics, iter_dbf_records, open_dbf, snapshot_dbf
 from tools.app_config import set_many, update_runtime_status
+from sync_device_id import get_device_id
 
 SYNC_DBF_ABORT_MIN_BAD_RECORDS = 15
 SYNC_DBF_ABORT_BAD_RATIO = 0.05
@@ -43,6 +44,10 @@ class SismedSyncManager:
         self.base_dir = r"C:\SISMEDV2"
         self.modo_consolidado = False
         self.omitir_stock_cero = True
+        # Clave de envío generada en ToolkitSISMED Web → «Claves de envío», una por
+        # establecimiento (030S05-K7QM-4XPA-93RD). Con clave, solo la PC vinculada puede
+        # enviar ese establecimiento. Vacía = se envía como siempre.
+        self.clave_envio = ""
         self.intervalo_minutos = 5
         self.destination_name = "Google"
         self.destination_label = "Google Sheets"
@@ -127,8 +132,36 @@ class SismedSyncManager:
     def _request_headers(self) -> dict:
         return {'Content-Type': 'application/json'}
 
+    @staticmethod
+    def _equipo_name() -> str:
+        """Nombre de la PC, para que la web muestre qué equipo envió."""
+        try:
+            name = socket.gethostname() or os.environ.get("COMPUTERNAME", "")
+        except Exception:
+            name = os.environ.get("COMPUTERNAME", "")
+        return re.sub(r"[^0-9A-Za-z._-]", "", str(name or ""))[:64]
+
+    def _clave_envio_normalizada(self) -> str:
+        claves = re.split(r"[\s,;]+", str(self.clave_envio or "").strip().upper())
+        return ",".join(clave for clave in claves if clave)
+
+    def _clave_envio_resumen(self) -> str:
+        """Para el log: los códigos de la clave, nunca la clave completa."""
+        codigos = [clave.split("-", 1)[0] for clave in self._clave_envio_normalizada().split(",") if clave]
+        return ", ".join(codigos)
+
     def _request_params(self) -> dict:
         params = {}
+        equipo = self._equipo_name()
+        if equipo:
+            params["equipo"] = equipo
+        try:
+            params["equipo_id"] = get_device_id()
+        except Exception:
+            pass
+        clave = self._clave_envio_normalizada()
+        if clave:
+            params["clave"] = clave
         if self.omitir_stock_cero:
             params["omit_zero_stock"] = "1"
         if self._last_reported_almcods:
@@ -155,6 +188,39 @@ class SismedSyncManager:
             return int(match.group(1))
         except ValueError:
             return None
+
+    _BLOCK_REASONS = {
+        "SIN_CLAVE": "esta PC no tiene configurada la clave de envío",
+        "CLAVE_INCORRECTA": "la clave de envío no es la vigente",
+        "OTRO_EQUIPO": "el establecimiento está vinculado a otra PC",
+    }
+
+    @staticmethod
+    def _send_key_blocks(response: requests.Response) -> list[tuple[str, str]]:
+        """Establecimientos que el script rechazó por la clave de envío.
+
+        El script responde, además del «OK: n», ``BLOQUEADO: 030S05=OTRO_EQUIPO,06519=SIN_CLAVE``.
+        """
+        text = (getattr(response, "text", "") or "").strip()
+        match = re.search(r"BLOQUEADO\s*:\s*([^\n|;]+)", text, flags=re.IGNORECASE)
+        if not match:
+            return []
+        bloqueos = []
+        for parte in match.group(1).split(","):
+            codigo, _, motivo = parte.strip().partition("=")
+            if codigo.strip():
+                bloqueos.append((codigo.strip().upper(), motivo.strip().upper()))
+        return bloqueos
+
+    def _send_key_block_message(self, bloqueos: list[tuple[str, str]]) -> str:
+        detalle = "; ".join(
+            f"{codigo}: {self._BLOCK_REASONS.get(motivo, motivo.lower() or 'bloqueado')}"
+            for codigo, motivo in bloqueos
+        )
+        return (
+            f"Envío bloqueado por la clave de envío ({detalle}). Esas pestañas no se modificaron. "
+            "Pida al informático SISMED que lo revise en ToolkitSISMED Web → «Claves de envío»."
+        )
 
     def _validate_payload_before_send(self, payload_data: list[dict]) -> tuple[bool, str]:
         return True, ""
@@ -505,6 +571,9 @@ class SismedSyncManager:
         self.log("▶ Iniciando sincronizador SISMED SYNC...")
         self.log(f"  Modo Consolidado: {'ACTIVADO' if self.modo_consolidado else 'DESACTIVADO (Detallado)'}")
         self.log(f"  Intervalo: {self.intervalo_minutos} minutos")
+        self.log(f"  Equipo: {self._equipo_name() or 'sin nombre'}")
+        resumen_clave = self._clave_envio_resumen()
+        self.log(f"  Clave de envío: {'configurada para ' + resumen_clave if resumen_clave else 'NO configurada'}")
         self.log("="*50)
         
         self.thread = threading.Thread(target=self._sync_loop, daemon=True)
@@ -797,6 +866,19 @@ class SismedSyncManager:
                         error_kind or "request-error",
                         f"{user_message} | {technical_detail}".strip(" |"),
                         error_kind=error_kind or "request-error",
+                        records=len(payload_data),
+                    )
+                    return
+
+                bloqueos = self._send_key_blocks(response)
+                if bloqueos:
+                    message = self._send_key_block_message(bloqueos)
+                    self.log(f"[{time.strftime('%H:%M:%S')}] ✗ {message}")
+                    self._record_cycle_result(
+                        "send-key-blocked",
+                        message,
+                        error_kind="send-key-blocked",
+                        http_status=response.status_code,
                         records=len(payload_data),
                     )
                     return
