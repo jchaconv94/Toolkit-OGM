@@ -641,6 +641,7 @@ class SismedSyncManager:
                     get_keys=self._clave_envio_normalizada,
                     get_device_id=get_device_id,
                     get_equipo=self._equipo_name,
+                    get_base_dir=lambda: self.base_dir,
                 )
             self._backup_connection.start()
         except Exception as exc:
