@@ -1,0 +1,217 @@
+"""Conexión inmediata con ToolkitSISMED Web (backups SISMED · etapa 1, piloto).
+
+Las PC de los establecimientos no aceptan conexiones de afuera, así que para que la web
+pueda pedirle algo al Toolkit al instante es el Toolkit el que abre una conexión con el
+servicio «sismed-conexion» de Cloudflare y la mantiene abierta mientras Sync SISMED corre.
+
+- Solo se conecta si el establecimiento tiene **clave de envío** configurada en esta PC y
+  la web lo tiene habilitado (durante el piloto, solo los códigos de
+  `backup_pilot_codes`). Las demás PC no intentan nada.
+- El servicio vuelve a comprobar la clave y que esta sea la PC vinculada.
+- Cada 50 s manda el texto «ping»; el servicio responde «pong» sin gastar nada. Si no
+  llega respuesta en 2 minutos, se reconecta.
+- Etapa 1 solo responde el «aviso de prueba» de la web. Los backups llegan en la etapa 2.
+"""
+
+from __future__ import annotations
+
+import json
+import random
+import threading
+import time
+
+import requests
+
+from app_version import get_current_version
+from send_key_check import SUPABASE_URL, keys_by_code, supabase_public_key
+
+try:
+    import websocket  # paquete websocket-client
+except Exception:  # pragma: no cover - si falta el paquete, la función queda apagada
+    websocket = None
+
+SERVICE_URL = "wss://sismed-conexion.jchaconvillacis.workers.dev/pc"
+ENABLED_RECHECK_SECONDS = 30 * 60
+PING_SECONDS = 50
+PONG_TIMEOUT_SECONDS = 120
+REJECTED_WAIT_SECONDS = 30 * 60
+MAX_BACKOFF_SECONDS = 300
+
+
+class BackupConnection:
+    def __init__(self, log, get_keys, get_device_id, get_equipo):
+        self.log = log
+        self.get_keys = get_keys
+        self.get_device_id = get_device_id
+        self.get_equipo = get_equipo
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._ws = None
+        self._last_pong = 0.0
+        self._enabled_checked_at = 0.0
+        self._enabled_codes: list[str] = []
+        self.connected = False
+
+    # --- ciclo de vida -------------------------------------------------------------
+    def start(self):
+        if websocket is None or self._thread and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="backup-connection", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        ws = self._ws
+        if ws is not None:
+            try:
+                ws.close()
+            except Exception:
+                pass
+
+    # --- lógica --------------------------------------------------------------------
+    def _keys(self) -> dict[str, str]:
+        try:
+            return keys_by_code(self.get_keys())
+        except Exception:
+            return {}
+
+    def enabled_codes(self, codes: list[str]) -> list[str]:
+        """Códigos que la web tiene habilitados (clave de envío + piloto)."""
+        public_key = supabase_public_key()
+        if not public_key or not codes:
+            return []
+        response = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/app_backup_pc_enabled",
+            headers={"apikey": public_key, "Content-Type": "application/json"},
+            json={"p_codes": codes},
+            timeout=15,
+        )
+        if response.status_code == 404:
+            return []  # la base todavía no tiene la función: la conexión queda apagada
+        response.raise_for_status()
+        data = response.json()
+        return [str(c).upper() for c in data] if isinstance(data, list) else []
+
+    def _wait(self, seconds: float) -> bool:
+        """Espera o termina antes si se pidió detener. Devuelve True si hay que salir."""
+        return self._stop.wait(max(1.0, seconds))
+
+    def _run(self):
+        backoff = 5
+        while not self._stop.is_set():
+            keys = self._keys()
+            if not keys:
+                if self._wait(ENABLED_RECHECK_SECONDS):
+                    return
+                continue
+            try:
+                codes = self.enabled_codes(sorted(keys))
+                self._enabled_codes = codes
+                self._enabled_checked_at = time.monotonic()
+            except Exception:
+                if self._wait(300):
+                    return
+                continue
+            if not codes:
+                if self._wait(ENABLED_RECHECK_SECONDS):
+                    return
+                continue
+
+            outcome = self._connect({c: keys[c] for c in codes if c in keys})
+            if self._stop.is_set():
+                return
+            if outcome == "rejected":
+                self.log("  ⚠ Conexión inmediata rechazada por la web (clave o PC no vinculada). Se reintentará más tarde.")
+                backoff = 5
+                if self._wait(REJECTED_WAIT_SECONDS):
+                    return
+                continue
+            if outcome == "ok":
+                backoff = 5
+            if self._wait(backoff + random.uniform(0, backoff / 2)):
+                return
+            backoff = min(MAX_BACKOFF_SECONDS, backoff * 2)
+
+    def _connect(self, keys: dict[str, str]) -> str:
+        """Abre la conexión y la mantiene hasta que se corte. Devuelve ok / rejected / error."""
+        headers = [
+            f"X-Toolkit-Claves: {','.join(keys.values())}",
+            f"X-Toolkit-Equipo-Id: {self.get_device_id()}",
+            f"X-Toolkit-Equipo: {self.get_equipo()}",
+            f"X-Toolkit-Version: {get_current_version()}",
+        ]
+        state = {"opened": False, "rejected": False}
+
+        def on_open(ws):
+            state["opened"] = True
+            self.connected = True
+            self._last_pong = time.monotonic()
+            self.log(f"  🔌 Conexión inmediata activa con la web ({', '.join(keys)}).")
+            threading.Thread(target=self._keepalive, args=(ws,), daemon=True).start()
+
+        def on_message(ws, message):
+            if isinstance(message, (bytes, bytearray)):
+                message = bytes(message).decode("utf-8", "ignore")
+            if message == "pong":
+                self._last_pong = time.monotonic()
+                return
+            try:
+                data = json.loads(message)
+            except Exception:
+                return
+            if data.get("t") == "ping":
+                self._last_pong = time.monotonic()
+                ws.send(json.dumps({"t": "pong", "id": data.get("id"), "code": data.get("code"),
+                                    "web": data.get("web"), "sentAt": data.get("sentAt")}))
+                self.log(f"  📨 Aviso de prueba recibido desde la web ({data.get('code')}).")
+
+        def on_error(ws, error):
+            status = getattr(error, "status_code", None)
+            if status in (401, 403):
+                state["rejected"] = True
+
+        def on_close(ws, *_args):
+            if self.connected:
+                self.log("  🔌 Conexión inmediata cerrada; se reconectará sola.")
+            self.connected = False
+
+        app = websocket.WebSocketApp(SERVICE_URL, header=headers, on_open=on_open,
+                                     on_message=on_message, on_error=on_error, on_close=on_close)
+        self._ws = app
+        try:
+            app.run_forever(ping_interval=0)
+        except Exception:
+            pass
+        finally:
+            self._ws = None
+            self.connected = False
+        if state["rejected"]:
+            return "rejected"
+        return "ok" if state["opened"] else "error"
+
+    def _keepalive(self, ws):
+        while not self._stop.is_set() and self.connected:
+            if self._stop.wait(PING_SECONDS):
+                break
+            if not self.connected:
+                break
+            if time.monotonic() - self._last_pong > PONG_TIMEOUT_SECONDS:
+                try:
+                    ws.close()  # sin respuesta: se reconecta
+                except Exception:
+                    pass
+                break
+            # Si la web lo sacó del piloto, se desconecta en la siguiente revisión.
+            if time.monotonic() - self._enabled_checked_at > ENABLED_RECHECK_SECONDS:
+                self._enabled_checked_at = time.monotonic()
+                try:
+                    if not self.enabled_codes(sorted(self._keys())):
+                        ws.close()
+                        break
+                except Exception:
+                    pass
+            try:
+                ws.send("ping")
+            except Exception:
+                break
