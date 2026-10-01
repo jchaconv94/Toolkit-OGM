@@ -10,7 +10,8 @@ servicio «sismed-conexion» de Cloudflare y la mantiene abierta mientras Sync S
 - El servicio vuelve a comprobar la clave y que esta sea la PC vinculada.
 - Cada 50 s manda el texto «ping»; el servicio responde «pong» sin gastar nada. Si no
   llega respuesta en 2 minutos, se reconecta.
-- Etapa 1 solo responde el «aviso de prueba» de la web. Los backups llegan en la etapa 2.
+- Responde el «aviso de prueba» de la web y, cuando la web pide un backup, sube el más
+  reciente del SISMED (`backup_upload.py`). Un backup a la vez.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import requests
 
 from app_version import get_current_version
 from send_key_check import SUPABASE_URL, keys_by_code, supabase_public_key
+from backup_upload import BackupUploader, service_http_base
 
 try:
     import websocket  # paquete websocket-client
@@ -39,8 +41,10 @@ MAX_BACKOFF_SECONDS = 300
 
 
 class BackupConnection:
-    def __init__(self, log, get_keys, get_device_id, get_equipo):
+    def __init__(self, log, get_keys, get_device_id, get_equipo, get_base_dir=lambda: ""):
         self.log = log
+        self.get_base_dir = get_base_dir
+        self._upload_lock = threading.Lock()
         self.get_keys = get_keys
         self.get_device_id = get_device_id
         self.get_equipo = get_equipo
@@ -165,6 +169,8 @@ class BackupConnection:
                 ws.send(json.dumps({"t": "pong", "id": data.get("id"), "code": data.get("code"),
                                     "web": data.get("web"), "sentAt": data.get("sentAt")}))
                 self.log(f"  📨 Aviso de prueba recibido desde la web ({data.get('code')}).")
+            elif data.get("t") == "backup":
+                self._start_backup(ws, data)
 
         def on_error(ws, error):
             status = getattr(error, "status_code", None)
@@ -189,6 +195,32 @@ class BackupConnection:
         if state["rejected"]:
             return "rejected"
         return "ok" if state["opened"] else "error"
+
+    def _start_backup(self, ws, data: dict):
+        job = str(data.get("job") or "")
+        if not job or not data.get("token"):
+            return
+
+        def send(message: dict):
+            ws.send(json.dumps(message))
+
+        if not self._upload_lock.acquire(blocking=False):
+            send({"t": "backup_error", "job": job, "reason": "Esta PC ya está enviando otro backup"})
+            return
+
+        def work():
+            try:
+                uploader = BackupUploader(
+                    base_url=service_http_base(SERVICE_URL), job=job, token=str(data["token"]),
+                    part_size=int(data.get("partSize") or 20 * 1024 * 1024),
+                    max_bytes=int(data.get("maxBytes") or 600 * 1024 * 1024),
+                    send=send, log=self.log,
+                )
+                uploader.run(self.get_base_dir(), str(data.get("code") or ""))
+            finally:
+                self._upload_lock.release()
+
+        threading.Thread(target=work, name="backup-upload", daemon=True).start()
 
     def _keepalive(self, ws):
         while not self._stop.is_set() and self.connected:

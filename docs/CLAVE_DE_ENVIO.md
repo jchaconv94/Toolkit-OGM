@@ -107,6 +107,6 @@ esta PC al instante. Arranca y se detiene con Sync SISMED; Sync SISMED 2.0 no la
   (`app_backup_pc_enabled`; durante el piloto, solo `backup_pilot_codes`). El servicio
   vuelve a comprobar la clave y que esta sea la PC vinculada.
 - Manda el texto «ping» cada 50 s; sin respuesta en 2 minutos, se reconecta.
-- En la etapa 1 solo responde el «aviso de prueba». Plan completo en
-  `docs/BACKUPS_SISMED.md` de ToolkitSISMED.
-
+- Responde el «aviso de prueba» y, cuando la web pide un backup, sube el `BKDA…zip` más
+  reciente de `<carpeta SISMED>\\backup` en partes de 20 MiB (`toolskit/backup_upload.py`),
+  sin abrirlo ni modificarlo. Plan completo en `docs/BACKUPS_SISMED.md` de ToolkitSISMED.
