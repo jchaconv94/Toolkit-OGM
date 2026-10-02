@@ -424,7 +424,7 @@ def main(page: ft.Page):
             _show_message(f"No se pudo abrir el log de configuración: {exc}")
 
     sync_access_unlocked = [False]
-    SYNC_NAV_INDICES = {3, 17, 18}
+    SYNC_NAV_INDICES = {3, 18}
 
     def _hash_sync_password(password: str) -> str:
         return hashlib.sha256((password or "").encode("utf-8")).hexdigest()
@@ -496,10 +496,9 @@ def main(page: ft.Page):
         _restore_main_window()
 
     def _stop_sync_services():
-        for tool_name in ("Sync SISMED", "Sync SISMED 2.0"):
-            sync_tool = get_tool_by_name(tool_name)
-            if sync_tool and getattr(sync_tool, "sync_manager", None):
-                sync_tool.sync_manager.stop_sync()
+        sync_tool = get_tool_by_name("Sync SISMED")
+        if sync_tool and getattr(sync_tool, "sync_manager", None):
+            sync_tool.sync_manager.stop_sync()
 
     def _stop_tray():
         if tray_icon:
@@ -600,16 +599,6 @@ def main(page: ft.Page):
             _log_startup_event(traceback.format_exc())
     else:
         _record_sync_startup("tool-not-available", "No se encontro la herramienta Sync SISMED.")
-
-    sync2_tool = get_tool_by_name("Sync SISMED 2.0")
-    if sync2_tool and hasattr(sync2_tool, "start_from_saved"):
-        try:
-            sync2_tool.start_from_saved(page)
-        except Exception as exc:
-            append_runtime_log(
-                "sync",
-                f"Fallo iniciando Sync SISMED 2.0 automaticamente: {type(exc).__name__}: {exc}",
-            )
 
     if startup_hidden_requested:
         restore_ready = startup_state["restore_listener_ready"].wait(AUTORUN_READY_TIMEOUT_MS / 1000)
@@ -735,7 +724,6 @@ def main(page: ft.Page):
             "Anexar TFORMDET":         19,
             "Format TFORMDET":         7,
             "Sync SISMED":             18,
-            "Sync SISMED 2.0":         17,
             "Stock SISMED":            9,
             "Disponibilidad TFORMDET": 10,
             "Consumo Valorizado":      16,
@@ -929,7 +917,7 @@ def main(page: ft.Page):
                                 ),
                             ]),
                             ft.Text(
-                                "Esta contraseña se pedirá para abrir Sync SISMED y Sync SISMED 2.0 en esta PC."
+                                "Esta contraseña se pedirá para abrir Sync SISMED en esta PC."
                                 if setup_mode
                                 else "Acceso requerido para ver y editar credenciales de sincronización.",
                                 size=13,
@@ -960,7 +948,7 @@ def main(page: ft.Page):
                 ], scroll=ft.ScrollMode.AUTO),
             )
 
-        if index in (3, 17, 18) and not sync_access_unlocked[0]:
+        if index in (3, 18) and not sync_access_unlocked[0]:
             content.controls.append(build_sync_access_view(index))
             page.update()
             return
@@ -1247,7 +1235,6 @@ def main(page: ft.Page):
                         ft.Row(
                             controls=[
                                 make_tool_card(get_tool_by_name("Sync SISMED")),
-                                make_tool_card(get_tool_by_name("Sync SISMED 2.0")),
                             ],
                             wrap=True,
                             spacing=16,
@@ -1264,10 +1251,6 @@ def main(page: ft.Page):
             if sync_tool:
                 content.controls.append(sync_tool.build_view(page, navigate))
 
-        elif index == 17:
-            sync2_tool = get_tool_by_name("Sync SISMED 2.0")
-            if sync2_tool:
-                content.controls.append(sync2_tool.build_view(page, navigate))
         
         elif index == 4:
             # Nuevo Dashboard de Reports SISMED
@@ -1406,7 +1389,7 @@ def main(page: ft.Page):
 
     def update_sidebar_ui(idx):
         selected_nav_idx[0] = idx
-        visual_idx = 3 if idx in (17, 18) else idx
+        visual_idx = 3 if idx == 18 else idx
         for item in nav_items_list:
             is_selected = (visual_idx == item.data)
             stack = item.content
@@ -1461,7 +1444,7 @@ def main(page: ft.Page):
                 e.control,
                 "bgcolor",
                 ft.colors.with_opacity(0.15, ft.colors.WHITE)
-                if e.data == "true" or selected_nav_idx[0] == index or (index == 3 and selected_nav_idx[0] in (17, 18))
+                if e.data == "true" or selected_nav_idx[0] == index or (index == 3 and selected_nav_idx[0] == 18)
                 else ft.colors.TRANSPARENT,
             ) or e.control.update()
         )
@@ -1507,9 +1490,6 @@ def main(page: ft.Page):
     sync_tool = get_tool_by_name("Sync SISMED")
     if sync_tool:
         sync_tool._init_components(page)
-    sync2_tool = get_tool_by_name("Sync SISMED 2.0")
-    if sync2_tool:
-        sync2_tool._init_components(page)
 
     updater_controller.start()
 

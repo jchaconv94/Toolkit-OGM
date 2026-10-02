@@ -54,16 +54,6 @@ class SendKeyParamsTests(unittest.TestCase):
         self.assertEqual(resumen, "06519")
         self.assertNotIn("K7QM", resumen)
 
-    def test_supabase_sync_does_not_send_key_or_device(self):
-        from sismed_sync_supabase import SismedSyncSupabaseManager
-
-        manager = SismedSyncSupabaseManager()
-        manager.clave_envio = "06519-K7QM-4XPA-93RD"
-        with patch.object(sismed_sync, "get_device_id", return_value="win-abc"):
-            params = manager._request_params()
-        for key in ("clave", "equipo", "equipo_id"):
-            self.assertNotIn(key, params)
-
 
 class SendKeyBlockTests(unittest.TestCase):
     def _response(self, text):
@@ -318,13 +308,6 @@ class ApplySendKeyCheckTests(unittest.TestCase):
             restante, bloqueos = manager._apply_send_key_check(payload)
         self.assertEqual((restante, bloqueos), (payload, []))
 
-    def test_supabase_sync_is_never_checked(self):
-        from sismed_sync_supabase import SismedSyncSupabaseManager
-
-        payload = [{"almcod": "030S0501"}]
-        with patch.object(sismed_sync.SendKeyChecker, "check") as check:
-            self.assertEqual(SismedSyncSupabaseManager()._apply_send_key_check(payload), (payload, []))
-        check.assert_not_called()
 
 
 if __name__ == "__main__":

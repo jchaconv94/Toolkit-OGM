@@ -1,5 +1,7 @@
 # Especificaciones de Integración: Toolkit SISMED Desktop 2.0 -> App Web SISMED 2.0
 
+> **Retirado el 2026-10-02.** La herramienta Sync SISMED 2.0 (envío de stock a Supabase) se eliminó del Toolkit de escritorio (`sync_sismed2_tool.py` y `sismed_sync_supabase.py`). Este documento se conserva solo como referencia histórica. El Sync SISMED vigente es el de Google Sheets (`sismed_sync.py`).
+
 Este documento detalla la interfaz de comunicación y las expectativas del backend (Supabase) para la sincronización directa del stock utilizando el módulo Desktop "Sync SISMED 2.0".
 
 El objetivo principal es enviar la información del stock extraído de los archivos DBF del SISMED local directamente a la base de datos centralizada en Supabase a través de una Edge Function.

@@ -1,5 +1,7 @@
 # Sync SISMED 2.0 - Supabase
 
+> **Retirado el 2026-10-02.** La herramienta Sync SISMED 2.0 (envío de stock a Supabase) se eliminó del Toolkit de escritorio (`sync_sismed2_tool.py` y `sismed_sync_supabase.py`). Este documento se conserva solo como referencia histórica. El Sync SISMED vigente es el de Google Sheets (`sismed_sync.py`).
+
 ## Objetivo
 
 Sync SISMED 2.0 envia el stock detallado del SISMED Desktop directamente a una API/Edge Function que escribe en Supabase.
