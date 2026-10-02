@@ -34,6 +34,20 @@ class AppConfigPersistenceTests(unittest.TestCase):
             self.assertIs(app_config.get("update_auto_check"), False)
             self.assertIs(app_config.get("update_auto_download"), True)
 
+    def test_legacy_sync2_keys_are_ignored(self):
+        # Sync SISMED 2.0 se retiró el 2026-10-02; una configuración vieja aún puede traer sus claves.
+        with tempfile.TemporaryDirectory() as temp_dir, self._paths(Path(temp_dir)):
+            config_file = Path(temp_dir) / "config.json"
+            config_file.write_text(
+                json.dumps({"sync2_endpoint_url": "https://ejemplo", "sync2_auto_start": True, "sync_interval_minutes": 7}),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(app_config.get("sync_interval_minutes"), 7)
+            self.assertNotIn("sync2_auto_start", app_config._DEFAULTS)
+            app_config.set("sync_auto_start", True)
+            self.assertIs(app_config.get("sync_auto_start"), True)
+
     def test_concurrent_writes_do_not_lose_preferences(self):
         with tempfile.TemporaryDirectory() as temp_dir, self._paths(Path(temp_dir)):
             original_load = app_config._load

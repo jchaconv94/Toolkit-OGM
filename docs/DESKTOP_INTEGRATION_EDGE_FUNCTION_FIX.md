@@ -1,5 +1,7 @@
 # Guía de Despliegue y Corrección: Edge Function Supabase (Error 404)
 
+> **Retirado el 2026-10-02.** La herramienta Sync SISMED 2.0 (envío de stock a Supabase) se eliminó del Toolkit de escritorio (`sync_sismed2_tool.py` y `sismed_sync_supabase.py`). Este documento se conserva solo como referencia histórica. El Sync SISMED vigente es el de Google Sheets (`sismed_sync.py`).
+
 Este documento es una actualización para informar a la inteligencia artificial que está manejando la versión de Escritorio (Desktop Toolkit) y al usuario desarrollador por qué está sucediendo el error **HTTP 404: `{"code":"NOT_FOUND","message":"Requested function was not found"}`**, y los pasos exactos para resolverlo.
 
 ## 1. El Problema: ¿Por qué ocurre el 404?

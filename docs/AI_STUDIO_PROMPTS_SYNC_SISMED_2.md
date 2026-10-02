@@ -1,5 +1,7 @@
 # Prompts Para Google AI Studio - ToolkitSISMED Web
 
+> **Retirado el 2026-10-02.** La herramienta Sync SISMED 2.0 (envío de stock a Supabase) se eliminó del Toolkit de escritorio (`sync_sismed2_tool.py` y `sismed_sync_supabase.py`). Este documento se conserva solo como referencia histórica. El Sync SISMED vigente es el de Google Sheets (`sismed_sync.py`).
+
 Estos prompts son para darle contexto a otra IA sobre los cambios necesarios en la app web `jchaconv94/ToolkitSISMED`.
 
 ## Prompt 1 - Contexto General

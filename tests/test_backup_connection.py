@@ -64,13 +64,6 @@ class SyncIntegrationTests(unittest.TestCase):
         start.assert_called_once()
         stop.assert_called_once()
 
-    def test_supabase_sync_never_connects(self):
-        from sismed_sync_supabase import SismedSyncSupabaseManager
-
-        manager = SismedSyncSupabaseManager()
-        with patch.object(backup_connection.BackupConnection, "start") as start:
-            manager._start_backup_connection()
-        start.assert_not_called()
 
 
 if __name__ == "__main__":

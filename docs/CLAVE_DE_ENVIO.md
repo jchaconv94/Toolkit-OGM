@@ -26,7 +26,7 @@ En la dirección (un `doPost` de Apps Script no puede leer cabeceras):
 | `equipo_id` | Identificador de la PC (`toolskit/sync_device_id.py`): sale del `MachineGuid` de Windows resumido con SHA-256, así que **no viaja si copian la carpeta o la configuración del Toolkit** a otra PC. |
 | `clave`     | La clave configurada, si la hay. Varias se separan con comas. |
 
-Sync SISMED 2.0 (Supabase) no manda ninguno de los tres.
+(Sync SISMED 2.0, que enviaba a Supabase sin ninguno de los tres, se retiró el 2026-10-02.)
 
 ## Dónde se verifica: en el propio Toolkit
 
@@ -101,7 +101,7 @@ el Toolkit pregunta sin `p_sismed`, y si tampoco tiene la de versión, como ante
 
 `toolskit/backup_connection.py` abre una conexión con el servicio `sismed-conexion` de
 Cloudflare (ToolkitSISMED: `cloudflare/conexion`) para que la web pueda avisarle algo a
-esta PC al instante. Arranca y se detiene con Sync SISMED; Sync SISMED 2.0 no la usa.
+esta PC al instante. Arranca y se detiene con Sync SISMED.
 
 - Solo se conecta si esta PC tiene **clave de envío** y la web la tiene habilitada
   (`app_backup_pc_enabled`; durante el piloto, solo `backup_pilot_codes`). El servicio
