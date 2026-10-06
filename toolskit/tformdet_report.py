@@ -21,6 +21,11 @@ ADDITIONAL_TFORMDET_COLUMNS = (
     'ESSALUD',
 )
 
+# Clasificación del producto (2026-10-06): la web la necesita para la disponibilidad de
+# medicamentos esenciales (DME) armada solo desde el TFORMDET. Van al final para no mover las
+# columnas que usan las fórmulas del reporte de un periodo.
+PRODUCT_CLASSIFICATION_COLUMNS = ('MEDFF', 'MEDTIP', 'MEDPET', 'MEDEST')
+
 
 class TformdetManager:
     def __init__(self, sismed_dir, log_callback=None):
@@ -56,6 +61,7 @@ class TformdetManager:
                 path_tformdet = safe_copy_dbf("TFORMDET.DBF")
                 path_malmacen = safe_copy_dbf("MALMACEN.DBF")
                 path_mproducto = safe_copy_dbf("MPRODUCTO.DBF")
+                path_mmedicam = safe_copy_dbf("MMEDICAM.DBF")
 
                 if not path_tformdet:
                     raise FileNotFoundError(f"No se encontró el archivo principal: TFORMDET.DBF")
@@ -71,6 +77,11 @@ class TformdetManager:
                             dict_alm[cod] = des
 
                 dict_prod = {}
+                dict_clase = {}
+
+                def leer_clase(rec):
+                    return {col: str(rec.get(col, '') or '').strip() for col in PRODUCT_CLASSIFICATION_COLUMNS}
+
                 if path_mproducto:
                     for rec in open_dbf(path_mproducto):
                         cod = str(rec.get('MEDCOD', '')).strip()
@@ -80,6 +91,19 @@ class TformdetManager:
                             cnc = str(rec.get('MEDCNC', '')).strip()
                             desc = f"{nom} {pres} {cnc}".strip()
                             dict_prod[cod] = desc
+                            dict_clase[cod] = leer_clase(rec)
+
+                # La clasificación sale de MMEDICAM, como en el reporte de Disponibilidad;
+                # MPRODUCTO queda de respaldo para los campos que MMEDICAM no traiga.
+                if path_mmedicam:
+                    for rec in open_dbf(path_mmedicam):
+                        cod = str(rec.get('MEDCOD', '')).strip()
+                        if cod:
+                            previa = dict_clase.get(cod, {})
+                            dict_clase[cod] = {
+                                col: valor or previa.get(col, '')
+                                for col, valor in leer_clase(rec).items()
+                            }
 
                 # 3. Definir columnas requeridas por el usuario
                 required_cols = [
@@ -89,7 +113,8 @@ class TformdetManager:
                     'FAC_PERD', 'DEFNAC', 'EXO', 'SOAT', 'CREDHOSP', 
                     'OTR_CONV', 'DEVOL', 'VENCIDO', 'MERMA', 'DISTRI', 
                     'TRANSF', 'VENTAINST', 'DEV_VEN', 'DEV_MERMA', 'OTRAS_SAL', 
-                    'STOCK_FIN', 'TOTAL', *ADDITIONAL_TFORMDET_COLUMNS
+                    'STOCK_FIN', 'TOTAL', *ADDITIONAL_TFORMDET_COLUMNS,
+                    *PRODUCT_CLASSIFICATION_COLUMNS,
                 ]
                 
                 # Solo agregar ANNOMES si es más de un periodo
@@ -161,6 +186,8 @@ class TformdetManager:
                                 val = dict_alm.get(v_codigo_pre, "")
                             elif col == 'DESCRIPCION MED':
                                 val = dict_prod.get(v_codigo_med, "")
+                            elif col in PRODUCT_CLASSIFICATION_COLUMNS:
+                                val = dict_clase.get(v_codigo_med, {}).get(col, "")
                             elif col == 'ANNOMES':
                                 val = val_annomes
                             elif col == 'COD. UNICO MAS CONSUMO SIS.':
