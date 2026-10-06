@@ -1,6 +1,6 @@
 
 import os
-import pandas as pd
+import xlsxwriter
 import tempfile
 from datetime import datetime, date
 import traceback
@@ -25,6 +25,26 @@ ADDITIONAL_TFORMDET_COLUMNS = (
 # medicamentos esenciales (DME) armada solo desde el TFORMDET. Van al final para no mover las
 # columnas que usan las fórmulas del reporte de un periodo.
 PRODUCT_CLASSIFICATION_COLUMNS = ('MEDFF', 'MEDTIP', 'MEDPET', 'MEDEST')
+
+
+def _write_cell(worksheet, row, col, val):
+    """Escribe una celda con el mismo tipo que dejaba pandas: texto como texto (aunque parezca
+    número o fórmula, p. ej. códigos con ceros a la izquierda), números y fechas como tales."""
+    if val is None or val == "":
+        return
+    if isinstance(val, str):
+        worksheet.write_string(row, col, val)
+    elif isinstance(val, bool):
+        worksheet.write_boolean(row, col, val)
+    elif isinstance(val, (datetime, date)):
+        if not isinstance(val, datetime):
+            val = datetime(val.year, val.month, val.day)
+        worksheet.write_datetime(row, col, val)
+    else:
+        try:
+            worksheet.write_number(row, col, float(val))
+        except (TypeError, ValueError):
+            worksheet.write_string(row, col, str(val))
 
 
 class TformdetManager:
@@ -158,80 +178,109 @@ class TformdetManager:
                 
                 requested_periods = generate_periods(periodo_start, periodo_end)
                 found_periods = set()
-                
-                data_list = []
                 count = 0
                 found = 0
 
-                for rec in open_dbf(path_tformdet):
-                    count += 1
-                    
-                    # Intentar obtener el periodo de ANNOMES (también buscar variantes como AÑOMES)
-                    val_annomes = str(rec.get('ANNOMES', rec.get('AÑOMES', ''))).strip()
-                    
-                    # Filtrar por rango de rangos de texto (se comparan bien si tienen YYYYMM)
-                    if periodo_start <= val_annomes <= periodo_end:
-                        found_periods.add(val_annomes)
-                        row_data = {}
-                        
-                        # Pre-calcular cruces
-                        v_codigo_pre = str(rec.get('CODIGO_PRE', '')).strip()
-                        v_codigo_med = str(rec.get('CODIGO_MED', '')).strip()
-                        
-                        row_idx = found + 2
-                        
-                        # Rellenar datos incluyendo cruces
-                        for col in required_cols:
-                            if col == 'EESS':
-                                val = dict_alm.get(v_codigo_pre, "")
-                            elif col == 'DESCRIPCION MED':
-                                val = dict_prod.get(v_codigo_med, "")
-                            elif col in PRODUCT_CLASSIFICATION_COLUMNS:
-                                val = dict_clase.get(v_codigo_med, {}).get(col, "")
-                            elif col == 'ANNOMES':
-                                val = val_annomes
-                            elif col == 'COD. UNICO MAS CONSUMO SIS.':
-                                val = f"=CONCATENATE(C{row_idx},E{row_idx},R{row_idx},S{row_idx})"
-                            elif col == 'COD. UNICO':
-                                val = f"=CONCATENATE(C{row_idx},E{row_idx})"
-                            elif col == 'FECHA CON NUMERO':
-                                val = f"=CONCATENATE(YEAR(I{row_idx}), IF(MONTH(I{row_idx})<10, CONCATENATE(\"0\", MONTH(I{row_idx})), MONTH(I{row_idx})), IF(DAY(I{row_idx})<10, CONCATENATE(\"0\", DAY(I{row_idx})), DAY(I{row_idx})))"
-                            else:
-                                val = rec.get(col, "")
-                                if isinstance(val, str):
-                                    val = val.strip()
-                                elif isinstance(val, (date, datetime)) and col == 'FEC_EXP':
-                                    val = val.strftime("%d/%m/%Y")
-                                    
-                            row_data[col] = val
-                        
-                        data_list.append(row_data)
-                        found += 1
+                # 5. Escribir el Excel fila por fila mientras se lee el TFORMDET (2026-10-06).
+                # Antes se juntaba todo en una lista, luego en un DataFrame y pandas armaba el
+                # libro completo en memoria: con 12 meses (~200 000 filas x 45 columnas) pasaba
+                # de varios GB y colgaba la PC. XlsxWriter en constant_memory escribe cada fila
+                # al disco y la suelta. Se escribe en un temporal y solo al final se mueve al
+                # destino, para no dejar un archivo a medias si faltan periodos o algo falla.
+                out_dir = os.path.dirname(os.path.abspath(output_path)) or "."
+                fd, tmp_path = tempfile.mkstemp(prefix="~tformdet_", suffix=".xlsx", dir=out_dir)
+                os.close(fd)
+                workbook = None
+                try:
+                    workbook = xlsxwriter.Workbook(tmp_path, {
+                        'constant_memory': True,
+                        'default_date_format': 'dd/mm/yyyy',
+                        'strings_to_numbers': False,
+                        'strings_to_urls': False,
+                    })
+                    worksheet = workbook.add_worksheet("Sheet1")
+                    header_format = workbook.add_format({'bold': True, 'border': 1, 'align': 'center', 'valign': 'top'})
+                    for col_idx, col in enumerate(required_cols):
+                        worksheet.write_string(0, col_idx, col, header_format)
 
-                    if count % 10000 == 0:
-                        self.log(f"⏳ Procesados {count} registros...")
+                    self.log("💾 Generando archivo Excel mientras se leen los registros...")
+                    for rec in open_dbf(path_tformdet):
+                        count += 1
 
-            missing_periods = [p for p in requested_periods if p not in found_periods]
-            if missing_periods:
-                self.log(f"❌ ALTO: No se tiene información de ese(os) periodo(s): {', '.join(missing_periods)}")
-                self.log(f"⚠️ Por favor, ajuste su rango de búsqueda. La operación fue cancelada.")
-                return False
+                        # Intentar obtener el periodo de ANNOMES (también buscar variantes como AÑOMES)
+                        val_annomes = str(rec.get('ANNOMES', rec.get('AÑOMES', ''))).strip()
 
-            if not data_list:
-                self.log(f"⚠️ No se encontraron registros de datos para la(s) fecha(s).")
-                return False
+                        # Filtrar por rango de rangos de texto (se comparan bien si tienen YYYYMM)
+                        if periodo_start <= val_annomes <= periodo_end:
+                            found_periods.add(val_annomes)
 
-            self.log(f"✅ Se encontraron {found} registros coincidentes.")
-            
-            # 5. Crear DataFrame y Exportar
-            self.log("💾 Generando archivo Excel...")
-            df = pd.DataFrame(data_list)
-            
-            # Reordenar columnas exacto
-            cols_to_export = [c for c in required_cols if c in df.columns]
-            df = df[cols_to_export]
+                            # Pre-calcular cruces
+                            v_codigo_pre = str(rec.get('CODIGO_PRE', '')).strip()
+                            v_codigo_med = str(rec.get('CODIGO_MED', '')).strip()
+                            clase = dict_clase.get(v_codigo_med, {})
 
-            df.to_excel(output_path, index=False)
+                            row_idx = found + 2
+                            excel_row = found + 1
+
+                            for col_idx, col in enumerate(required_cols):
+                                if col == 'EESS':
+                                    val = dict_alm.get(v_codigo_pre, "")
+                                elif col == 'DESCRIPCION MED':
+                                    val = dict_prod.get(v_codigo_med, "")
+                                elif col in PRODUCT_CLASSIFICATION_COLUMNS:
+                                    val = clase.get(col, "")
+                                elif col == 'ANNOMES':
+                                    val = val_annomes
+                                elif col == 'COD. UNICO MAS CONSUMO SIS.':
+                                    worksheet.write_formula(excel_row, col_idx, f"=CONCATENATE(C{row_idx},E{row_idx},R{row_idx},S{row_idx})")
+                                    continue
+                                elif col == 'COD. UNICO':
+                                    worksheet.write_formula(excel_row, col_idx, f"=CONCATENATE(C{row_idx},E{row_idx})")
+                                    continue
+                                elif col == 'FECHA CON NUMERO':
+                                    worksheet.write_formula(excel_row, col_idx, f"=CONCATENATE(YEAR(I{row_idx}), IF(MONTH(I{row_idx})<10, CONCATENATE(\"0\", MONTH(I{row_idx})), MONTH(I{row_idx})), IF(DAY(I{row_idx})<10, CONCATENATE(\"0\", DAY(I{row_idx})), DAY(I{row_idx})))")
+                                    continue
+                                else:
+                                    val = rec.get(col, "")
+                                    if isinstance(val, str):
+                                        val = val.strip()
+                                    elif isinstance(val, (date, datetime)) and col == 'FEC_EXP':
+                                        val = val.strftime("%d/%m/%Y")
+
+                                _write_cell(worksheet, excel_row, col_idx, val)
+
+                            found += 1
+
+                        if count % 10000 == 0:
+                            self.log(f"⏳ Procesados {count} registros...")
+
+                    missing_periods = [p for p in requested_periods if p not in found_periods]
+                    if missing_periods:
+                        self.log(f"❌ ALTO: No se tiene información de ese(os) periodo(s): {', '.join(missing_periods)}")
+                        self.log(f"⚠️ Por favor, ajuste su rango de búsqueda. La operación fue cancelada.")
+                        return False
+
+                    if found == 0:
+                        self.log(f"⚠️ No se encontraron registros de datos para la(s) fecha(s).")
+                        return False
+
+                    self.log(f"✅ Se encontraron {found} registros coincidentes.")
+                    workbook.close()
+                    workbook = None
+                    os.replace(tmp_path, output_path)
+                    tmp_path = None
+                finally:
+                    if workbook is not None:
+                        try:
+                            workbook.close()
+                        except Exception:
+                            pass
+                    if tmp_path and os.path.exists(tmp_path):
+                        try:
+                            os.remove(tmp_path)
+                        except OSError:
+                            pass
+
             self.log(f"✨ Archivo guardado con éxito en: {output_path}")
             return True
 

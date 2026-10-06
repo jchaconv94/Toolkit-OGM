@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import openpyxl
 import pandas as pd
 
 TOOLKIT_DIR = Path(__file__).resolve().parents[1] / "toolskit"
@@ -109,6 +110,56 @@ class TformdetReportTests(unittest.TestCase):
             self.assertEqual((first["MEDFF"], first["MEDTIP"], first["MEDPET"], first["MEDEST"]), ("TABLET", "M", "P", "S"))
             second = exported.iloc[1]
             self.assertEqual((second["MEDTIP"], second["MEDPET"], second["MEDEST"]), ("I", "_", "_"))
+
+    def test_missing_period_leaves_no_file(self):
+        records = [{"ANNOMES": "202601", "CODIGO_PRE": "06503", "CODIGO_MED": "00143", "STOCK_FIN": 10}]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "DATOS"
+            data_dir.mkdir()
+            (data_dir / "TFORMDET.DBF").touch()
+            out_dir = Path(temp_dir) / "salida"
+            out_dir.mkdir()
+            output_path = out_dir / "report.xlsx"
+
+            with (
+                patch("tformdet_report.snapshot_dbf", side_effect=lambda path, _directory: path),
+                patch("tformdet_report.open_dbf", side_effect=lambda _path: records),
+            ):
+                success = TformdetManager(temp_dir, log_callback=lambda _message: None).generate_report(
+                    "202601", "202602", str(output_path),
+                )
+
+            # Falta 202602: no se deja el archivo a medias ni el temporal.
+            self.assertFalse(success)
+            self.assertEqual(list(out_dir.iterdir()), [])
+
+    def test_codes_keep_leading_zeros_and_numbers_stay_numbers(self):
+        records = [{"ANNOMES": "202601", "CODIGO_PRE": "06503", "CODIGO_MED": "00143", "STOCK_FIN": 10, "PRECIO": 1.5}]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            data_dir = Path(temp_dir) / "DATOS"
+            data_dir.mkdir()
+            (data_dir / "TFORMDET.DBF").touch()
+            output_path = Path(temp_dir) / "report.xlsx"
+
+            with (
+                patch("tformdet_report.snapshot_dbf", side_effect=lambda path, _directory: path),
+                patch("tformdet_report.open_dbf", side_effect=lambda _path: records),
+            ):
+                success = TformdetManager(temp_dir, log_callback=lambda _message: None).generate_report(
+                    "202601", "202601", str(output_path),
+                )
+
+            self.assertTrue(success)
+            # Se lee la celda tal cual (pandas convertiría «06503» a número al leer).
+            sheet = openpyxl.load_workbook(output_path).active
+            header = [cell.value for cell in sheet[1]]
+            row = {name: cell.value for name, cell in zip(header, sheet[2])}
+            self.assertEqual(row["CODIGO_PRE"], "06503")
+            self.assertEqual(row["CODIGO_MED"], "00143")
+            self.assertEqual(row["STOCK_FIN"], 10)
+            self.assertEqual(row["PRECIO"], 1.5)
 
 
 if __name__ == "__main__":
