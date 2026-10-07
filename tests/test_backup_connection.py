@@ -142,6 +142,39 @@ class ProxyTests(unittest.TestCase):
         self.assertEqual(self._with({"https": "socks5://10.0.0.5:1080"}), {})
 
 
+class NewKeyTests(unittest.TestCase):
+    def test_a_key_typed_while_running_is_picked_up_after_the_first_accepted_send(self):
+        import threading
+        import time
+        holder = {"keys": ""}
+        seen = []
+        conn = backup_connection.BackupConnection(log=lambda _m: None, get_keys=lambda: holder["keys"],
+                                                  get_device_id=lambda: "d", get_equipo=lambda: "PC")
+        with patch.object(backup_connection, "websocket", object()), \
+                patch.object(conn, "enabled_codes", side_effect=lambda codes: seen.append(codes) or []):
+            conn.start()
+            time.sleep(0.3)  # sin clave: espera 30 minutos
+            self.assertEqual(seen, [])
+            holder["keys"] = "06919-AAAA-BBBB-CCCC"
+            self.assertTrue(conn.retry_after_link())  # primer envío aceptado
+            for _ in range(50):
+                if seen:
+                    break
+                time.sleep(0.05)
+            conn.stop()
+        self.assertEqual(seen[0], ["06919"])
+
+    def test_start_while_running_wakes_it(self):
+        conn = _conn()
+        with patch.object(backup_connection, "websocket", object()), \
+                patch.object(conn, "enabled_codes", return_value=[]):
+            conn.start()
+            conn._wake.clear()
+            conn.start()
+            self.assertTrue(conn._wake.is_set())
+            conn.stop()
+
+
 class SyncIntegrationTests(unittest.TestCase):
     def test_sync_starts_and_stops_the_connection(self):
         manager = SismedSyncManager()

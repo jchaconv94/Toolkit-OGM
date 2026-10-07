@@ -99,8 +99,17 @@ class BackupConnection:
             self._report("missing", "  ⚠ Backups SISMED: falta el componente de conexión inmediata (websocket-client); esta PC no aparecerá en Backups.")
             return
         if self._thread and self._thread.is_alive():
-            return
+            if not self._stop.is_set():
+                # Ya corre: que vuelva a mirar ahora las claves (pudieron cambiar).
+                self._wake.set()
+                return
+            # Se pidió detener y todavía no terminó: se espera un momento para no quedarse sin
+            # conexión (antes `start` volvía sin hacer nada y el hilo viejo terminaba solo).
+            self._thread.join(timeout=20)
+            if self._thread.is_alive():
+                return
         self._stop.clear()
+        self._wake.clear()
         self._thread = threading.Thread(target=self._run, name="backup-connection", daemon=True)
         self._thread.start()
 
@@ -168,6 +177,8 @@ class BackupConnection:
         while not self._stop.is_set():
             keys = self._keys()
             if not keys:
+                # Sin clave todavía: al poner la clave, el primer envío aceptado la despierta.
+                self._waiting_for_link = True
                 if self._wait(ENABLED_RECHECK_SECONDS):
                     return
                 continue
