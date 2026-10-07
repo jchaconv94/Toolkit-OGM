@@ -109,13 +109,37 @@ class DiagnosticLogTests(unittest.TestCase):
             def run_forever(self, **_k):
                 self.on_error(self, ConnectionRefusedError("Connection refused"))
 
-        with patch.object(backup_connection, "websocket") as ws, patch.object(backup_connection, "get_current_version", return_value="2.2.9"):
+        with patch.object(backup_connection, "websocket") as ws, patch.object(backup_connection, "get_current_version", return_value="2.2.9"), \
+                patch.object(backup_connection, "proxy_options", return_value={}):
             ws.WebSocketApp = FakeApp
             self.assertEqual(conn._connect({"06578": "K"}), "error")
             self.assertEqual(conn._connect({"06578": "K"}), "error")
         self.assertEqual(len(lines), 1)
         self.assertIn("Connection refused", lines[0])
         self.assertIn("workers.dev", lines[0])
+
+
+class ProxyTests(unittest.TestCase):
+    def _with(self, proxies, bypass=False):
+        with patch.object(backup_connection.urllib.request, "getproxies", return_value=proxies), \
+                patch.object(backup_connection.urllib.request, "proxy_bypass", return_value=bypass):
+            return backup_connection.proxy_options()
+
+    def test_no_proxy(self):
+        self.assertEqual(self._with({}), {})
+
+    def test_system_proxy_is_used(self):
+        self.assertEqual(self._with({"https": "http://10.0.0.5:3128"}),
+                         {"http_proxy_host": "10.0.0.5", "http_proxy_port": 3128, "proxy_type": "http"})
+
+    def test_windows_style_without_scheme_and_with_credentials(self):
+        self.assertEqual(self._with({"http": "proxy.minsa:8080"})["http_proxy_host"], "proxy.minsa")
+        opts = self._with({"https": "http://ana:cl%40ve@proxy:80"})
+        self.assertEqual(opts["http_proxy_auth"], ("ana", "cl@ve"))
+
+    def test_bypass_and_socks_are_ignored(self):
+        self.assertEqual(self._with({"https": "http://10.0.0.5:3128"}, bypass=True), {})
+        self.assertEqual(self._with({"https": "socks5://10.0.0.5:1080"}), {})
 
 
 class SyncIntegrationTests(unittest.TestCase):
