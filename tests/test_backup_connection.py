@@ -54,6 +54,37 @@ class EnabledCodesTests(unittest.TestCase):
         self.assertEqual(_conn()._keys(), {"030S05": "030S05-AAAA-BBBB-CCCC"})
 
 
+class RetryAfterLinkTests(unittest.TestCase):
+    def test_wakes_only_once_after_a_rejection(self):
+        conn = _conn()
+        self.assertFalse(conn.retry_after_link())  # nada pendiente: no despierta
+        conn._waiting_for_link = True
+        self.assertTrue(conn.retry_after_link())
+        self.assertTrue(conn._wake.is_set())
+        self.assertFalse(conn.retry_after_link())  # una sola vez por rechazo
+
+    def test_does_nothing_while_connected(self):
+        conn = _conn()
+        conn._waiting_for_link = True
+        conn.connected = True
+        self.assertFalse(conn.retry_after_link())
+
+    def test_wake_cuts_the_long_wait(self):
+        import threading
+        import time
+        conn = _conn()
+        conn._waiting_for_link = True
+        threading.Timer(0.2, conn.retry_after_link).start()
+        started = time.monotonic()
+        self.assertFalse(conn._wait(30))
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_stop_ends_the_wait(self):
+        conn = _conn()
+        conn.stop()
+        self.assertTrue(conn._wait(30))
+
+
 class SyncIntegrationTests(unittest.TestCase):
     def test_sync_starts_and_stops_the_connection(self):
         manager = SismedSyncManager()

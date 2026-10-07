@@ -49,6 +49,10 @@ class BackupConnection:
         self.get_device_id = get_device_id
         self.get_equipo = get_equipo
         self._stop = threading.Event()
+        # Despierta una espera larga antes de tiempo (ver `retry_after_link`).
+        self._wake = threading.Event()
+        # La última vuelta terminó sin conexión porque la web no la aceptó todavía.
+        self._waiting_for_link = False
         self._thread: threading.Thread | None = None
         self._ws = None
         self._last_pong = 0.0
@@ -66,6 +70,7 @@ class BackupConnection:
 
     def stop(self):
         self._stop.set()
+        self._wake.set()
         ws = self._ws
         if ws is not None:
             try:
@@ -98,8 +103,22 @@ class BackupConnection:
         return [str(c).upper() for c in data] if isinstance(data, list) else []
 
     def _wait(self, seconds: float) -> bool:
-        """Espera o termina antes si se pidió detener. Devuelve True si hay que salir."""
-        return self._stop.wait(max(1.0, seconds))
+        """Espera o termina antes si se pidió detener o despertar. Devuelve True si hay que salir."""
+        self._wake.wait(max(1.0, seconds))
+        self._wake.clear()
+        return self._stop.is_set()
+
+    def retry_after_link(self) -> bool:
+        """
+        Sync SISMED la llama tras un envío de stock aceptado. Una clave recién puesta se vincula
+        a la PC en su primer envío; si la conexión ya había sido rechazada por eso, esperaba
+        30 minutos para volver a intentar. Así lo intenta enseguida, una sola vez por rechazo.
+        """
+        if self.connected or not self._waiting_for_link:
+            return False
+        self._waiting_for_link = False
+        self._wake.set()
+        return True
 
     def _run(self):
         backoff = 5
@@ -118,16 +137,19 @@ class BackupConnection:
                     return
                 continue
             if not codes:
+                self._waiting_for_link = True
                 if self._wait(ENABLED_RECHECK_SECONDS):
                     return
                 continue
 
+            self._waiting_for_link = False
             outcome = self._connect({c: keys[c] for c in codes if c in keys})
             if self._stop.is_set():
                 return
             if outcome == "rejected":
                 self.log("  ⚠ Conexión inmediata rechazada por la web (clave o PC no vinculada). Se reintentará más tarde.")
                 backoff = 5
+                self._waiting_for_link = True
                 if self._wait(REJECTED_WAIT_SECONDS):
                     return
                 continue
