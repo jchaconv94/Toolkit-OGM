@@ -27,6 +27,11 @@ class DisponibilidadReportManagerTests(unittest.TestCase):
 
         self.assertEqual(self.manager._calculate_consumption(record), 21)
 
+    def test_exonerado_is_counted_as_consumption(self):
+        record = {"VENTA": 1, "EXO": 7, "REINGRE": 50}
+
+        self.assertEqual(self.manager._calculate_consumption(record), 8)
+
     def test_reported_august_case_totals_32_without_reingreso(self):
         records = [
             {"INTERSAN": 27},
