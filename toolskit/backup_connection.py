@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import random
+import ssl
 import threading
 import time
 import urllib.request
@@ -40,6 +41,23 @@ PING_SECONDS = 50
 PONG_TIMEOUT_SECONDS = 120
 REJECTED_WAIT_SECONDS = 30 * 60
 MAX_BACKOFF_SECONDS = 300
+
+
+def ssl_context() -> ssl.SSLContext:
+    """
+    Certificados para la conexión inmediata. websocket-client solo usa los de Windows, y una PC
+    sin las raíces al día (Windows las baja recién cuando las necesita) fallaba con
+    CERTIFICATE_VERIFY_FAILED mientras el stock sí se enviaba, porque `requests` usa certifi.
+    Aquí van los dos: certifi y, encima, los de Windows (por si un antivirus inspecciona HTTPS).
+    """
+    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    try:
+        import certifi
+
+        context.load_verify_locations(cafile=certifi.where())
+    except Exception:
+        pass
+    return context
 
 
 def proxy_options(service_url: str = "") -> dict:
@@ -271,7 +289,7 @@ class BackupConnection:
             self._report(f"proxy:{proxy['http_proxy_host']}:{proxy['http_proxy_port']}",
                          f"  ℹ Backups SISMED: se conecta por el proxy del sistema ({proxy['http_proxy_host']}:{proxy['http_proxy_port']}).")
         try:
-            app.run_forever(ping_interval=0, **proxy)
+            app.run_forever(ping_interval=0, sslopt={"context": ssl_context()}, **proxy)
         except Exception as exc:
             state["error"] = state["error"] or _short(exc)
         finally:

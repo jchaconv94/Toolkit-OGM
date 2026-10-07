@@ -175,6 +175,35 @@ class NewKeyTests(unittest.TestCase):
             conn.stop()
 
 
+class CertificateTests(unittest.TestCase):
+    def test_context_trusts_certifi_and_verifies(self):
+        import ssl
+        import certifi
+        ctx = backup_connection.ssl_context()
+        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(ctx.check_hostname)
+        with patch.object(ssl.SSLContext, "load_verify_locations") as load:
+            backup_connection.ssl_context()
+        load.assert_called_with(cafile=certifi.where())
+
+    def test_connection_passes_the_context(self):
+        captured = {}
+
+        class FakeApp:
+            def __init__(self, *_a, **_k):
+                pass
+
+            def run_forever(self, **kwargs):
+                captured.update(kwargs)
+
+        conn = _conn()
+        with patch.object(backup_connection, "websocket") as ws, patch.object(backup_connection, "get_current_version", return_value="2.3.1"), \
+                patch.object(backup_connection, "proxy_options", return_value={}):
+            ws.WebSocketApp = FakeApp
+            conn._connect({"06578": "K"})
+        self.assertIn("context", captured["sslopt"])
+
+
 class SyncIntegrationTests(unittest.TestCase):
     def test_sync_starts_and_stops_the_connection(self):
         manager = SismedSyncManager()
