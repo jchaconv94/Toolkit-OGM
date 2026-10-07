@@ -14,7 +14,8 @@ Configuraciones soportadas:
   5. Meses           → período de N meses hacia atrás desde hoy
 
 Columnas pivot: ANNOMES (yyyymm) → columnas dinámicas con
-Consumo = VENTA + SIS + INTERSAN + SOAT + CREDHOSP + OTR_CONV.
+Consumo = VENTA + SIS + INTERSAN + EXO + SOAT + CREDHOSP + OTR_CONV.
+EXO es lo entregado exonerado de pago: también es consumo.
 REINGRE no se considera consumo porque representa el retorno de existencias.
 Columna extra: PRECIO = último precio del período | STOCK_FIN = stock del mes seleccionado
 """
@@ -55,6 +56,7 @@ class DisponibilidadReportManager:
         "VENTA",
         "SIS",
         "INTERSAN",
+        "EXO",
         "SOAT",
         "CREDHOSP",
         "OTR_CONV",
