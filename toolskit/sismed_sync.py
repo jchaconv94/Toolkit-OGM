@@ -647,6 +647,17 @@ class SismedSyncManager:
         except Exception as exc:
             self.log(f"  ⚠ No se pudo iniciar la conexión inmediata con la web: {exc}")
 
+    def _retry_backup_connection(self):
+        """Tras un envío aceptado (la PC ya quedó vinculada), reintenta la conexión inmediata."""
+        connection = self._backup_connection
+        if connection is None:
+            return
+        try:
+            if connection.retry_after_link():
+                self.log("  Conexión inmediata con la web: se reintenta ahora que la PC está vinculada.")
+        except Exception:
+            pass
+
     def _stop_backup_connection(self):
         if self._backup_connection is not None:
             try:
@@ -992,6 +1003,7 @@ class SismedSyncManager:
 
                     success_message = self._success_message(response, len(payload_data))
                     self.log(f"[{time.strftime('%H:%M:%S')}] ✓ ¡Éxito! {success_message}")
+                    self._retry_backup_connection()
                     self._record_cycle_result(
                         "success",
                         (
