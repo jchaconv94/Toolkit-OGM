@@ -85,6 +85,39 @@ class RetryAfterLinkTests(unittest.TestCase):
         self.assertTrue(conn._wait(30))
 
 
+class DiagnosticLogTests(unittest.TestCase):
+    def _conn(self, lines):
+        return backup_connection.BackupConnection(log=lines.append, get_keys=lambda: "", get_device_id=lambda: "d", get_equipo=lambda: "PC")
+
+    def test_each_problem_is_logged_once(self):
+        lines = []
+        conn = self._conn(lines)
+        conn._report("unreachable", "sin red")
+        conn._report("unreachable", "sin red")
+        conn._report("rejected", "rechazada")
+        conn._report("unreachable", "sin red")
+        self.assertEqual(lines, ["sin red", "rechazada", "sin red"])
+
+    def test_unreachable_service_is_logged_with_its_reason(self):
+        lines = []
+        conn = self._conn(lines)
+
+        class FakeApp:
+            def __init__(self, *_a, on_error=None, **_k):
+                self.on_error = on_error
+
+            def run_forever(self, **_k):
+                self.on_error(self, ConnectionRefusedError("Connection refused"))
+
+        with patch.object(backup_connection, "websocket") as ws, patch.object(backup_connection, "get_current_version", return_value="2.2.9"):
+            ws.WebSocketApp = FakeApp
+            self.assertEqual(conn._connect({"06578": "K"}), "error")
+            self.assertEqual(conn._connect({"06578": "K"}), "error")
+        self.assertEqual(len(lines), 1)
+        self.assertIn("Connection refused", lines[0])
+        self.assertIn("workers.dev", lines[0])
+
+
 class SyncIntegrationTests(unittest.TestCase):
     def test_sync_starts_and_stops_the_connection(self):
         manager = SismedSyncManager()

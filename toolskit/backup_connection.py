@@ -40,6 +40,12 @@ REJECTED_WAIT_SECONDS = 30 * 60
 MAX_BACKOFF_SECONDS = 300
 
 
+def _short(error) -> str:
+    """Motivo de un error en una línea corta para el registro."""
+    text = " ".join(str(error or "").split()) or type(error).__name__
+    return text[:160]
+
+
 class BackupConnection:
     def __init__(self, log, get_keys, get_device_id, get_equipo, get_base_dir=lambda: ""):
         self.log = log
@@ -58,11 +64,16 @@ class BackupConnection:
         self._last_pong = 0.0
         self._enabled_checked_at = 0.0
         self._enabled_codes: list[str] = []
+        # Último problema anotado en el registro: cada motivo se anota una vez, no en cada intento.
+        self._last_problem: str | None = None
         self.connected = False
 
     # --- ciclo de vida -------------------------------------------------------------
     def start(self):
-        if websocket is None or self._thread and self._thread.is_alive():
+        if websocket is None:
+            self._report("missing", "  ⚠ Backups SISMED: falta el componente de conexión inmediata (websocket-client); esta PC no aparecerá en Backups.")
+            return
+        if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="backup-connection", daemon=True)
@@ -102,6 +113,13 @@ class BackupConnection:
         data = response.json()
         return [str(c).upper() for c in data] if isinstance(data, list) else []
 
+    def _report(self, kind: str, message: str):
+        """Anota un problema de conexión en el registro solo si cambió desde la última vez."""
+        if kind == self._last_problem:
+            return
+        self._last_problem = kind
+        self.log(message)
+
     def _wait(self, seconds: float) -> bool:
         """Espera o termina antes si se pidió detener o despertar. Devuelve True si hay que salir."""
         self._wake.wait(max(1.0, seconds))
@@ -132,11 +150,13 @@ class BackupConnection:
                 codes = self.enabled_codes(sorted(keys))
                 self._enabled_codes = codes
                 self._enabled_checked_at = time.monotonic()
-            except Exception:
+            except Exception as exc:
+                self._report("enabled-error", f"  ⚠ Backups SISMED: no se pudo consultar a la web si esta PC está habilitada ({_short(exc)}). Se reintentará en 5 minutos.")
                 if self._wait(300):
                     return
                 continue
             if not codes:
+                self._report("not-enabled", "  ℹ Backups SISMED: la web todavía no habilita esta PC (clave sin vincular o sin clave de envío). Se volverá a consultar en 30 minutos.")
                 self._waiting_for_link = True
                 if self._wait(ENABLED_RECHECK_SECONDS):
                     return
@@ -147,7 +167,7 @@ class BackupConnection:
             if self._stop.is_set():
                 return
             if outcome == "rejected":
-                self.log("  ⚠ Conexión inmediata rechazada por la web (clave o PC no vinculada). Se reintentará más tarde.")
+                self._report("rejected", "  ⚠ Conexión inmediata rechazada por la web (clave o PC no vinculada). Se reintentará más tarde.")
                 backoff = 5
                 self._waiting_for_link = True
                 if self._wait(REJECTED_WAIT_SECONDS):
@@ -167,11 +187,12 @@ class BackupConnection:
             f"X-Toolkit-Equipo: {self.get_equipo()}",
             f"X-Toolkit-Version: {get_current_version()}",
         ]
-        state = {"opened": False, "rejected": False}
+        state = {"opened": False, "rejected": False, "error": ""}
 
         def on_open(ws):
             state["opened"] = True
             self.connected = True
+            self._last_problem = None
             self._last_pong = time.monotonic()
             self.log(f"  🔌 Conexión inmediata activa con la web ({', '.join(keys)}).")
             threading.Thread(target=self._keepalive, args=(ws,), daemon=True).start()
@@ -198,6 +219,8 @@ class BackupConnection:
             status = getattr(error, "status_code", None)
             if status in (401, 403):
                 state["rejected"] = True
+            elif not state["error"]:
+                state["error"] = _short(error)
 
         def on_close(ws, *_args):
             if self.connected:
@@ -209,14 +232,21 @@ class BackupConnection:
         self._ws = app
         try:
             app.run_forever(ping_interval=0)
-        except Exception:
-            pass
+        except Exception as exc:
+            state["error"] = state["error"] or _short(exc)
         finally:
             self._ws = None
             self.connected = False
         if state["rejected"]:
             return "rejected"
-        return "ok" if state["opened"] else "error"
+        if not state["opened"]:
+            self._report("unreachable", (
+                f"  ⚠ Backups SISMED: no se pudo conectar con el servicio de backups ({state['error'] or 'sin respuesta'}). "
+                "Si sigue así, la red del establecimiento puede estar bloqueando sismed-conexion.jchaconvillacis.workers.dev. "
+                "Se reintentará sola."
+            ))
+            return "error"
+        return "ok"
 
     def _start_backup(self, ws, data: dict):
         job = str(data.get("job") or "")
