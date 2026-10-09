@@ -8,25 +8,53 @@ import threading
 import tempfile
 import traceback
 import socket
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from app_version import get_current_version
 from dbf_utils import DbfReadMetrics, iter_dbf_records, open_dbf, snapshot_dbf
 from tools.app_config import set_many, update_runtime_status
 from sync_device_id import get_device_id
-from send_key_check import SendKeyChecker
+from send_key_check import SendKeyChecker, supabase_public_key
 from sismed_version import read_sismed_version
 from backup_connection import BackupConnection
+from stock_routes import (
+    CLOUDFLARE_RELAY_URL,
+    DIRECT_BLOCKED_SECONDS,
+    ROUTE_CLOUDFLARE,
+    ROUTE_DIRECT,
+    ROUTE_LABELS,
+    ROUTE_SUPABASE,
+    SUPABASE_MIN_INTERVAL_SECONDS,
+    SUPABASE_RELAY_URL,
+    internal_addresses,
+    redact_sensitive,
+    relay_failure,
+    relay_headers,
+)
 
 SYNC_DBF_ABORT_MIN_BAD_RECORDS = 15
 SYNC_DBF_ABORT_BAD_RATIO = 0.05
 SYNC_DNS_RETRY_ATTEMPTS = 6
 SYNC_DNS_RETRY_SECONDS = 20
-SYNC_CONNECTIVITY_TIMEOUT_SECONDS = 5
 
 
 def _read_toolkit_version() -> str:
     return get_current_version()
+
+
+@dataclass
+class _SendAttempt:
+    """Resultado de un intento por un camino (Google directo o un respaldo)."""
+    route: str
+    response: requests.Response | None = None
+    error_kind: str = ""
+    user_message: str = ""
+    technical_detail: str = ""
+    # Probar el siguiente camino: el envío no llegó a Google por este.
+    fallback: bool = False
+    # Vale la pena reintentar en 20 s (falla de red pasajera).
+    retry: bool = False
 
 class SismedSyncManager:
     def __init__(self, log_callback=None, on_stop_callback=None):
@@ -61,6 +89,12 @@ class SismedSyncManager:
         self._last_reported_facility_codes: list[str] = []
         self._last_source_record_count = 0
         self._last_zero_stock_omitted = 0
+        # Caminos de respaldo (stock_routes.py). Hasta cuándo se salta Google directo porque la
+        # red lo bloquea, cuándo se envió por Supabase la última vez y por dónde salió el último envío.
+        self._direct_blocked_until = 0.0
+        self._supabase_last_sent = 0.0
+        self._last_block_note = ""
+        self.last_sync_route = ""
 
     def _set_run_state(self, state: str, detail: str = ""):
         with self._state_lock:
@@ -83,6 +117,7 @@ class SismedSyncManager:
         records: int = 0,
         success: bool = False,
     ):
+        message = redact_sensitive(message)
         self.last_cycle_status = status
         self.last_cycle_message = message
         self.last_cycle_error_kind = error_kind or ""
@@ -96,6 +131,7 @@ class SismedSyncManager:
             "runtime_last_sync_http_status": self.last_http_status,
         }
 
+        updates["runtime_last_sync_route"] = self.last_sync_route
         if success:
             updates["runtime_last_sync_success_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             updates["runtime_last_sync_success_records"] = max(0, int(records or 0))
@@ -328,89 +364,233 @@ class SismedSyncManager:
         parsed = urlparse(self._integration_url())
         return parsed.hostname or ""
 
-    def _resolve_sync_host(self) -> tuple[bool, str]:
-        host = self._sync_target_host()
-        if not host:
-            return False, "La URL de integracion no contiene un servidor valido."
-        try:
-            socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
-            return True, ""
-        except socket.gaierror as exc:
-            return False, f"No se pudo resolver {host}: {exc}"
-        except OSError as exc:
-            return False, f"No se pudo consultar DNS para {host}: {exc}"
-
-    def _check_https_port(self) -> tuple[bool, str]:
-        host = self._sync_target_host()
-        try:
-            with socket.create_connection((host, 443), timeout=SYNC_CONNECTIVITY_TIMEOUT_SECONDS):
-                return True, ""
-        except (OSError, TimeoutError) as exc:
-            return False, f"{host}:443 no respondio durante la validacion previa ({type(exc).__name__}: {exc})"
-
     def _wait_between_quick_retries(self) -> bool:
         self.log(f"  Reintentando en {SYNC_DNS_RETRY_SECONDS} segundos sin esperar el intervalo normal...")
         return self._stop_event.wait(SYNC_DNS_RETRY_SECONDS)
 
+    def _note_block(self, note: str):
+        """Explica una vez por qué no se llega a Google, no en cada ciclo."""
+        if note and note != self._last_block_note:
+            self.log(note)
+        self._last_block_note = note
+
     def _post_payload_with_retries(self, payload_data: list[dict]):
-        last_error_kind = ""
-        last_user_message = ""
-        last_technical_detail = ""
+        """
+        Envía por el primer camino que llegue a Google (directo, Cloudflare, Supabase) y
+        reintenta todo cada 20 s mientras la falla sea de red. Devuelve
+        (respuesta, tipo de error, mensaje, detalle técnico); el camino queda en `last_sync_route`.
+        """
+        body = self._request_body(payload_data)
+        params = self._request_params()
+        self.last_sync_route = ""
+        result = _SendAttempt(route="")
 
         for attempt in range(1, SYNC_DNS_RETRY_ATTEMPTS + 1):
-            dns_ok, dns_detail = self._resolve_sync_host()
-            if not dns_ok:
-                last_error_kind = "dns-error"
-                last_user_message = self._destination_user_message(last_error_kind)
-                last_technical_detail = dns_detail
+            result = self._post_by_routes(body, params)
+            if result.response is not None:
+                self.last_sync_route = result.route
+                return result.response, "", "", ""
+            if result.retry and attempt < SYNC_DNS_RETRY_ATTEMPTS:
                 self.log(
-                    f"  ⚠ Validacion DNS fallida ({attempt}/{SYNC_DNS_RETRY_ATTEMPTS}): {dns_detail}"
+                    f"  ⚠ {result.user_message} Intento {attempt}/{SYNC_DNS_RETRY_ATTEMPTS}. "
+                    f"Detalle: {result.technical_detail}"
                 )
-                if attempt < SYNC_DNS_RETRY_ATTEMPTS:
-                    if self._wait_between_quick_retries():
-                        return None, "stopped", "Sincronizacion detenida por el usuario.", ""
+                if self._wait_between_quick_retries():
+                    return None, "stopped", "Sincronizacion detenida por el usuario.", ""
+                continue
+            break
+
+        return None, result.error_kind or "request-error", result.user_message, result.technical_detail
+
+    def _post_by_routes(self, body: str, params: dict) -> _SendAttempt:
+        failures: list[_SendAttempt] = []
+        direct_skipped = time.monotonic() < self._direct_blocked_until
+
+        if not direct_skipped:
+            direct = self._post_direct(body, params)
+            if direct.response is not None or not direct.fallback:
+                return direct
+            failures.append(direct)
+
+        # Google respondió por un respaldo, pero con un error de su lado (429, 5xx): puede ser
+        # solo con ese servidor, así que se prueba el otro y, si tampoco, se usa esa respuesta.
+        google_error: _SendAttempt | None = None
+        for route in (ROUTE_CLOUDFLARE, ROUTE_SUPABASE):
+            relay = self._post_relay(route, body, params)
+            if relay.response is not None:
+                if failures:
+                    # Google directo falló y un respaldo sí llegó: unas horas se va directo al respaldo.
+                    self._direct_blocked_until = time.monotonic() + DIRECT_BLOCKED_SECONDS
+                if relay.response.status_code == 429 or relay.response.status_code >= 500:
+                    google_error = google_error or relay
                     continue
-                return None, last_error_kind, last_user_message, last_technical_detail
+                return relay
+            failures.append(relay)
+            if not relay.fallback:
+                break
+        if google_error is not None:
+            return google_error
 
-            if attempt > 1:
-                self.log(f"  ✓ DNS disponible para {self._sync_target_host()}. Continuando envio.")
+        dns_only = bool(failures) and failures[0].route == ROUTE_DIRECT and failures[0].error_kind == "network-block"
+        if direct_skipped or dns_only:
+            # Los respaldos fallaron y a Google directo no se le mandó nada: se prueba ahora, por si
+            # la red ya lo permite, el respaldo rechaza a esta PC o la IP interna es un proxy que sí llega.
+            self._direct_blocked_until = 0.0
+            direct = self._post_direct(body, params, ignore_internal_dns=True)
+            if direct.response is not None:
+                return direct
+            if dns_only:
+                # La red ya lo desvía a propósito: reintentarlo en 20 s no cambia nada.
+                direct.retry = False
+                failures[0] = direct
+            else:
+                failures.insert(0, direct)
 
-            port_ok, port_detail = self._check_https_port()
-            if not port_ok:
-                self.log(f"  ⚠ {port_detail}. Se intentara el envio igualmente.")
+        return self._combine_failures(failures)
 
-            try:
-                response = requests.post(
-                    self._integration_url(),
-                    data=self._request_body(payload_data),
-                    headers=self._request_headers(),
-                    params=self._request_params() or None,
-                    timeout=(10, 300)
-                )
-                return response, "", "", ""
-            except requests.exceptions.RequestException as req_err:
-                error_kind, user_message = self._classify_request_exception(req_err)
-                technical_detail = f"{type(req_err).__name__}: {req_err}"
-                last_error_kind = error_kind
-                last_user_message = user_message
-                last_technical_detail = technical_detail
+    def _combine_failures(self, failures: list[_SendAttempt]) -> _SendAttempt:
+        if len(failures) == 1:
+            return failures[0]
+        last = failures[-1]
+        detail = " | ".join(
+            f"{ROUTE_LABELS.get(f.route, f.route)}: {f.user_message}"
+            + (f" ({f.technical_detail})" if f.technical_detail else "")
+            for f in failures
+        )
+        return _SendAttempt(
+            route="",
+            error_kind=last.error_kind or "request-error",
+            user_message="No se pudo enviar el stock por ningún camino (Google directo ni respaldos).",
+            technical_detail=detail,
+            fallback=False,
+            # Un respaldo que rechazó la clave la va a rechazar también en 20 s.
+            retry=any(f.retry for f in failures) and not any(f.error_kind == "relay-rejected" for f in failures),
+        )
 
-                quick_retry_error = (
+    def _post_direct(self, body: str, params: dict, ignore_internal_dns: bool = False) -> _SendAttempt:
+        host = self._sync_target_host()
+        if not host:
+            return _SendAttempt(
+                route=ROUTE_DIRECT,
+                error_kind="dns-error",
+                user_message="La URL de integracion no contiene un servidor valido.",
+            )
+
+        resolved, internal, dns_detail = internal_addresses(host)
+        if not resolved:
+            # Sin DNS para Google: los respaldos son otros servidores y pueden resolver.
+            return _SendAttempt(
+                route=ROUTE_DIRECT,
+                error_kind="dns-error",
+                user_message=self._destination_user_message("dns-error"),
+                technical_detail=dns_detail,
+                fallback=True,
+                retry=True,
+            )
+        if internal and not ignore_internal_dns:
+            self._note_block(
+                f"  ⚠ La red de este establecimiento desvía {host} a una dirección interna ({', '.join(internal)}): "
+                "bloquea Google Apps Script. Se envía por el camino de respaldo."
+            )
+            return _SendAttempt(
+                route=ROUTE_DIRECT,
+                error_kind="network-block",
+                user_message=f"La red desvía {host} a una dirección interna ({', '.join(internal)}).",
+                fallback=True,
+            )
+
+        try:
+            response = requests.post(
+                self._integration_url(),
+                data=body,
+                headers=self._request_headers(),
+                params=params or None,
+                timeout=(10, 300)
+            )
+            self._last_block_note = ""
+            return _SendAttempt(route=ROUTE_DIRECT, response=response)
+        except requests.exceptions.RequestException as req_err:
+            error_kind, user_message = self._classify_request_exception(req_err)
+            # Solo si no se llegó a Google (sin conexión, DNS, TLS cortado, proxy) se prueba el
+            # respaldo. Si Google tardó en responder (ReadTimeout) puede estar escribiendo la hoja.
+            connection_failed = isinstance(req_err, requests.exceptions.ConnectionError)
+            return _SendAttempt(
+                route=ROUTE_DIRECT,
+                error_kind=error_kind,
+                user_message=user_message,
+                technical_detail=f"{type(req_err).__name__}: {req_err}",
+                fallback=connection_failed,
+                retry=(
                     error_kind in {"dns-error", "connection-error"}
                     or isinstance(req_err, requests.exceptions.ConnectTimeout)
+                ),
+            )
+
+    def _post_relay(self, route: str, body: str, params: dict) -> _SendAttempt:
+        label = ROUTE_LABELS[route]
+        if not params.get("clave"):
+            # Los respaldos solo aceptan una PC con clave de envío: no se gasta la consulta.
+            return _SendAttempt(
+                route=route,
+                error_kind="relay-rejected",
+                user_message=(
+                    "El camino de respaldo solo funciona con clave de envío. Configure la clave de este "
+                    "establecimiento (ToolkitSISMED Web → «Claves de envío») en Sync SISMED."
+                ),
+            )
+        public_key = ""
+        if route == ROUTE_SUPABASE:
+            public_key = supabase_public_key()
+            if not public_key:
+                return _SendAttempt(route=route, error_kind="relay-unavailable",
+                                    user_message=f"El {label} no está disponible en esta versión.", fallback=True)
+            wait = SUPABASE_MIN_INTERVAL_SECONDS - (time.monotonic() - self._supabase_last_sent)
+            if self._supabase_last_sent and wait > 0:
+                return _SendAttempt(
+                    route=route,
+                    error_kind="relay-throttled",
+                    user_message=(
+                        f"Por el {label} se envía como mucho cada {SUPABASE_MIN_INTERVAL_SECONDS // 60} minutos; "
+                        f"el próximo, en {int(wait // 60) + 1} min."
+                    ),
+                    fallback=True,
                 )
-                if quick_retry_error and attempt < SYNC_DNS_RETRY_ATTEMPTS:
-                    self.log(
-                        f"  ⚠ {user_message} Intento {attempt}/{SYNC_DNS_RETRY_ATTEMPTS}. "
-                        f"Detalle: {technical_detail}"
-                    )
-                    if self._wait_between_quick_retries():
-                        return None, "stopped", "Sincronizacion detenida por el usuario.", ""
-                    continue
+        url = CLOUDFLARE_RELAY_URL if route == ROUTE_CLOUDFLARE else SUPABASE_RELAY_URL
 
-                return None, error_kind, user_message, technical_detail
+        try:
+            response = requests.post(
+                url,
+                data=body,
+                headers=relay_headers(self._integration_url(), params, public_key),
+                timeout=(10, 300),
+            )
+        except requests.exceptions.RequestException as req_err:
+            error_kind, _message = self._classify_request_exception(req_err)
+            return _SendAttempt(
+                route=route,
+                error_kind=error_kind,
+                user_message=f"No se pudo conectar con el {label}.",
+                technical_detail=f"{type(req_err).__name__}: {req_err}",
+                # Si el respaldo recibió el envío y Google tarda, el otro respaldo solo lo duplicaría.
+                fallback=isinstance(req_err, requests.exceptions.ConnectionError),
+                retry=isinstance(req_err, requests.exceptions.ConnectionError),
+            )
 
-        return None, last_error_kind, last_user_message, last_technical_detail
+        failure = relay_failure(response)
+        if failure is None:
+            if route == ROUTE_SUPABASE:
+                self._supabase_last_sent = time.monotonic()
+            return _SendAttempt(route=route, response=response)
+
+        code, message, final = failure
+        return _SendAttempt(
+            route=route,
+            error_kind="relay-rejected" if final else "relay-error",
+            user_message=f"El {label} no pudo reenviar el stock: {message}",
+            technical_detail=f"{code} (HTTP {response.status_code})",
+            fallback=not final,
+            retry=not final,
+        )
 
     def _classify_request_exception(self, req_err: requests.exceptions.RequestException) -> tuple[str, str]:
         if isinstance(req_err, requests.exceptions.SSLError):
@@ -601,6 +781,8 @@ class SismedSyncManager:
 
     def log(self, message):
         """Envía el mensaje a la interfaz si existe un callback, de lo contrario lo imprime."""
+        # Nunca la clave de envío, el identificador de la PC ni la dirección del script.
+        message = redact_sensitive(message)
         if self.log_callback:
             self.log_callback(message)
         else:
@@ -696,6 +878,7 @@ class SismedSyncManager:
                 self.on_stop_callback()
 
     def perform_sync(self):
+        self.last_sync_route = ""
         hora = time.strftime('%H:%M:%S')
         self.log(f"[{hora}] Leyendo stock detallado de SISMED...")
         self._persist_dbf_quality([])
@@ -1002,6 +1185,8 @@ class SismedSyncManager:
                         return
 
                     success_message = self._success_message(response, len(payload_data))
+                    if self.last_sync_route and self.last_sync_route != ROUTE_DIRECT:
+                        success_message += f" Enviado por el {ROUTE_LABELS[self.last_sync_route]}."
                     self.log(f"[{time.strftime('%H:%M:%S')}] ✓ ¡Éxito! {success_message}")
                     self._retry_backup_connection()
                     self._record_cycle_result(
