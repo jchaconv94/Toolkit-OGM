@@ -1,0 +1,70 @@
+"""Periodo de la Consulta TFORMDET como «los últimos N meses».
+
+Antes había que elegir mes y año de inicio y de fin, y para pedir 12 o 24 meses atrás había
+que calcular a mano qué mes y qué año eran. Ahora se pide un número de meses y aquí se
+calcula el rango. El mes actual (todavía incompleto) solo entra si se pide.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+
+MESES = (
+    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+)
+MIN_MONTHS = 1
+MAX_MONTHS = 120
+
+
+@dataclass(frozen=True)
+class MonthRange:
+    start_year: int
+    start_month: int
+    end_year: int
+    end_month: int
+    months: int
+    includes_current: bool
+
+    @property
+    def periodo_ini(self) -> str:
+        """Formato que usa TformdetManager: AAAAMM."""
+        return f"{self.start_year:04d}{self.start_month:02d}"
+
+    @property
+    def periodo_fin(self) -> str:
+        return f"{self.end_year:04d}{self.end_month:02d}"
+
+    def description(self) -> str:
+        start = f"{MESES[self.start_month - 1]} {self.start_year}"
+        end = f"{MESES[self.end_month - 1]} {self.end_year}"
+        meses = "1 mes" if self.months == 1 else f"{self.months} meses"
+        if self.months == 1:
+            return f"{start} · {meses}"
+        return f"De {start} a {end} · {meses}"
+
+
+def clamp_months(value) -> int:
+    """Número de meses válido (1 a 120). Lo que no es número cuenta como 1."""
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return MIN_MONTHS
+    return max(MIN_MONTHS, min(MAX_MONTHS, number))
+
+
+def last_months(months, include_current: bool, today: date | None = None) -> MonthRange:
+    """Los últimos `months` meses hasta el mes anterior (o hasta el actual, si se pide)."""
+    today = today or date.today()
+    count = clamp_months(months)
+    end_index = today.year * 12 + (today.month - 1) - (0 if include_current else 1)
+    start_index = end_index - count + 1
+    return MonthRange(
+        start_year=start_index // 12,
+        start_month=start_index % 12 + 1,
+        end_year=end_index // 12,
+        end_month=end_index % 12 + 1,
+        months=count,
+        includes_current=include_current,
+    )

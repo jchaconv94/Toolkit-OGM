@@ -13,9 +13,9 @@ Depende de: tformdet_report.TformdetManager
 import threading
 import flet as ft
 from tools.app_config import get as cfg_get, set as cfg_set
-from datetime import datetime
 
 from tformdet_report import TformdetManager
+from tformdet_periods import clamp_months, last_months
 from tools.base_tool import SismedTool, ToolMetadata
 
 
@@ -37,7 +37,6 @@ class ConsultaTformdetTool(SismedTool):
     def build_view(self, page: ft.Page, navigate_fn) -> ft.Control:
         """Construye la vista completa de Consulta TFORMDET."""
 
-        now = datetime.now()
 
         # ── Consola de log ────────────────────────────────────────────────────
         tformdet_log = ft.ListView(
@@ -63,18 +62,15 @@ class ConsultaTformdetTool(SismedTool):
 
         def _on_save_picked(e: ft.FilePickerResultEvent):
             if e.path:
-                periodo_ini = f"{input_anio_ini.value}{dropdown_mes_ini.value}"
-                periodo_fin = (
-                    f"{input_anio_fin.value}{dropdown_mes_fin.value}"
-                    if checkbox_mas_periodos.value else periodo_ini
-                )
+                rango = _current_range()
+                periodo_ini, periodo_fin = rango.periodo_ini, rango.periodo_fin
 
                 def _process():
                     btn_run.disabled = True
                     btn_run.update()
                     success = tformdet_mgr.generate_report(
                         periodo_ini, periodo_fin, e.path,
-                        incluir_formulas=checkbox_formulas.value
+                        incluir_formulas=bool(checkbox_formulas.value) and rango.months == 1
                     )
                     if success:
                         page.snack_bar = ft.SnackBar(
@@ -121,75 +117,73 @@ class ConsultaTformdetTool(SismedTool):
             content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
         )
 
-        meses_opciones = [
-            ("01", "Enero"), ("02", "Febrero"), ("03", "Marzo"),
-            ("04", "Abril"), ("05", "Mayo"), ("06", "Junio"),
-            ("07", "Julio"), ("08", "Agosto"), ("09", "Septiembre"),
-            ("10", "Octubre"), ("11", "Noviembre"), ("12", "Diciembre"),
-        ]
+        # Periodo: «los últimos N meses» (tformdet_periods.py). Se recuerda lo último elegido.
+        saved_months = clamp_months(cfg_get("tformdet_last_months") or 12)
+        saved_current = bool(cfg_get("tformdet_include_current") or False)
 
-        dropdown_mes_ini = ft.Dropdown(
-            label="Mes Inicio",
-            options=[ft.dropdown.Option(k, f"{k} - {v}")
-                     for k, v in meses_opciones],
-            value=now.strftime("%m"), expand=1, dense=True,
-            border_radius=4, border_color=ft.colors.WHITE38,
-            focused_border_color=ft.colors.WHITE, text_size=15,
-            prefix_icon=ft.icons.CALENDAR_MONTH,
-            content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
+        input_meses = ft.TextField(
+            value=str(saved_months), width=80, dense=True, text_align=ft.TextAlign.CENTER,
+            text_size=18, border_radius=4, border_color=ft.colors.WHITE38,
+            focused_border_color=ft.colors.WHITE,
+            keyboard_type=ft.KeyboardType.NUMBER,
+            input_filter=ft.NumbersOnlyInputFilter(),
+            content_padding=ft.padding.only(left=6, right=6, top=8, bottom=8),
         )
-        input_anio_ini = ft.TextField(
-            label="Año Inicio", value=now.strftime("%Y"),
-            expand=1, dense=True, border_radius=4,
-            border_color=ft.colors.WHITE38,
-            focused_border_color=ft.colors.WHITE, text_size=15,
-            prefix_icon=ft.icons.DATE_RANGE_ROUNDED,
-            content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
+        checkbox_mes_actual = ft.Checkbox(
+            label="Incluir el mes actual (todavía incompleto)",
+            value=saved_current,
         )
-        dropdown_mes_fin = ft.Dropdown(
-            label="Mes Fin",
-            options=[ft.dropdown.Option(k, f"{k} - {v}")
-                     for k, v in meses_opciones],
-            value=now.strftime("%m"), expand=1, dense=True,
-            border_radius=4, border_color=ft.colors.WHITE38,
-            focused_border_color=ft.colors.WHITE, text_size=15,
-            prefix_icon=ft.icons.CALENDAR_MONTH,
-            content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
-            visible=False,
-        )
-        input_anio_fin = ft.TextField(
-            label="Año Fin", value=now.strftime("%Y"),
-            expand=1, dense=True, border_radius=4,
-            border_color=ft.colors.WHITE38,
-            focused_border_color=ft.colors.WHITE, text_size=15,
-            prefix_icon=ft.icons.DATE_RANGE_ROUNDED,
-            content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
-            visible=False,
-        )
+        texto_rango = ft.Text("", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE)
+        texto_periodo = ft.Text("", size=13, font_family="Consolas", color=ft.colors.WHITE60)
+        texto_aviso = ft.Text("", size=13, color=ft.colors.AMBER_300, visible=False)
 
         checkbox_formulas = ft.Checkbox(
             label="AÑADIR COLUMNAS Y FÓRMULAS DE CÓDIGO ÚNICO",
-            value=False, visible=True,
+            value=False, visible=saved_months == 1,
         )
 
-        def _on_multi_periodo(e):
-            show = checkbox_mas_periodos.value
-            dropdown_mes_fin.visible = show
-            input_anio_fin.visible   = show
-            if show:
-                checkbox_formulas.value   = False
-                checkbox_formulas.visible = False
-            else:
-                checkbox_formulas.visible = True
-            dropdown_mes_fin.update()
-            input_anio_fin.update()
-            checkbox_formulas.update()
+        def _current_range():
+            return last_months(input_meses.value, bool(checkbox_mes_actual.value))
 
-        checkbox_mas_periodos = ft.Checkbox(
-            label="Incluir rango de periodos",
-            value=False,
-            on_change=_on_multi_periodo,
-        )
+        def _refresh_range(save: bool = True):
+            rango = _current_range()
+            texto_rango.value = rango.description()
+            texto_periodo.value = (
+                f"Periodo {rango.periodo_ini[4:]}/{rango.periodo_ini[:4]}"
+                f" – {rango.periodo_fin[4:]}/{rango.periodo_fin[:4]}"
+            )
+            texto_aviso.visible = rango.includes_current
+            texto_aviso.value = "Incluye el mes actual: sus datos todavía están incompletos."
+            # Las fórmulas de código único solo existen para un periodo.
+            checkbox_formulas.visible = rango.months == 1
+            if rango.months != 1:
+                checkbox_formulas.value = False
+            if save:
+                cfg_set("tformdet_last_months", rango.months)
+                cfg_set("tformdet_include_current", bool(checkbox_mes_actual.value))
+
+        def _on_range_change(e=None):
+            _refresh_range()
+            page.update()
+
+        def _on_meses_blur(e=None):
+            input_meses.value = str(clamp_months(input_meses.value))
+            _on_range_change()
+
+        def _step(delta):
+            input_meses.value = str(clamp_months(clamp_months(input_meses.value) + delta))
+            _on_range_change()
+
+        input_meses.on_change = _on_range_change
+        input_meses.on_blur = _on_meses_blur
+        input_meses.on_submit = _on_meses_blur
+        checkbox_mes_actual.on_change = _on_range_change
+
+        btn_menos = ft.IconButton(icon=ft.icons.REMOVE_ROUNDED, tooltip="Un mes menos",
+                                  on_click=lambda _: _step(-1))
+        btn_mas = ft.IconButton(icon=ft.icons.ADD_ROUNDED, tooltip="Un mes más",
+                                on_click=lambda _: _step(1))
+        _refresh_range(save=False)
 
         def _run_query(e):
             if not input_sismed_dir.value:
@@ -201,22 +195,13 @@ class ConsultaTformdetTool(SismedTool):
                 page.update()
                 return
 
-            periodo_ini = f"{input_anio_ini.value}{dropdown_mes_ini.value}"
-            if checkbox_mas_periodos.value:
-                periodo_fin = f"{input_anio_fin.value}{dropdown_mes_fin.value}"
-                if periodo_ini > periodo_fin:
-                    page.snack_bar = ft.SnackBar(
-                        ft.Text("❌ El Periodo Inicial no puede ser mayor al Final.",
-                                color=ft.colors.WHITE),
-                        bgcolor=ft.colors.RED_700
-                    )
-                    page.snack_bar.open = True
-                    page.update()
-                    return
-                file_name_out = f"TFORMDET_Consulta_{periodo_ini}_al_{periodo_fin}.xlsx"
+            input_meses.value = str(clamp_months(input_meses.value))
+            _refresh_range()
+            rango = _current_range()
+            if rango.months == 1:
+                file_name_out = f"TFORMDET_Consulta_{rango.periodo_ini}.xlsx"
             else:
-                periodo_fin   = periodo_ini
-                file_name_out = f"TFORMDET_Consulta_{periodo_ini}.xlsx"
+                file_name_out = f"TFORMDET_Consulta_{rango.periodo_ini}_al_{rango.periodo_fin}.xlsx"
 
             tformdet_mgr.sismed_dir = input_sismed_dir.value
             tformdet_log.controls.clear()
@@ -276,13 +261,20 @@ class ConsultaTformdetTool(SismedTool):
                             ft.Divider(color=ft.colors.WHITE24, height=15),
 
                             ft.Row([input_sismed_dir]),
-                            ft.Row([checkbox_mas_periodos]),
-                            ft.Row([dropdown_mes_ini, input_anio_ini],
-                                   alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                            ft.Row([dropdown_mes_fin, input_anio_fin],
-                                   alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                                   vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                            ft.Row([
+                                ft.Text("Descargar los últimos", size=16,
+                                        weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                                btn_menos, input_meses, btn_mas,
+                                ft.Text("meses", size=16,
+                                        weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+                            ], spacing=4, wrap=True,
+                               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                            ft.Row([checkbox_mes_actual]),
+                            ft.Container(
+                                bgcolor=ft.colors.with_opacity(0.25, ft.colors.BLACK),
+                                border_radius=8, padding=12,
+                                content=ft.Column([texto_rango, texto_periodo, texto_aviso], spacing=2),
+                            ),
                             ft.Row([checkbox_formulas]),
                             ft.Container(height=5),
                             ft.Row([btn_run],
