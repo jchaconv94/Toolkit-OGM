@@ -58,6 +58,7 @@ _DEFAULTS = {
     "runtime_last_sync_http_status":       "",
     "runtime_last_sync_success_at":        "",
     "runtime_last_sync_success_records":   0,
+    "runtime_last_sync_route":             "",
     "runtime_last_sync_dbf_source":        "",
     "runtime_last_sync_dbf_problem_records": 0,
     "runtime_last_sync_dbf_problem_ratio":   0.0,
