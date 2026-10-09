@@ -68,3 +68,15 @@ def last_months(months, include_current: bool, today: date | None = None) -> Mon
         months=count,
         includes_current=include_current,
     )
+
+
+def single_month(year, month, today: date | None = None) -> MonthRange | None:
+    """Un mes específico (el modo de siempre). None si el año o el mes no son válidos."""
+    today = today or date.today()
+    try:
+        y, m = int(str(year).strip()), int(str(month).strip())
+    except (TypeError, ValueError):
+        return None
+    if not (2000 <= y <= 2100 and 1 <= m <= 12):
+        return None
+    return MonthRange(y, m, y, m, 1, (y, m) == (today.year, today.month))
