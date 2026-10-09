@@ -8,7 +8,7 @@ TOOLKIT_DIR = ROOT / "toolskit"
 if str(TOOLKIT_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLKIT_DIR))
 
-from tformdet_periods import clamp_months, last_months, single_month  # noqa: E402
+from tformdet_periods import clamp_months, last_months, month_range, single_month  # noqa: E402
 
 HOY = date(2026, 10, 9)
 
@@ -68,6 +68,33 @@ class SingleMonthTests(unittest.TestCase):
     def test_invalid_year_or_month(self):
         for year, month in (("", "03"), ("20", "03"), ("abcd", "03"), ("2025", "13"), ("2025", None)):
             self.assertIsNone(single_month(year, month, HOY))
+
+
+class MonthRangeTests(unittest.TestCase):
+    def test_range_across_years(self):
+        r, error = month_range("2024", "11", "2025", "02", HOY)
+        self.assertEqual(error, "")
+        self.assertEqual((r.periodo_ini, r.periodo_fin, r.months), ("202411", "202502", 4))
+        self.assertEqual(r.description(), "De Noviembre 2024 a Febrero 2025 · 4 meses")
+        self.assertFalse(r.includes_current)
+
+    def test_same_month_is_one_month(self):
+        r, _ = month_range("2025", "06", "2025", "06", HOY)
+        self.assertEqual(r.months, 1)
+
+    def test_range_reaching_current_month_is_flagged(self):
+        r, _ = month_range("2026", "01", "2026", "10", HOY)
+        self.assertTrue(r.includes_current)
+
+    def test_start_after_end_is_rejected(self):
+        r, error = month_range("2026", "05", "2026", "01", HOY)
+        self.assertIsNone(r)
+        self.assertIn("posterior", error)
+
+    def test_invalid_year_is_rejected(self):
+        r, error = month_range("26", "01", "2026", "05", HOY)
+        self.assertIsNone(r)
+        self.assertIn("año válido", error)
 
 
 if __name__ == "__main__":

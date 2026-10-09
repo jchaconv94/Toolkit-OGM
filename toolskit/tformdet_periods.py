@@ -80,3 +80,22 @@ def single_month(year, month, today: date | None = None) -> MonthRange | None:
     if not (2000 <= y <= 2100 and 1 <= m <= 12):
         return None
     return MonthRange(y, m, y, m, 1, (y, m) == (today.year, today.month))
+
+
+def month_range(start_year, start_month, end_year, end_month,
+                today: date | None = None) -> tuple[MonthRange | None, str]:
+    """Rango de un mes de inicio a un mes de fin. Devuelve (rango, mensaje de error)."""
+    today = today or date.today()
+    start = single_month(start_year, start_month, today)
+    end = single_month(end_year, end_month, today)
+    if start is None or end is None:
+        return None, "Escriba un año válido (por ejemplo, 2026)."
+    first = start.start_year * 12 + start.start_month - 1
+    last = end.start_year * 12 + end.start_month - 1
+    if first > last:
+        return None, "El mes de inicio no puede ser posterior al mes de fin."
+    current = today.year * 12 + today.month - 1
+    return MonthRange(
+        start.start_year, start.start_month, end.start_year, end.start_month,
+        last - first + 1, first <= current <= last,
+    ), ""
