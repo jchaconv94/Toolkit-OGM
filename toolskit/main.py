@@ -32,6 +32,7 @@ _bootstrap_runtime_directory()
 
 from tools.app_config import append_runtime_log, get as cfg_get, get_config_log_path, get_startup_log_path, set as cfg_set, update_runtime_status
 from update_shutdown import arm_update_exit_watchdog
+from window_watch import HEARTBEAT_TIMEOUT_SECONDS, WindowHeartbeat, kill_flet_views
 from tools.tool_registry import TOOLS_REGISTRY, get_tool_by_name
 from app_version import get_current_version
 from updater_controller import AppUpdaterController
@@ -508,6 +509,14 @@ def main(page: ft.Page):
                 pass
 
     def on_quit(icon, item):
+        # Si la ventana está congelada no recibe el pedido de cierre: a los 3 s se cierra a la
+        # fuerza (solo flet.exe) y termina el proceso. Si todo cierra bien antes, no hace nada.
+        append_runtime_log("startup", "Cerrar completamente: pedido desde la bandeja.")
+        arm_update_exit_watchdog(delay_seconds=3.0, before_exit=kill_flet_views)
+        try:
+            window_heartbeat.stop()
+        except NameError:
+            pass  # se cerró antes de que terminara de arrancar
         if updater_controller:
             updater_controller.stop()
         _stop_sync_services()
@@ -521,7 +530,8 @@ def main(page: ft.Page):
             "update",
             "Se activo el cierre rapido protegido; el proceso anterior terminara en un maximo de 3 segundos.",
         )
-        arm_update_exit_watchdog(delay_seconds=3.0)
+        # Solo cierra flet.exe, nunca el instalador que se acaba de abrir.
+        arm_update_exit_watchdog(delay_seconds=3.0, before_exit=kill_flet_views)
         try:
             page.window.prevent_close = False
             page.window.visible = False
@@ -578,6 +588,16 @@ def main(page: ft.Page):
             page.update()
             
     page.window.on_event = window_event
+
+    def _ping_window():
+        # Pregunta inofensiva que solo la ventana puede responder: si no contesta, está congelada.
+        page._invoke_method(
+            "canLaunchUrl", {"url": "https://www.google.com"},
+            wait_for_result=True, wait_timeout=HEARTBEAT_TIMEOUT_SECONDS,
+        )
+
+    window_heartbeat = WindowHeartbeat(_ping_window, lambda message: append_runtime_log("startup", message))
+    window_heartbeat.start()
 
     sync_tool = get_tool_by_name("Sync SISMED")
     if sync_tool and hasattr(sync_tool, "start_from_saved"):
