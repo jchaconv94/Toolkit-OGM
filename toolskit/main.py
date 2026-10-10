@@ -1218,7 +1218,7 @@ def main(page: ft.Page):
                             ft.icons.LOCAL_PHARMACY_ROUNDED,
                             CATEGORY_COLORS["Farmacia"],
                             "Farmacia",
-                            "Herramientas de TFORMDET para farmacia y requerimiento:"
+                            "Herramientas para realizar informes mensuales de farmacia"
                         ),
                         ft.Divider(height=20, color=ft.colors.TRANSPARENT),
                         ft.Row(
