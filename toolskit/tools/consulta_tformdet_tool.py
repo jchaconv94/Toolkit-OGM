@@ -149,8 +149,8 @@ class ConsultaTformdetTool(SismedTool):
         saved_mode = cfg_get("tformdet_period_mode")
         modo = [saved_mode if saved_mode in MODOS else "mes"]
 
-        # Mes y año como dos listas, con el mismo estilo relleno de los demás campos.
-        anios = list(range(now.year, 2009, -1))
+        # El mes es una lista y el año un campo de texto (sirve para cualquier año, también
+        # los que vengan), con el mismo estilo relleno de los demás campos.
 
         def _lista(options, value, width, on_pick):
             return ft.Dropdown(
@@ -167,14 +167,24 @@ class ConsultaTformdetTool(SismedTool):
                 state["m"] = int(e.control.value)
                 _on_range_change()
 
-            def _pick_year(e):
-                state["y"] = int(e.control.value)
+            def _type_year(e):
+                # Se guarda tal cual: un año a medio escribir lo marca el resumen como no válido.
+                state["y"] = (e.control.value or "").strip()
                 _on_range_change()
 
             mes = _lista([ft.dropdown.Option(str(i), nombre) for i, nombre in enumerate(MESES, start=1)],
                          str(state["m"]), 150, _pick_month)
-            anio = _lista([ft.dropdown.Option(str(a)) for a in anios], str(state["y"]), 104, _pick_year)
-            return ft.Row([mes, anio], spacing=8, tight=True)
+            anio = ft.TextField(
+                value=str(state["y"]), width=90, hint_text="Año",
+                filled=True, fill_color=FIELD_BG, border_color=FIELD_BORDER,
+                focused_border_color=ACCENT, border_radius=8,
+                text_size=14, color=ft.colors.WHITE, text_align=ft.TextAlign.CENTER,
+                keyboard_type=ft.KeyboardType.NUMBER, input_filter=ft.NumbersOnlyInputFilter(),
+                content_padding=ft.padding.symmetric(horizontal=10, vertical=14),
+                on_change=_type_year,
+            )
+            return ft.Row([mes, anio], spacing=8, tight=True,
+                          vertical_alignment=ft.CrossAxisAlignment.CENTER)
 
         inicio = {"y": now.year, "m": now.month}
         fin = {"y": now.year, "m": now.month}
@@ -278,7 +288,8 @@ class ConsultaTformdetTool(SismedTool):
                 return last_months(input_meses.value, bool(checkbox_mes_actual.value)), ""
             if modo[0] == "rango":
                 return month_range(inicio["y"], inicio["m"], fin["y"], fin["m"])
-            return single_month(inicio["y"], inicio["m"]), ""
+            rango = single_month(inicio["y"], inicio["m"])
+            return rango, "" if rango else "Escriba un año válido (por ejemplo, 2026)."
 
         def _refresh_range(save: bool = True):
             actual = modo[0]
