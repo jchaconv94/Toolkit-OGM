@@ -754,6 +754,7 @@ def main(page: ft.Page):
 
         # ── Colores de acento por categoría ──
         CATEGORY_COLORS = {
+            "Farmacia":        ft.colors.PINK_400,
             "Herramientas":    ft.colors.TEAL_400,
             "Reports SISMED":  ft.colors.BLUE_400,
             "Sync":            ft.colors.GREEN_500,
@@ -781,7 +782,7 @@ def main(page: ft.Page):
 
             return ft.Container(
                 width=230,
-                height=195,
+                height=205,
                 border_radius=18,
                 bgcolor=ft.colors.SURFACE_VARIANT,
                 border=ft.border.Border(
@@ -823,7 +824,7 @@ def main(page: ft.Page):
                         size=12,
                         color=ft.colors.ON_SURFACE_VARIANT,
                         no_wrap=False,
-                        max_lines=2,
+                        max_lines=3,
                     ),
                 ], spacing=0)
             )
@@ -1207,6 +1208,33 @@ def main(page: ft.Page):
             )
             content.controls.append(settings_view)
 
+        elif index == 20:
+            farmacia_ui = ft.Container(
+                padding=40,
+                expand=True,
+                content=ft.Column(
+                    controls=[
+                        build_premium_header(
+                            ft.icons.LOCAL_PHARMACY_ROUNDED,
+                            CATEGORY_COLORS["Farmacia"],
+                            "Farmacia",
+                            "Herramientas de TFORMDET para farmacia y requerimiento:"
+                        ),
+                        ft.Divider(height=20, color=ft.colors.TRANSPARENT),
+                        ft.Row(
+                            controls=[
+                                make_tool_card(get_tool_by_name("Anexar TFORMDET")),
+                                make_tool_card(get_tool_by_name("Disponibilidad TFORMDET")),
+                            ],
+                            wrap=True,
+                            spacing=16,
+                            run_spacing=16
+                        )
+                    ]
+                )
+            )
+            content.controls.append(farmacia_ui)
+
         # VISTAS OCULTAS DEL MENÚ LATERAL (Accesibles mediante las tarjetas de inicio)
         elif index == 2:
             herramientas_ui = ft.Container(
@@ -1225,7 +1253,6 @@ def main(page: ft.Page):
                             controls=[
                                 make_tool_card(get_tool_by_name("DBF a EXCEL")),
                                 make_tool_card(get_tool_by_name("Unir EXCEL")),
-                                make_tool_card(get_tool_by_name("Anexar TFORMDET")),
                                 make_tool_card(get_tool_by_name("Format TFORMDET")),
                                 make_tool_card(get_tool_by_name("Editor PDF"))
                             ],
@@ -1291,7 +1318,6 @@ def main(page: ft.Page):
                                 make_tool_card(get_tool_by_name("Consul. TFORMDET")),
                                 make_tool_card(get_tool_by_name("Reporte Guías")),
                                 make_tool_card(get_tool_by_name("Stock SISMED")),
-                                make_tool_card(get_tool_by_name("Disponibilidad TFORMDET")),
                                 make_tool_card(get_tool_by_name("Consumo Valorizado")),
                             ],
                             wrap=True,
@@ -1471,6 +1497,7 @@ def main(page: ft.Page):
 
     nav_items_list = [
         create_nav_item(ft.icons.HOME_ROUNDED, "Inicio", 0),
+        create_nav_item(ft.icons.LOCAL_PHARMACY_ROUNDED, "Farmacia", 20),
         create_nav_item(ft.icons.HOME_REPAIR_SERVICE_ROUNDED, "Herramientas", 2),
         create_nav_item(ft.icons.BAR_CHART_ROUNDED, "Reports SISMED", 4),
         create_nav_item(ft.icons.EDIT_NOTE, "Edit SISMED", 11),
