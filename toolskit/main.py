@@ -782,7 +782,7 @@ def main(page: ft.Page):
 
             return ft.Container(
                 width=230,
-                height=205,
+                height=195,
                 border_radius=18,
                 bgcolor=ft.colors.SURFACE_VARIANT,
                 border=ft.border.Border(
@@ -824,7 +824,7 @@ def main(page: ft.Page):
                         size=12,
                         color=ft.colors.ON_SURFACE_VARIANT,
                         no_wrap=False,
-                        max_lines=3,
+                        max_lines=2,
                     ),
                 ], spacing=0)
             )

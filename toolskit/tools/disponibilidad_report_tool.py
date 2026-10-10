@@ -35,7 +35,7 @@ class DisponibilidadReportTool(SismedTool):
     def metadata(self) -> ToolMetadata:
         return ToolMetadata(
             nombre="Disponibilidad TFORMDET",
-            descripcion="Reporte de consumos mensuales para requerimiento",
+            descripcion="Reporte de consumos mensuales",
             icono=ft.icons.PIVOT_TABLE_CHART_ROUNDED,
             color=ft.colors.INDIGO_400,
             categoria="Farmacia",
