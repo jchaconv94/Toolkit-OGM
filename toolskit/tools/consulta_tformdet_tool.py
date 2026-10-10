@@ -21,7 +21,7 @@ import flet as ft
 from tools.app_config import get as cfg_get, set as cfg_set
 
 from tformdet_report import TformdetManager
-from tformdet_periods import MESES_CORTOS, clamp_months, last_months, month_range, single_month
+from tformdet_periods import MESES, clamp_months, last_months, month_range, single_month
 from tools.base_tool import SismedTool, ToolMetadata
 
 ACCENT = ft.colors.BLUE_400
@@ -149,44 +149,32 @@ class ConsultaTformdetTool(SismedTool):
         saved_mode = cfg_get("tformdet_period_mode")
         modo = [saved_mode if saved_mode in MODOS else "mes"]
 
+        # Mes y año como dos listas, con el mismo estilo relleno de los demás campos.
+        anios = list(range(now.year, 2009, -1))
+
+        def _lista(options, value, width, on_pick):
+            return ft.Dropdown(
+                options=options, value=value, width=width,
+                filled=True, fill_color=FIELD_BG, bgcolor=ft.colors.BLUE_GREY_900,
+                border_color=FIELD_BORDER, focused_border_color=ACCENT, border_radius=8,
+                text_size=14, color=ft.colors.WHITE, menu_height=320,
+                content_padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                on_change=on_pick,
+            )
+
         def _period_picker(state: dict):
-            """‹ año › / ‹ mes ›, como «Último periodo de consumo» de Disponibilidad.
-            Al pasar de diciembre a enero (o al revés) también cambia el año."""
-            txt_anio = ft.Text(str(state["y"]), size=14, color=ft.colors.WHITE, weight=ft.FontWeight.W_600)
-            txt_mes = ft.Text("", size=14, color=ft.colors.WHITE, weight=ft.FontWeight.W_600,
-                              width=62, text_align=ft.TextAlign.CENTER)
-
-            def _show():
-                txt_anio.value = str(state["y"])
-                txt_mes.value = f"{state['m']:02d} {MESES_CORTOS[state['m'] - 1]}"
-
-            def _move_year(delta):
-                state["y"] = max(2000, min(2100, state["y"] + delta))
-                _show()
+            def _pick_month(e):
+                state["m"] = int(e.control.value)
                 _on_range_change()
 
-            def _move_month(delta):
-                index = state["y"] * 12 + state["m"] - 1 + delta
-                y, m = divmod(index, 12)
-                if 2000 <= y <= 2100:
-                    state["y"], state["m"] = y, m + 1
-                _show()
+            def _pick_year(e):
+                state["y"] = int(e.control.value)
                 _on_range_change()
 
-            _show()
-            return _box(ft.Row([
-                ft.Row([
-                    _arrow(ft.icons.KEYBOARD_ARROW_LEFT_ROUNDED, lambda _: _move_year(-1), "Año anterior"),
-                    txt_anio,
-                    _arrow(ft.icons.KEYBOARD_ARROW_RIGHT_ROUNDED, lambda _: _move_year(1), "Año siguiente"),
-                ], spacing=2, tight=True),
-                ft.Text("/", color=ft.colors.BLUE_GREY_500, size=16),
-                ft.Row([
-                    _arrow(ft.icons.KEYBOARD_ARROW_LEFT_ROUNDED, lambda _: _move_month(-1), "Mes anterior"),
-                    txt_mes,
-                    _arrow(ft.icons.KEYBOARD_ARROW_RIGHT_ROUNDED, lambda _: _move_month(1), "Mes siguiente"),
-                ], spacing=2, tight=True),
-            ], alignment=ft.MainAxisAlignment.CENTER, spacing=6, tight=True), width=250)
+            mes = _lista([ft.dropdown.Option(str(i), nombre) for i, nombre in enumerate(MESES, start=1)],
+                         str(state["m"]), 150, _pick_month)
+            anio = _lista([ft.dropdown.Option(str(a)) for a in anios], str(state["y"]), 104, _pick_year)
+            return ft.Row([mes, anio], spacing=8, tight=True)
 
         inicio = {"y": now.year, "m": now.month}
         fin = {"y": now.year, "m": now.month}
