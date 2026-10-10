@@ -207,6 +207,29 @@ def iter_dbf_records(table: DBF, metrics: DbfReadMetrics | None = None):
             metrics.note_record()
 
 
+def live_record_positions(table: DBF) -> list[int]:
+    """Posición física (0, 1, 2…) de cada registro que entrega dbfread, en el mismo orden.
+
+    dbfread se salta los registros marcados como borrados (DELETE de FoxPro sin PACK): el
+    registro n que se lee no es el registro n del archivo. Para escribir sobre el registro
+    correcto hay que usar esta posición.
+    """
+    positions = []
+    record_len = table.header.recordlen
+    with open(table.filename, "rb") as fh:
+        fh.seek(table.header.headerlen)
+        position = 0
+        while True:
+            flag = fh.read(1)
+            if flag in (b"\x1a", b""):
+                break
+            if flag == b" ":
+                positions.append(position)
+            fh.seek(record_len - 1, os.SEEK_CUR)
+            position += 1
+    return positions
+
+
 def snapshot_dbf(path: str, snapshot_dir: str) -> str:
     """Copia el DBF y sidecars relacionados a una carpeta temporal."""
     if not os.path.exists(path):

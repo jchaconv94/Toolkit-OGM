@@ -21,6 +21,7 @@ _CONFIG_LOCK = threading.RLock()
 _DEFAULTS = {
     "medest_sismed_dir":       r"C:\SISMEDV2",
     "tmovim_sismed_dir":       r"C:\SISMEDV2",
+    "tmovim_search_by":        "movimiento",
     "tformdet_sismed_dir":     r"C:\SISMEDV2",
     "tformdet_append_source_file": "",
     "tformdet_append_sismed_dir": r"C:\SISMEDV2",

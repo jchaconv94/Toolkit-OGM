@@ -1,7 +1,9 @@
 import threading
-import re
 import flet as ft
 from edit_sismed_manager import EditSismedManager
+from tmovim_search import (
+    BY_GUIDE, BY_MOVEMENT, SIMPLE_LIMIT, ListMatcher, normalize_by, short_list, split_values, summarize,
+)
 from tools.base_tool import SismedTool, ToolMetadata
 from tools.app_config import get as cfg_get, set as cfg_set
 
@@ -17,7 +19,7 @@ class EditTmovimTool(SismedTool):
             icono=ft.icons.EDIT_DOCUMENT,
             color=ft.colors.PURPLE_400,
             categoria="Edit SISMED",
-            etiquetas=["editar", "tmovim", "guia", "movsitua", "movindprc", "bloqueo", "sismed", "modificar", "desbloquear"],
+            etiquetas=["editar", "tmovim", "guia", "movnumedco", "movsitua", "movindprc", "bloqueo", "sismed", "modificar", "desbloquear"],
         )
 
     def build_view(self, page: ft.Page, navigate_fn) -> ft.Control:
@@ -42,6 +44,31 @@ class EditTmovimTool(SismedTool):
         log_text = ft.Text("Listo para operar", size=12, color=ft.colors.GREY_500)
 
         # ── Selector de modo de búsqueda ────────────────────────────────────────
+        def _is_bulk() -> bool:
+            return next(iter(mode_selector.selected), "normal") == "bulk"
+
+        def _search_by() -> str:
+            return normalize_by(next(iter(by_selector.selected), BY_MOVEMENT))
+
+        def _apply_input_texts():
+            is_bulk = _is_bulk()
+            is_guide = _search_by() == BY_GUIDE
+            if is_bulk:
+                input_search.label = "Pegar Lista de N° Guía" if is_guide else "Pegar Lista de N° Movimiento"
+                input_search.hint_text = (
+                    "Una guía por línea (puede copiar la columna de Excel)..." if is_guide
+                    else "Ingrese N° Movimiento separados por línea o espacio..."
+                )
+            else:
+                input_search.label = "Búsqueda por N° Guía" if is_guide else "Búsqueda por N° Movimiento"
+                input_search.hint_text = (
+                    "N° de guía, con o sin serie (MOVNUMEDCO)..." if is_guide
+                    else "N° Movimiento (MOVNUMERO)..."
+                )
+            input_search.multiline = is_bulk
+            input_search.min_lines = 5 if is_bulk else 1
+            input_search.max_lines = 10 if is_bulk else 1
+
         def on_mode_change(e):
             nonlocal guia_list
             input_search.value = ""
@@ -50,21 +77,10 @@ class EditTmovimTool(SismedTool):
             results_table.rows = []
             log_text.value = ""
             _update_actions_visibility()
-
-            is_bulk = mode_selector.selected.copy().pop() == "bulk"
-            if is_bulk:
-                input_search.label = "Pegar Lista de N° Movimiento"
-                input_search.hint_text = "Ingrese N° Movimiento separados por línea o espacio..."
-                input_search.multiline = True
-                input_search.min_lines = 5
-                input_search.max_lines = 10
-            else:
-                input_search.label = "Búsqueda por N° Movimiento"
-                input_search.hint_text = "N° Movimiento (MOVNUMERO)..."
-                input_search.multiline = False
-                input_search.min_lines = 1
-                input_search.max_lines = 1
-            input_search.update()
+            if e.control is by_selector:
+                cfg_set("tmovim_search_by", _search_by())
+            _apply_input_texts()
+            page.update()
 
         mode_selector = ft.SegmentedButton(
             segments=[
@@ -72,6 +88,20 @@ class EditTmovimTool(SismedTool):
                 ft.Segment(value="bulk",   label=ft.Text("Masivo", size=11), icon=ft.Icon(ft.icons.LIST_ALT, size=18)),
             ],
             selected={"normal"},
+            on_change=on_mode_change,
+            show_selected_icon=False,
+            style=ft.ButtonStyle(
+                padding=ft.padding.all(20),
+                shape=ft.RoundedRectangleBorder(radius=12),
+            ),
+        )
+
+        by_selector = ft.SegmentedButton(
+            segments=[
+                ft.Segment(value=BY_MOVEMENT, label=ft.Text("N° Movimiento", size=11), icon=ft.Icon(ft.icons.TAG, size=18)),
+                ft.Segment(value=BY_GUIDE,    label=ft.Text("N° Guía", size=11),       icon=ft.Icon(ft.icons.RECEIPT_LONG, size=18)),
+            ],
+            selected={normalize_by(cfg_get("tmovim_search_by"))},
             on_change=on_mode_change,
             show_selected_icon=False,
             style=ft.ButtonStyle(
@@ -90,6 +120,7 @@ class EditTmovimTool(SismedTool):
             border_color=ft.colors.WHITE24,
             focused_border_color=ft.colors.PURPLE_400,
         )
+        _apply_input_texts()
 
         # ── Tabla de Resultados ─────────────────────────────────────────────────
         results_table = ft.DataTable(
@@ -226,19 +257,23 @@ class EditTmovimTool(SismedTool):
                 action_bar_container.update()
 
         # ── Búsqueda ────────────────────────────────────────────────────────────
-        def _build_rows(lista):
+        def _key_text(value: str, highlighted: bool) -> ft.Text:
+            if highlighted:
+                return ft.Text(value, weight="bold", color=ft.colors.AMBER_100)
+            return ft.Text(value, size=12)
+
+        def _build_rows(lista, preselect, by):
             rows = []
             for i, g in enumerate(lista):
-                is_bulk = mode_selector.selected.copy().pop() == "bulk"
-                is_sel = is_bulk
+                is_sel = i in preselect
                 if is_sel:
                     selected_indices.add(i)
                 rows.append(ft.DataRow(
                     selected=is_sel,
                     cells=[
                         ft.DataCell(ft.Text(g["movcoditip"], size=11)),
-                        ft.DataCell(ft.Text(g["movnumero"],  weight="bold", color=ft.colors.AMBER_100)),
-                        ft.DataCell(ft.Text(g["movnumedco"], size=12)),
+                        ft.DataCell(_key_text(g["movnumero"], by == BY_MOVEMENT)),
+                        ft.DataCell(_key_text(g["movnumedco"] or "—", by == BY_GUIDE)),
                         ft.DataCell(ft.Text(g["movfechreg"], size=11)),
                         ft.DataCell(_indprc_badge(g.get("movindprc", ""))),
                         ft.DataCell(_situa_badge(g["movsitua"])),
@@ -263,17 +298,39 @@ class EditTmovimTool(SismedTool):
                 try:
                     selected_indices.clear()
                     mgr = EditSismedManager(sismed_dir_field.value)
-                    is_bulk = mode_selector.selected.copy().pop() == "bulk"
-                    if is_bulk:
-                        codes = re.split(r'[\n,\s]+', q)
-                        codes = [c.strip() for c in codes if c.strip()]
-                        guia_list = mgr.search_guias_by_list(codes)
+                    by = _search_by()
+                    is_guide = by == BY_GUIDE
+                    notes = []
+                    if _is_bulk():
+                        matcher = ListMatcher(split_values(q, by), by)
+                        guia_list = mgr.search_guias_by_list(matcher)
+                        preselect, not_found, repeated = summarize(
+                            matcher.values, [g["coincide"] for g in guia_list], by,
+                        )
+                        if repeated:
+                            notes.append(
+                                f"⚠ {len(repeated)} guía(s) en más de un movimiento; revíselas y márquelas usted: "
+                                f"{short_list(repeated)}"
+                            )
+                        if not_found:
+                            nombre = "guía(s) no encontrada(s)" if is_guide else "movimiento(s) no encontrado(s)"
+                            notes.append(f"⚠ {len(not_found)} {nombre}: {short_list(not_found)}")
+                        found_text = f"✅ {len(guia_list)} registros encontrados"
                     else:
-                        guia_list = mgr.search_guias(q)
+                        guia_list = mgr.search_guias(q, by)
+                        preselect = set()
+                        total = len(guia_list)
+                        found_text = f"✅ {total} registros encontrados"
+                        if total > SIMPLE_LIMIT:
+                            guia_list = guia_list[:SIMPLE_LIMIT]
+                            found_text = (
+                                f"✅ {total} registros encontrados; se muestran los primeros {SIMPLE_LIMIT}. "
+                                "Escriba más dígitos para acotar."
+                            )
 
-                    results_table.rows = _build_rows(guia_list)
-                    log_text.value = f"✅ {len(guia_list)} registros encontrados"
-                    log_text.color = ft.colors.GREEN_400
+                    results_table.rows = _build_rows(guia_list, preselect, by)
+                    log_text.value = "\n".join([found_text] + notes)
+                    log_text.color = ft.colors.AMBER_300 if notes else ft.colors.GREEN_400
                     _update_actions_visibility()
                 except Exception as ex:
                     log_text.value = f"❌ Error: {ex}"
@@ -298,7 +355,7 @@ class EditTmovimTool(SismedTool):
 
                 def _thread():
                     mgr = EditSismedManager(sismed_dir_field.value)
-                    ph_idxs = [guia_list[i]["id_fisico"] for i in selected_indices]
+                    ph_idxs = [guia_list[i] for i in sorted(selected_indices)]
                     total, msg = mgr.update_movsitua_bulk(ph_idxs, val)
                     log_text.value = f"✨ {msg}"
                     log_text.color = ft.colors.GREEN_400
@@ -352,7 +409,7 @@ class EditTmovimTool(SismedTool):
 
                 def _thread():
                     mgr = EditSismedManager(sismed_dir_field.value)
-                    ph_idxs = [guia_list[i]["id_fisico"] for i in selected_indices]
+                    ph_idxs = [guia_list[i] for i in sorted(selected_indices)]
                     total, msg = mgr.clear_bloqueo_bulk(ph_idxs)
                     log_text.value = f"🔓 {msg}"
                     log_text.color = ft.colors.GREEN_400
@@ -409,7 +466,7 @@ class EditTmovimTool(SismedTool):
 
                 def _thread():
                     mgr = EditSismedManager(sismed_dir_field.value)
-                    ph_idxs = [guia_list[i]["id_fisico"] for i in selected_indices]
+                    ph_idxs = [guia_list[i] for i in sorted(selected_indices)]
                     total, msg = mgr.toggle_movindprc_bulk(ph_idxs)
                     log_text.value = f"🔄 {msg}"
                     log_text.color = ft.colors.GREEN_400 if total else ft.colors.AMBER_300
@@ -479,6 +536,10 @@ class EditTmovimTool(SismedTool):
                 ft.Container(height=10),
                 ft.Text("Modo de Búsqueda:", size=11, color=ft.colors.GREY_500),
                 mode_selector,
+
+                ft.Container(height=6),
+                ft.Text("Buscar por:", size=11, color=ft.colors.GREY_500),
+                by_selector,
 
                 ft.Container(height=10),
                 input_search,

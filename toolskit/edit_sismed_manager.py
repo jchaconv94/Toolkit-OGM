@@ -1,7 +1,8 @@
 import os
 import tempfile
 
-from dbf_utils import open_dbf, snapshot_dbf
+from dbf_utils import live_record_positions, open_dbf, snapshot_dbf
+from tmovim_search import BY_MOVEMENT, FIELDS, ListMatcher, normalize_by, simple_match
 
 class EditSismedManager:
     """
@@ -49,6 +50,15 @@ class EditSismedManager:
             current_offset += field.length
 
     @staticmethod
+    def _mproducto_records(table):
+        """(posición física, registro): dbfread se salta los borrados y el índice no sirve para escribir."""
+        records = table.records
+        positions = live_record_positions(table)
+        if len(positions) != len(records):
+            raise RuntimeError("No se pudo ubicar los registros de MPRODUCTO.DBF. Vuelva a intentar.")
+        return zip(positions, records)
+
+    @staticmethod
     def _medicine_result(record_index: int, record: dict) -> dict:
         return {
             "id_fisico": record_index,
@@ -76,7 +86,7 @@ class EditSismedManager:
                 q = query.strip().upper()
                 self._capture_mproducto_structure(table)
 
-                for i, record in enumerate(table.records):
+                for i, record in self._mproducto_records(table):
                     m_cod = str(record.get('MEDCOD') or record.get('medcod') or '').strip()
                     m_nom = str(record.get('MEDNOM') or record.get('mednom') or '').strip()
                     
@@ -98,8 +108,13 @@ class EditSismedManager:
                 return False, "Campo MEDEST no encontrado en MPRODUCTO.DBF."
 
         try:
+            if record_index < 0:
+                return False, "Registro fuera de MPRODUCTO.DBF."
             target_pos = self.header_len + (record_index * self.record_len) + self.medest_offset
             with open(self.mproducto_path, "rb+") as f:
+                f.seek(self.header_len + (record_index * self.record_len))
+                if f.read(1) != b' ':
+                    return False, "El registro ya no está en MPRODUCTO.DBF. Vuelva a buscar."
                 f.seek(target_pos)
                 current_byte = f.read(1).decode('latin1', errors='ignore')
                 if current_byte not in [' ', '_', 'E', 'S']:
@@ -146,7 +161,7 @@ class EditSismedManager:
                 table = open_dbf(read_path, encoding='latin1', load=True)
                 self._capture_mproducto_structure(table)
 
-                for i, record in enumerate(table.records):
+                for i, record in self._mproducto_records(table):
                     m_cod = str(record.get('MEDCOD') or '').strip()
                     if self._medicine_code_keys(m_cod) & search_set:
                         results.append(self._medicine_result(i, record))
@@ -175,88 +190,105 @@ class EditSismedManager:
             print(f"Error detectando estructura TMOVIM: {e}")
             self._tmovim_field_info = {}
 
-    def search_guias(self, query: str) -> list:
-        """Busca guías en TMOVIM.DBF por MOVNUMERO."""
-        results = []
+    def _tmovim_records(self):
+        """Recorre una copia de TMOVIM.DBF y guarda la estructura para luego escribir en el original."""
+        with tempfile.TemporaryDirectory(prefix="toolkit_edit_tmovim_") as snapshot_dir:
+            read_path = snapshot_dbf(self.tmovim_path, snapshot_dir)
+            table = open_dbf(read_path, encoding='latin1', load=True)
+            self._tmovim_header_len = table.header.headerlen
+            self._tmovim_record_len = table.header.recordlen
+            self._tmovim_field_info = {}
+            current_offset = 1
+            for f in table.fields:
+                self._tmovim_field_info[f.name.upper()] = (current_offset, f.length, f.type)
+                current_offset += f.length
+            records = table.records
+            positions = live_record_positions(table)
+            if len(positions) != len(records):
+                raise RuntimeError("No se pudo ubicar los registros de TMOVIM.DBF. Vuelva a intentar.")
+            yield from zip(positions, records)
+
+    @staticmethod
+    def _guia_result(record_index: int, record) -> dict:
+        fecha = record.get('MOVFECHREG')
+        return {
+            "id_fisico":  record_index,
+            "movnumero":  str(record.get('MOVNUMERO')  or '').strip(),
+            "movnumedco": str(record.get('MOVNUMEDCO') or '').strip(),
+            "movsitua":   str(record.get('MOVSITUA')  or '').strip(),
+            "movcoditip": str(record.get('MOVCODITIP') or '').strip(),
+            "movindprc":  str(record.get('MOVINDPRC') or '').strip(),
+            "movfechreg": fecha.strftime('%d/%m/%Y') if hasattr(fecha, 'strftime') else str(fecha or ''),
+            "bloqueo":    str(record.get('BLOQUEO')  or '').strip(),
+            "usrbloq":    str(record.get('USRBLOQ')  or '').strip(),
+        }
+
+    def search_guias(self, query: str, by: str = BY_MOVEMENT) -> list:
+        """Busca guías en TMOVIM.DBF cuyo N° de movimiento (o N° de guía) contenga lo escrito."""
         if not os.path.exists(self.tmovim_path):
             raise FileNotFoundError(f"No se encontró TMOVIM.DBF en: {self.tmovim_path}")
+        by = normalize_by(by)
+        field = FIELDS[by]
         try:
-            with tempfile.TemporaryDirectory(prefix="toolkit_edit_tmovim_") as snapshot_dir:
-                read_path = snapshot_dbf(self.tmovim_path, snapshot_dir)
-                table = open_dbf(read_path, encoding='latin1', load=True)
-                self._tmovim_header_len = table.header.headerlen
-                self._tmovim_record_len = table.header.recordlen
-                self._tmovim_field_info = {}
-                current_offset = 1
-                for f in table.fields:
-                    self._tmovim_field_info[f.name.upper()] = (current_offset, f.length, f.type)
-                    current_offset += f.length
-
-                q = query.strip().upper()
-                for i, record in enumerate(table.records):
-                    movnum  = str(record.get('MOVNUMERO')  or '').strip()
-                    movguia = str(record.get('MOVNUMEDCO') or '').strip()
-                    if q in movnum.upper():
-                        fecha = record.get('MOVFECHREG')
-                        results.append({
-                            "id_fisico":  i,
-                            "movnumero":  movnum,
-                            "movnumedco": movguia,
-                            "movsitua":   str(record.get('MOVSITUA')  or '').strip(),
-                            "movcoditip": str(record.get('MOVCODITIP') or '').strip(),
-                            "movindprc":  str(record.get('MOVINDPRC') or '').strip(),
-                            "movfechreg": fecha.strftime('%d/%m/%Y') if hasattr(fecha, 'strftime') else str(fecha or ''),
-                            "bloqueo":    str(record.get('BLOQUEO')  or '').strip(),
-                            "usrbloq":    str(record.get('USRBLOQ')  or '').strip(),
-                        })
+            return [
+                self._guia_result(i, record)
+                for i, record in self._tmovim_records()
+                if simple_match(query, record.get(field), by)
+            ]
         except Exception as e:
             print(f"Error búsqueda TMOVIM: {e}")
             raise
-        return results
 
-    def search_guias_by_list(self, numeros_list: list) -> list:
-        """Busca guías cuyo MOVNUMERO esté en la lista proporcionada."""
+    def search_guias_by_list(self, values: list, by: str = BY_MOVEMENT) -> list:
+        """Busca las guías de una lista. Cada resultado dice en "coincide" qué valor pegado lo trajo."""
+        if not os.path.exists(self.tmovim_path):
+            raise FileNotFoundError(f"No se encontró TMOVIM.DBF en: {self.tmovim_path}")
+        matcher = values if isinstance(values, ListMatcher) else ListMatcher(values, by)
+        if not matcher.values:
+            return []
+        field = FIELDS[matcher.by]
         results = []
-        if not os.path.exists(self.tmovim_path) or not numeros_list:
-            return results
         try:
-            search_set = set(str(n).strip().upper() for n in numeros_list)
-            with tempfile.TemporaryDirectory(prefix="toolkit_edit_tmovim_") as snapshot_dir:
-                read_path = snapshot_dbf(self.tmovim_path, snapshot_dir)
-                table = open_dbf(read_path, encoding='latin1', load=True)
-                self._tmovim_header_len = table.header.headerlen
-                self._tmovim_record_len = table.header.recordlen
-                self._tmovim_field_info = {}
-                current_offset = 1
-                for f in table.fields:
-                    self._tmovim_field_info[f.name.upper()] = (current_offset, f.length, f.type)
-                    current_offset += f.length
-
-                for i, record in enumerate(table.records):
-                    movnum  = str(record.get('MOVNUMERO')  or '').strip()
-                    movguia = str(record.get('MOVNUMEDCO') or '').strip()
-                    if movnum.upper() in search_set:
-                        fecha = record.get('MOVFECHREG')
-                        results.append({
-                            "id_fisico":  i,
-                            "movnumero":  movnum,
-                            "movnumedco": movguia,
-                            "movsitua":   str(record.get('MOVSITUA')  or '').strip(),
-                            "movcoditip": str(record.get('MOVCODITIP') or '').strip(),
-                            "movindprc":  str(record.get('MOVINDPRC') or '').strip(),
-                            "movfechreg": fecha.strftime('%d/%m/%Y') if hasattr(fecha, 'strftime') else str(fecha or ''),
-                            "bloqueo":    str(record.get('BLOQUEO')  or '').strip(),
-                            "usrbloq":    str(record.get('USRBLOQ')  or '').strip(),
-                        })
+            for i, record in self._tmovim_records():
+                matches = matcher.match(record.get(field))
+                if matches:
+                    result = self._guia_result(i, record)
+                    result["coincide"] = matches
+                    results.append(result)
         except Exception as e:
             print(f"Error búsqueda masiva TMOVIM: {e}")
             raise
         return results
 
-    def _patch_tmovim_fields(self, record_index: int, field_patches: dict) -> tuple:
+    @staticmethod
+    def _tmovim_target(target) -> tuple:
+        """(posición física, campos que deben seguir igual) de un resultado de búsqueda o de un número."""
+        if isinstance(target, dict):
+            return int(target["id_fisico"]), {
+                "MOVNUMERO": target.get("movnumero", ""),
+                "MOVCODITIP": target.get("movcoditip", ""),
+            }
+        return int(target), {}
+
+    def _read_tmovim_value(self, f, record_index: int, field_name: str):
+        """Valor actual del campo en el archivo abierto; None si el campo no existe o el registro no está."""
+        info = self._tmovim_field_info.get(field_name.upper())
+        if not info:
+            return None
+        offset, length, _ftype = info
+        f.seek(self._tmovim_header_len + (record_index * self._tmovim_record_len) + offset)
+        raw = f.read(length)
+        if len(raw) < length:
+            return None
+        return raw.decode('latin1', errors='replace')
+
+    def _patch_tmovim_fields(self, record_index: int, field_patches: dict, expected: dict | None = None,
+                             transform=None) -> tuple:
         """
         Escribe directamente en los bytes del registro indicado para los campos del dict.
         field_patches: {FIELD_NAME: new_value_str}  — pasar '' para limpiar el campo.
+        expected: campos que deben seguir como en la búsqueda; si cambiaron, no se escribe nada.
+        transform: función que recibe el archivo abierto y devuelve los cambios o un texto de error.
         """
         if not os.path.exists(self.tmovim_path):
             return False, "Archivo TMOVIM.DBF no encontrado."
@@ -264,9 +296,23 @@ class EditSismedManager:
             self._detect_tmovim_structure()
         if not self._tmovim_field_info:
             return False, "No se pudo detectar la estructura de TMOVIM.DBF."
+        if record_index < 0:
+            return False, "Registro fuera de TMOVIM.DBF."
 
         try:
             with open(self.tmovim_path, "rb+") as f:
+                f.seek(self._tmovim_header_len + (record_index * self._tmovim_record_len))
+                if f.read(1) != b' ':
+                    return False, "El registro ya no está en TMOVIM.DBF. Vuelva a buscar."
+                for field_name, value in (expected or {}).items():
+                    current = self._read_tmovim_value(f, record_index, field_name)
+                    if current is not None and current.strip().upper() != str(value or '').strip().upper():
+                        return False, "TMOVIM.DBF cambió desde la búsqueda. Vuelva a buscar antes de aplicar."
+                if transform is not None:
+                    field_patches = transform(f)
+                    if isinstance(field_patches, str):
+                        return False, field_patches
+
                 for field_name, new_value in field_patches.items():
                     fname = field_name.upper()
                     if fname not in self._tmovim_field_info:
@@ -292,8 +338,9 @@ class EditSismedManager:
     def update_movsitua_bulk(self, indices_list: list, new_situa: str) -> tuple:
         """Cambia MOVSITUA ('0' = anulada, '1' = habilitada) en los registros indicados."""
         total, errors = 0, []
-        for idx in indices_list:
-            ok, msg = self._patch_tmovim_fields(idx, {"MOVSITUA": new_situa})
+        for target in indices_list:
+            idx, expected = self._tmovim_target(target)
+            ok, msg = self._patch_tmovim_fields(idx, {"MOVSITUA": new_situa}, expected)
             if ok:
                 total += 1
             else:
@@ -303,8 +350,9 @@ class EditSismedManager:
     def clear_bloqueo_bulk(self, indices_list: list) -> tuple:
         """Limpia los campos BLOQUEO y USRBLOQ en los registros indicados."""
         total, errors = 0, []
-        for idx in indices_list:
-            ok, msg = self._patch_tmovim_fields(idx, {"BLOQUEO": "", "USRBLOQ": ""})
+        for target in indices_list:
+            idx, expected = self._tmovim_target(target)
+            ok, msg = self._patch_tmovim_fields(idx, {"BLOQUEO": "", "USRBLOQ": ""}, expected)
             if ok:
                 total += 1
             else:
@@ -316,34 +364,23 @@ class EditSismedManager:
         if not indices_list:
             return 0, "No se recibieron registros para actualizar."
 
+        fuera_de_rango = "MOVINDPRC fuera de A/M"
         total, skipped, errors = 0, 0, []
-        try:
-            with tempfile.TemporaryDirectory(prefix="toolkit_edit_tmovim_") as snapshot_dir:
-                read_path = snapshot_dbf(self.tmovim_path, snapshot_dir)
-                table = open_dbf(read_path, encoding='latin1', load=True)
-                records = table.records
+        for target in indices_list:
+            idx, expected = self._tmovim_target(target)
 
-                for idx in indices_list:
-                    if idx < 0 or idx >= len(records):
-                        skipped += 1
-                        continue
+            def _toggle(f, idx=idx):
+                current = (self._read_tmovim_value(f, idx, "MOVINDPRC") or "").strip().upper()
+                new_value = {"A": "M", "M": "A"}.get(current)
+                return {"MOVINDPRC": new_value} if new_value else fuera_de_rango
 
-                    current_value = str(records[idx].get('MOVINDPRC') or '').strip().upper()
-                    if current_value == 'A':
-                        new_value = 'M'
-                    elif current_value == 'M':
-                        new_value = 'A'
-                    else:
-                        skipped += 1
-                        continue
-
-                    ok, msg = self._patch_tmovim_fields(idx, {"MOVINDPRC": new_value})
-                    if ok:
-                        total += 1
-                    else:
-                        errors.append(msg)
-        except Exception as e:
-            return 0, f"Error alternando MOVINDPRC: {e}"
+            ok, msg = self._patch_tmovim_fields(idx, {}, expected, transform=_toggle)
+            if ok:
+                total += 1
+            elif msg == fuera_de_rango:
+                skipped += 1
+            else:
+                errors.append(msg)
 
         extra = []
         if skipped:
