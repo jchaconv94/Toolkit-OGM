@@ -2,7 +2,7 @@
 disponibilidad_report_tool.py
 ==============================
 Herramienta: Reporte de Disponibilidad TFORMDET
-Categoría  : Reports SISMED
+Categoría  : Farmacia
 
 Genera reportes PIVOT de consumo + stock + precio desde TFORMDET,
 similar a las consultas TRANSFORM de Access.
@@ -35,12 +35,12 @@ class DisponibilidadReportTool(SismedTool):
     def metadata(self) -> ToolMetadata:
         return ToolMetadata(
             nombre="Disponibilidad TFORMDET",
-            descripcion="Reporte de consumos y stock desde TFORMDET",
+            descripcion="Reporte de consumos mensuales",
             icono=ft.icons.PIVOT_TABLE_CHART_ROUNDED,
             color=ft.colors.INDIGO_400,
-            categoria="Reports SISMED",
+            categoria="Farmacia",
             etiquetas=["disponibilidad", "tformdet", "consumo", "pivot",
-                       "farmacia", "ipress", "red", "reporte", "excel"],
+                       "farmacia", "ipress", "red", "reporte", "excel", "requerimiento"],
         )
 
     # ─── Vista ─────────────────────────────────────────────────────────────────
@@ -554,7 +554,7 @@ class DisponibilidadReportTool(SismedTool):
                     "Disponibilidad TFORMDET",
                     "Reporte de consumo, stock y precio por mes desde TFORMDET",
                     right_content=self._back_button(
-                        "Volver a Reports SISMED", navigate_fn, 4
+                        "Volver a Farmacia", navigate_fn, 20
                     ),
                 ),
                 ft.Container(height=14),

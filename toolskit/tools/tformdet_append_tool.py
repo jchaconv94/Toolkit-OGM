@@ -15,7 +15,7 @@ class TformdetAppendTool(SismedTool):
             descripcion="Agrega meses nuevos desde otro DBF TFORMDET",
             icono=ft.icons.DATA_OBJECT_ROUNDED,
             color=ft.colors.TEAL_400,
-            categoria="Herramientas",
+            categoria="Farmacia",
             etiquetas=[
                 "dbf",
                 "tformdet",
@@ -23,7 +23,7 @@ class TformdetAppendTool(SismedTool):
                 "anexar",
                 "importar",
                 "periodos",
-                "herramientas",
+                "farmacia",
             ],
         )
 
@@ -693,7 +693,7 @@ class TformdetAppendTool(SismedTool):
                         "Anexar TFORMDET",
                         "Agrega meses nuevos desde un DBF hacia SISMED",
                         right_content=self._back_button(
-                            "Volver a Herramientas", navigate_fn, 2
+                            "Volver a Farmacia", navigate_fn, 20
                         ),
                     ),
                     ft.Container(height=10),

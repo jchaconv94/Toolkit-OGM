@@ -27,16 +27,17 @@ from tools.edit_tmovim_tool import EditTmovimTool
  
 # ── Instancias únicas (Singleton por herramienta) ──────────────────────────────────────────────────────
 # Añade más herramientas aquí a medida que las vayas migrando a OOP.
+# El orden es el de las tarjetas de Inicio: primero las de Farmacia.
 TOOLS_REGISTRY: list = [
+    TformdetAppendTool(),
+    DisponibilidadReportTool(),
     DbfExcelTool(),
     ExcelMergeTool(),
-    TformdetAppendTool(),
     FormatTformdetTool(),
     PdfTool(),
     ConsultaTformdetTool(),
     ReporteGuiasTool(),
     StockReportTool(),
-    DisponibilidadReportTool(),
     ConsumoValorizadoReportTool(),
     ChangeMedestTool(),
     EditTmovimTool(),
