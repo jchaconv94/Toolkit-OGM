@@ -245,10 +245,10 @@ class SyncSismedTool(SismedTool):
             val_int = "5"
 
         input_intervalo = ft.Dropdown(
-            label="Intervalo sugerido (minutos)",
+            label="Intervalo (minutos)",
             options=opciones_intervalo,
             value=val_int,
-            width=250, border_radius=8, filled=True,
+            width=190, border_radius=8, filled=True,
             border_color=ft.colors.OUTLINE_VARIANT,
             prefix_icon=ft.icons.TIMER_ROUNDED,
             content_padding=10, text_size=14, menu_height=200,
@@ -295,7 +295,8 @@ class SyncSismedTool(SismedTool):
 
         input_clave_envio = ft.TextField(
             label="Clave de envío",
-            hint_text="Se genera en ToolkitSISMED Web → Claves de envío (ej. 06519-K7QM-4XPA-93RD)",
+            hint_text="De ToolkitSISMED Web → Claves de envío",
+            tooltip="Se genera en ToolkitSISMED Web → «Claves de envío», por ejemplo 06519-K7QM-4XPA-93RD.",
             value=self.sync_manager.clave_envio,
             expand=True, border_radius=8, filled=True,
             border_color=ft.colors.OUTLINE_VARIANT,
@@ -449,9 +450,13 @@ class SyncSismedTool(SismedTool):
                                 ),
                                 padding=ft.padding.only(bottom=5),
                             ),
-                            ft.Container(content=input_intervalo, padding=ft.padding.symmetric(vertical=8)),
+                            # El intervalo y la clave de envío van en la misma fila.
+                            ft.Container(
+                                content=ft.Row([input_intervalo, input_clave_envio], spacing=12,
+                                               vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                                padding=ft.padding.symmetric(vertical=8),
+                            ),
                             ft.Container(content=input_apps_script, padding=ft.padding.symmetric(vertical=8)),
-                            ft.Container(content=input_clave_envio, padding=ft.padding.symmetric(vertical=8)),
                             ft.Divider(height=20, color=ft.colors.OUTLINE_VARIANT),
                             ft.Container(content=chk_auto_sync, padding=ft.padding.only(top=5))
                         ], spacing=8, horizontal_alignment=ft.CrossAxisAlignment.START)
