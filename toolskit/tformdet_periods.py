@@ -14,6 +14,7 @@ MESES = (
     "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
     "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
 )
+MESES_CORTOS = ("Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Set", "Oct", "Nov", "Dic")
 MIN_MONTHS = 1
 MAX_MONTHS = 120
 
@@ -43,6 +44,20 @@ class MonthRange:
         if self.months == 1:
             return f"{start} · {meses}"
         return f"De {start} a {end} · {meses}"
+
+    def short_description(self) -> str:
+        """Para la pantalla compacta: «Octubre 2026 · 1 mes» o «Nov 2024 – Feb 2025 · 4 meses»."""
+        if self.months == 1:
+            return f"{MESES[self.start_month - 1]} {self.start_year} · 1 mes"
+        start = f"{MESES_CORTOS[self.start_month - 1]} {self.start_year}"
+        end = f"{MESES_CORTOS[self.end_month - 1]} {self.end_year}"
+        return f"{start} – {end} · {self.months} meses"
+
+    def period_codes(self) -> str:
+        """«10/2025 – 09/2026» (vacío para un solo mes: ya lo dice el resumen)."""
+        if self.months == 1:
+            return ""
+        return f"{self.start_month:02d}/{self.start_year} – {self.end_month:02d}/{self.end_year}"
 
 
 def clamp_months(value) -> int:

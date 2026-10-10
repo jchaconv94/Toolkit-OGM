@@ -10,6 +10,7 @@ opciones de fórmulas, y descarga en Excel.
 Depende de: tformdet_report.TformdetManager
 """
 
+import json
 import threading
 import flet as ft
 from tools.app_config import get as cfg_get, set as cfg_set
@@ -42,7 +43,7 @@ class ConsultaTformdetTool(SismedTool):
 
         # ── Consola de log ────────────────────────────────────────────────────
         tformdet_log = ft.ListView(
-            height=310, spacing=5, auto_scroll=True
+            expand=True, spacing=5, auto_scroll=True
         )
 
         def _log(msg):
@@ -130,100 +131,119 @@ class ConsultaTformdetTool(SismedTool):
             ("07", "Julio"), ("08", "Agosto"), ("09", "Septiembre"),
             ("10", "Octubre"), ("11", "Noviembre"), ("12", "Diciembre"),
         ]
+        campo = dict(
+            dense=True, border_radius=4, border_color=ft.colors.WHITE38,
+            focused_border_color=ft.colors.WHITE, text_size=15,
+            content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
+        )
 
-        def _dropdown_mes(label):
+        def _dropdown_mes():
             return ft.Dropdown(
-                label=label,
+                label="Mes",
                 options=[ft.dropdown.Option(k, f"{k} - {v}") for k, v in meses_opciones],
-                value=now.strftime("%m"), expand=1, dense=True,
-                border_radius=4, border_color=ft.colors.WHITE38,
-                focused_border_color=ft.colors.WHITE, text_size=15,
-                prefix_icon=ft.icons.CALENDAR_MONTH,
-                content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
+                # Flet 0.27 no estira el Dropdown (expand no tiene efecto): ancho fijo.
+                value=now.strftime("%m"), width=230,
+                prefix_icon=ft.icons.CALENDAR_MONTH, **campo,
             )
 
-        def _input_anio(label):
+        def _input_anio():
+            # El año ocupa el resto de la fila, así los bordes quedan alineados.
             return ft.TextField(
-                label=label, value=now.strftime("%Y"),
-                expand=1, dense=True, border_radius=4,
-                border_color=ft.colors.WHITE38,
-                focused_border_color=ft.colors.WHITE, text_size=15,
+                label="Año", value=now.strftime("%Y"), expand=True,
                 prefix_icon=ft.icons.DATE_RANGE_ROUNDED,
                 input_filter=ft.NumbersOnlyInputFilter(),
-                content_padding=ft.padding.only(left=10, right=10, top=8, bottom=8),
+                # Misma altura que el Dropdown del mes, que en Flet 0.27 es más alto.
+                **{**campo, "content_padding": ft.padding.only(left=10, right=10, top=13, bottom=13)},
             )
 
         # En «Un mes» se usan solo los de inicio; en «Rango», también los de fin.
-        dropdown_mes_ini, input_anio_ini = _dropdown_mes("Mes"), _input_anio("Año")
-        dropdown_mes_fin, input_anio_fin = _dropdown_mes("Mes fin"), _input_anio("Año fin")
+        dropdown_mes_ini, input_anio_ini = _dropdown_mes(), _input_anio()
+        dropdown_mes_fin, input_anio_fin = _dropdown_mes(), _input_anio()
+        etiqueta_desde = ft.Text("Desde", size=13, color=ft.colors.WHITE70, width=44)
+        etiqueta_hasta = ft.Text("Hasta", size=13, color=ft.colors.WHITE70, width=44)
 
         MODOS = ("mes", "rango", "ultimos")
         saved_mode = cfg_get("tformdet_period_mode")
-        selector_modo = ft.RadioGroup(
-            value=saved_mode if saved_mode in MODOS else "mes",
-            content=ft.Row([
-                ft.Radio(value="mes", label="Un mes"),
-                ft.Radio(value="rango", label="Rango de meses"),
-                ft.Radio(value="ultimos", label="Últimos meses"),
-            ], wrap=True, spacing=12),
+        modo = [saved_mode if saved_mode in MODOS else "mes"]
+        selector_modo = ft.SegmentedButton(
+            segments=[
+                ft.Segment(value="mes", label=ft.Text("Un mes")),
+                ft.Segment(value="rango", label=ft.Text("Rango")),
+                ft.Segment(value="ultimos", label=ft.Text("Últimos meses")),
+            ],
+            selected={modo[0]},
+            allow_multiple_selection=False,
+            allow_empty_selection=False,
+            show_selected_icon=True,
+            expand=True,
         )
 
         saved_months = clamp_months(cfg_get("tformdet_last_months") or 12)
         input_meses = ft.TextField(
-            value=str(saved_months), width=80, dense=True, text_align=ft.TextAlign.CENTER,
-            text_size=18, border_radius=4, border_color=ft.colors.WHITE38,
-            focused_border_color=ft.colors.WHITE,
+            value=str(saved_months), width=56, text_align=ft.TextAlign.CENTER,
             keyboard_type=ft.KeyboardType.NUMBER,
             input_filter=ft.NumbersOnlyInputFilter(),
-            content_padding=ft.padding.only(left=6, right=6, top=8, bottom=8),
+            **{**campo, "text_size": 17,
+               "content_padding": ft.padding.only(left=4, right=4, top=8, bottom=8)},
         )
         checkbox_mes_actual = ft.Checkbox(
-            label="Incluir el mes actual (todavía incompleto)",
+            label="Incluir mes actual",
+            label_style=ft.TextStyle(size=13),
+            tooltip="El mes actual todavía no termina: sus datos están incompletos.",
             value=bool(cfg_get("tformdet_include_current") or False),
         )
-        texto_rango = ft.Text("", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE)
+        texto_rango = ft.Text("", size=15, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE)
         texto_periodo = ft.Text("", size=13, font_family="Consolas", color=ft.colors.WHITE60)
-        texto_aviso = ft.Text("", size=13, color=ft.colors.AMBER_300, visible=False)
+        texto_aviso = ft.Text("", size=12, color=ft.colors.AMBER_300, visible=False)
 
         checkbox_formulas = ft.Checkbox(
-            label="AÑADIR COLUMNAS Y FÓRMULAS DE CÓDIGO ÚNICO",
+            label="Añadir columnas y fórmulas de código único",
+            label_style=ft.TextStyle(size=13),
             value=False,
         )
-        fila_inicio = ft.Row([dropdown_mes_ini, input_anio_ini],
-                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                             vertical_alignment=ft.CrossAxisAlignment.CENTER)
-        fila_fin = ft.Row([dropdown_mes_fin, input_anio_fin],
-                          alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                          vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        fila_inicio = ft.Row([etiqueta_desde, dropdown_mes_ini, input_anio_ini],
+                             spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        fila_fin = ft.Row([etiqueta_hasta, dropdown_mes_fin, input_anio_fin],
+                          spacing=10, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         btn_menos = ft.IconButton(icon=ft.icons.REMOVE_ROUNDED, tooltip="Un mes menos",
-                                  on_click=lambda _: _step(-1))
+                                  icon_size=18, on_click=lambda _: _step(-1))
         btn_mas = ft.IconButton(icon=ft.icons.ADD_ROUNDED, tooltip="Un mes más",
-                                on_click=lambda _: _step(1))
+                                icon_size=18, on_click=lambda _: _step(1))
         fila_ultimos = ft.Row([
-            ft.Text("Descargar los últimos", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+            ft.Text("Los últimos", size=15, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
             btn_menos, input_meses, btn_mas,
-            ft.Text("meses", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
-        ], spacing=4, wrap=True, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+            ft.Text("meses", size=15, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE),
+            ft.Container(expand=True),
+            checkbox_mes_actual,
+        ], spacing=2, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+        resumen = ft.Container(
+            expand=True,
+            bgcolor=ft.colors.with_opacity(0.25, ft.colors.BLACK),
+            border_radius=8,
+            padding=ft.padding.symmetric(vertical=8, horizontal=12),
+            content=ft.Column([
+                ft.Row([texto_rango, texto_periodo], spacing=10, wrap=True,
+                       vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                texto_aviso,
+            ], spacing=2, tight=True),
+        )
 
         def _current_range():
             """(rango, mensaje de error) según la forma elegida."""
-            modo = selector_modo.value
-            if modo == "ultimos":
+            if modo[0] == "ultimos":
                 return last_months(input_meses.value, bool(checkbox_mes_actual.value)), ""
-            if modo == "rango":
+            if modo[0] == "rango":
                 return month_range(input_anio_ini.value, dropdown_mes_ini.value,
                                    input_anio_fin.value, dropdown_mes_fin.value)
             rango = single_month(input_anio_ini.value, dropdown_mes_ini.value)
             return rango, "" if rango else "Escriba un año válido (por ejemplo, 2026)."
 
         def _refresh_range(save: bool = True):
-            modo = selector_modo.value
-            fila_inicio.visible = modo in ("mes", "rango")
-            fila_fin.visible = modo == "rango"
-            fila_ultimos.visible = modo == "ultimos"
-            checkbox_mes_actual.visible = modo == "ultimos"
-            dropdown_mes_ini.label = "Mes inicio" if modo == "rango" else "Mes"
-            input_anio_ini.label = "Año inicio" if modo == "rango" else "Año"
+            actual = modo[0]
+            fila_inicio.visible = actual in ("mes", "rango")
+            fila_fin.visible = actual == "rango"
+            etiqueta_desde.visible = actual == "rango"
+            fila_ultimos.visible = actual == "ultimos"
 
             rango, error = _current_range()
             if rango is None:
@@ -231,12 +251,11 @@ class ConsultaTformdetTool(SismedTool):
                 texto_periodo.value = ""
                 texto_aviso.visible = False
             else:
-                texto_rango.value = rango.description()
-                inicio = f"{rango.periodo_ini[4:]}/{rango.periodo_ini[:4]}"
-                fin = f"{rango.periodo_fin[4:]}/{rango.periodo_fin[:4]}"
-                texto_periodo.value = f"Periodo {inicio}" if rango.months == 1 else f"Periodo {inicio} – {fin}"
+                texto_rango.value = rango.short_description()
+                texto_periodo.value = rango.period_codes()
                 texto_aviso.visible = rango.includes_current
-                texto_aviso.value = "Incluye el mes actual: sus datos todavía están incompletos."
+                texto_aviso.value = "⚠ Incluye el mes actual: sus datos todavía están incompletos."
+            texto_periodo.visible = bool(texto_periodo.value)
 
             # Las fórmulas de código único solo existen para un periodo, como antes.
             un_mes = rango is not None and rango.months == 1
@@ -244,14 +263,29 @@ class ConsultaTformdetTool(SismedTool):
             if not un_mes:
                 checkbox_formulas.value = False
             if save:
-                cfg_set("tformdet_period_mode", modo)
-                if modo == "ultimos":
+                cfg_set("tformdet_period_mode", actual)
+                if actual == "ultimos":
                     cfg_set("tformdet_last_months", clamp_months(input_meses.value))
                     cfg_set("tformdet_include_current", bool(checkbox_mes_actual.value))
 
         def _on_range_change(e=None):
             _refresh_range()
             page.update()
+
+        def _on_mode_change(e=None):
+            # El evento trae la lista elegida en JSON («["rango"]»); si no, se lee del control.
+            elegido = None
+            try:
+                datos = json.loads(e.data) if e is not None and e.data else []
+                elegido = datos[0] if datos else None
+            except Exception:
+                elegido = None
+            if elegido not in MODOS:
+                seleccion = list(selector_modo.selected or [])
+                elegido = seleccion[0] if seleccion and seleccion[0] in MODOS else modo[0]
+            modo[0] = elegido
+            selector_modo.selected = {elegido}
+            _on_range_change()
 
         def _on_meses_blur(e=None):
             input_meses.value = str(clamp_months(input_meses.value))
@@ -261,10 +295,11 @@ class ConsultaTformdetTool(SismedTool):
             input_meses.value = str(clamp_months(clamp_months(input_meses.value) + delta))
             _on_range_change()
 
+        selector_modo.on_change = _on_mode_change
         input_meses.on_change = _on_range_change
         input_meses.on_blur = _on_meses_blur
         input_meses.on_submit = _on_meses_blur
-        for control in (checkbox_mes_actual, selector_modo, dropdown_mes_ini, input_anio_ini,
+        for control in (checkbox_mes_actual, dropdown_mes_ini, input_anio_ini,
                         dropdown_mes_fin, input_anio_fin):
             control.on_change = _on_range_change
 
@@ -321,6 +356,9 @@ class ConsultaTformdetTool(SismedTool):
         )
 
         # ── Layout ────────────────────────────────────────────────────────────
+        # Los dos paneles con la misma altura; el botón queda siempre abajo.
+        PANEL_HEIGHT = 480
+        btn_run.expand = True
         return ft.Container(
             padding=40, expand=True,
             content=ft.Column(
@@ -343,33 +381,30 @@ class ConsultaTformdetTool(SismedTool):
                         col={"sm": 12, "lg": 6, "xl": 6},
                         bgcolor=ft.colors.BLUE_GREY_900,
                         border_radius=12, padding=20,
+                        height=PANEL_HEIGHT,
                         content=ft.Column([
-                            ft.Row([
-                                ft.Icon(ft.icons.SETTINGS_ROUNDED,
-                                        color=ft.colors.BLUE_400, size=24),
-                                ft.Text("Configuración de Consulta", size=16,
-                                        weight=ft.FontWeight.BOLD,
-                                        color=ft.colors.WHITE),
+                            ft.Column([
+                                ft.Row([
+                                    ft.Icon(ft.icons.SETTINGS_ROUNDED,
+                                            color=ft.colors.BLUE_400, size=24),
+                                    ft.Text("Configuración de Consulta", size=16,
+                                            weight=ft.FontWeight.BOLD,
+                                            color=ft.colors.WHITE),
+                                ], spacing=10),
+                                ft.Divider(color=ft.colors.WHITE24, height=8),
+                                ft.Row([input_sismed_dir]),
+                                ft.Row([selector_modo]),
+                                fila_inicio,
+                                fila_fin,
+                                fila_ultimos,
+                            ], spacing=12),
+                            # Abajo, el resultado y la acción: qué se va a descargar y el botón.
+                            ft.Column([
+                                ft.Row([resumen]),
+                                checkbox_formulas,
+                                ft.Row([btn_run]),
                             ], spacing=10),
-                            ft.Divider(color=ft.colors.WHITE24, height=15),
-
-                            ft.Row([input_sismed_dir]),
-                            ft.Text("Periodo", size=13, color=ft.colors.WHITE70),
-                            selector_modo,
-                            fila_inicio,
-                            fila_fin,
-                            fila_ultimos,
-                            ft.Row([checkbox_mes_actual]),
-                            ft.Container(
-                                bgcolor=ft.colors.with_opacity(0.25, ft.colors.BLACK),
-                                border_radius=8, padding=12,
-                                content=ft.Column([texto_rango, texto_periodo, texto_aviso], spacing=2),
-                            ),
-                            ft.Row([checkbox_formulas]),
-                            ft.Container(height=5),
-                            ft.Row([btn_run],
-                                   alignment=ft.MainAxisAlignment.CENTER),
-                        ], spacing=15),
+                        ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                     ),
 
                     # ── PANEL DERECHO: consola ──────────────────────────────
@@ -377,7 +412,7 @@ class ConsultaTformdetTool(SismedTool):
                         col={"sm": 12, "lg": 6, "xl": 6},
                         bgcolor=ft.colors.BLACK,
                         border_radius=12, padding=20,
-                        height=412,
+                        height=PANEL_HEIGHT,
                         content=ft.Column([
                             ft.Row([
                                 ft.Icon(ft.icons.TERMINAL_ROUNDED,

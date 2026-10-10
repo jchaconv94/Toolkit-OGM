@@ -97,5 +97,16 @@ class MonthRangeTests(unittest.TestCase):
         self.assertIn("año válido", error)
 
 
+class ShortTextTests(unittest.TestCase):
+    def test_short_texts(self):
+        r, _ = month_range("2024", "11", "2025", "02", HOY)
+        self.assertEqual(r.short_description(), "Nov 2024 – Feb 2025 · 4 meses")
+        self.assertEqual(r.period_codes(), "11/2024 – 02/2025")
+        one = single_month("2026", "10", HOY)
+        self.assertEqual(one.short_description(), "Octubre 2026 · 1 mes")
+        self.assertEqual(one.period_codes(), "")
+        self.assertEqual(last_months(12, False, HOY).short_description(), "Oct 2025 – Set 2026 · 12 meses")
+
+
 if __name__ == "__main__":
     unittest.main()
