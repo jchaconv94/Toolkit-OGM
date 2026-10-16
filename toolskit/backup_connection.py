@@ -21,6 +21,7 @@ import random
 import ssl
 import threading
 import time
+from datetime import datetime
 import urllib.request
 from urllib.parse import unquote, urlparse
 
@@ -28,7 +29,7 @@ import requests
 
 from app_version import get_current_version
 from send_key_check import SUPABASE_URL, keys_by_code, supabase_public_key
-from backup_upload import DEFAULT_PARALLEL, BackupUploader, service_http_base
+from backup_upload import DEFAULT_PARALLEL, BackupUploader, find_morning_backup, service_http_base, sha256_file
 
 try:
     import websocket  # paquete websocket-client
@@ -38,6 +39,10 @@ except Exception:  # pragma: no cover - si falta el paquete, la función queda a
 SERVICE_URL = "wss://sismed-conexion.jchaconvillacis.workers.dev/pc"
 ENABLED_RECHECK_SECONDS = 30 * 60
 PING_SECONDS = 50
+# Copia del día (2.3.9): cada cuánto se mira si hay un backup de la mañana por subir, y cuánto
+# se espera para volver a ofrecerlo si no se pudo (sin espacio, otra subida, corte de red).
+COPY_CHECK_SECONDS = 300
+COPY_RETRY_SECONDS = 3600
 PONG_TIMEOUT_SECONDS = 120
 REJECTED_WAIT_SECONDS = 30 * 60
 MAX_BACKOFF_SECONDS = 300
@@ -107,6 +112,13 @@ class BackupConnection:
         self._last_pong = 0.0
         self._enabled_checked_at = 0.0
         self._enabled_codes: list[str] = []
+        # Copia del día: la subida en curso (para cederle el paso a un pedido de la web), el
+        # archivo ofrecido por código y lo ya ofrecido: (código, archivo) -> (cuándo, terminado).
+        self._copy_uploader: BackupUploader | None = None
+        self._copy_pending: dict[str, object] = {}
+        self._copy_seen: dict[tuple[str, str], tuple[float, bool]] = {}
+        self._copy_sha: dict[tuple[str, int, float], str] = {}
+        self._copy_checked_at = 0.0
         # Último problema anotado en el registro: cada motivo se anota una vez, no en cada intento.
         self._last_problem: str | None = None
         self.connected = False
@@ -249,6 +261,7 @@ class BackupConnection:
             self._last_problem = None
             self._last_pong = time.monotonic()
             self.log(f"  🔌 Conexión inmediata activa con la web ({', '.join(keys)}).")
+            self._copy_checked_at = 0.0  # al conectarse, se mira enseguida si hay copia por subir
             threading.Thread(target=self._keepalive, args=(ws,), daemon=True).start()
 
         def on_message(ws, message):
@@ -268,6 +281,10 @@ class BackupConnection:
                 self.log(f"  📨 Aviso de prueba recibido desde la web ({data.get('code')}).")
             elif data.get("t") == "backup":
                 self._start_backup(ws, data)
+            elif data.get("t") == "copy_go":
+                self._start_copy(ws, data)
+            elif data.get("t") == "copy_skip":
+                self._copy_skipped(data)
 
         def on_error(ws, error):
             status = getattr(error, "status_code", None)
@@ -314,11 +331,17 @@ class BackupConnection:
         def send(message: dict):
             ws.send(json.dumps(message))
 
-        if not self._upload_lock.acquire(blocking=False):
-            send({"t": "backup_error", "job": job, "reason": "Esta PC ya está enviando otro backup"})
-            return
-
         def work():
+            # Un pedido de la web tiene prioridad: si se está subiendo la copia del día, se corta.
+            copy = self._copy_uploader
+            if copy is not None:
+                copy.cancel("Se detuvo para atender un pedido de la web")
+                acquired = self._upload_lock.acquire(timeout=60)
+            else:
+                acquired = self._upload_lock.acquire(blocking=False)
+            if not acquired:
+                send({"t": "backup_error", "job": job, "reason": "Esta PC ya está enviando otro backup"})
+                return
             try:
                 uploader = BackupUploader(
                     base_url=service_http_base(SERVICE_URL), job=job, token=str(data["token"]),
@@ -332,6 +355,84 @@ class BackupConnection:
                 self._upload_lock.release()
 
         threading.Thread(target=work, name="backup-upload", daemon=True).start()
+
+    # --- copia del día ---------------------------------------------------------------
+    def _copy_due(self, code: str, name: str, now: float) -> bool:
+        seen = self._copy_seen.get((code, name))
+        if seen is None:
+            return True
+        at, finished = seen
+        return not finished and now - at > COPY_RETRY_SECONDS
+
+    def _offer_copy(self, ws):
+        """Ofrece a la nube el backup de la mañana, una vez por archivo y establecimiento."""
+        if self._upload_lock.locked():
+            return
+        try:
+            path = find_morning_backup(self.get_base_dir())
+            if path is None:
+                return
+            now = time.monotonic()
+            codes = [code for code in sorted(self._keys()) if self._copy_due(code, path.name, now)]
+            if not codes:
+                return
+            stat = path.stat()
+            fingerprint = (path.name, stat.st_size, stat.st_mtime)
+            sha = self._copy_sha.get(fingerprint) or sha256_file(path)
+            self._copy_sha = {fingerprint: sha}
+            modified = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="minutes")
+            for code in codes:
+                self._copy_pending[code] = path
+                self._copy_seen[(code, path.name)] = (now, False)
+                ws.send(json.dumps({"t": "copy_offer", "code": code, "name": path.name, "size": stat.st_size,
+                                    "sha256": sha, "modified": modified}))
+        except Exception as exc:  # una copia que no se pudo ofrecer no debe cortar la conexión
+            self._report(f"copy:{type(exc).__name__}", f"  ⚠ Copia del día: no se pudo ofrecer ({_short(exc)}).")
+
+    def _copy_skipped(self, data: dict):
+        code = str(data.get("code") or "")
+        path = self._copy_pending.pop(code, None)
+        if path is None:
+            return
+        # La nube ya la tiene: no se vuelve a ofrecer. Por otro motivo, se reintenta en una hora.
+        finished = "ya tiene" in str(data.get("reason") or "")
+        self._copy_seen[(code, path.name)] = (time.monotonic(), finished)
+
+    def _start_copy(self, ws, data: dict):
+        code = str(data.get("code") or "")
+        job = str(data.get("job") or "")
+        path = self._copy_pending.pop(code, None)
+        if path is None or not job or not data.get("token"):
+            return
+
+        def send(message: dict):
+            ws.send(json.dumps(message))
+
+        uploader = BackupUploader(
+            base_url=service_http_base(SERVICE_URL), job=job, token=str(data["token"]),
+            part_size=int(data.get("partSize") or 5 * 1024 * 1024),
+            max_bytes=int(data.get("maxBytes") or 600 * 1024 * 1024),
+            send=send, log=self.log, parallel=int(data.get("parallel") or 1),
+        )
+        if not self._upload_lock.acquire(blocking=False):
+            # Justo empezó un pedido: se libera el lugar en la nube y se reintenta más tarde.
+            send({"t": "backup_error", "job": job, "reason": "La PC está enviando otro backup"})
+            self._copy_seen[(code, path.name)] = (time.monotonic() - COPY_RETRY_SECONDS + COPY_CHECK_SECONDS, False)
+            return
+        self._copy_uploader = uploader
+
+        def work():
+            try:
+                self.log(f"  ☁ Copia del día: subiendo {path.name} de {code} a la nube en segundo plano...")
+                ok = uploader.run(self.get_base_dir(), code, path=path)
+                self._copy_seen[(code, path.name)] = (time.monotonic(), ok)
+                if ok:
+                    self.log(f"  ✓ Copia del día de {code} guardada en la nube.")
+            finally:
+                self._copy_uploader = None
+                self._upload_lock.release()
+
+        threading.Thread(target=work, name="backup-copy", daemon=True).start()
 
     def _keepalive(self, ws):
         while not self._stop.is_set() and self.connected:
@@ -358,3 +459,6 @@ class BackupConnection:
                 ws.send("ping")
             except Exception:
                 break
+            if time.monotonic() - self._copy_checked_at > COPY_CHECK_SECONDS:
+                self._copy_checked_at = time.monotonic()
+                self._offer_copy(ws)

@@ -64,6 +64,39 @@ def find_latest_backup(base_dir: str, now: float | None = None) -> Path | None:
     return candidates[-1][2]
 
 
+def find_morning_backup(base_dir: str, now: float | None = None) -> Path | None:
+    """El primer backup del día (el de la mañana), si ya terminó de escribirse.
+
+    Es el que se sube solo como copia del día (Toolkit 2.3.9): el usuario pidió el de la
+    mañana, no el de las 13:00. Mientras ese se esté escribiendo, todavía no hay copia.
+    """
+    folder = Path(str(base_dir or "").strip()) / "backup"
+    if not folder.is_dir():
+        return None
+    now = time.time() if now is None else now
+    today = datetime.fromtimestamp(now).strftime("%Y%m%d")
+    todays = []
+    for entry in folder.iterdir():
+        try:
+            if not entry.is_file() or not BACKUP_NAME.match(entry.name):
+                continue
+            digits = re.sub(r"\D", "", entry.name)
+            if digits[:8] != today:
+                continue
+            stat = entry.stat()
+        except OSError:
+            continue
+        if stat.st_size > 0:
+            todays.append((digits, entry.name, entry, stat))
+    if not todays:
+        return None
+    todays.sort()
+    _digits, _name, entry, stat = todays[0]
+    if now - stat.st_mtime < STILL_WRITING_SECONDS:
+        return None
+    return entry
+
+
 def sha256_file(path: Path, chunk: int = 1024 * 1024) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as fh:
@@ -85,11 +118,16 @@ class BackupUploadError(Exception):
 class _CountingReader(io.BytesIO):
     """Una parte como archivo que avisa cuántos bytes va leyendo http.client al enviarla."""
 
-    def __init__(self, data: bytes, on_read):
+    def __init__(self, data: bytes, on_read, stop: threading.Event | None = None, stop_reason=lambda: ""):
         super().__init__(data)
         self._on_read = on_read
+        self._stop = stop
+        self._stop_reason = stop_reason
 
     def read(self, size=-1):
+        # Al cancelar, la parte en curso se corta en el siguiente bloque (16 KiB), no al final.
+        if self._stop is not None and self._stop.is_set():
+            raise BackupUploadError(self._stop_reason() or "Se detuvo la subida")
         chunk = super().read(size)
         if chunk:
             self._on_read(len(chunk))
@@ -152,6 +190,12 @@ class BackupUploader:
         self.sleep = sleep
         self.parallel = max(1, min(MAX_PARALLEL, int(parallel or 1)))
         self._stop = threading.Event()
+        self._stop_reason = "Se detuvo porque otra parte no se pudo enviar"
+
+    def cancel(self, reason: str = "Se detuvo la subida"):
+        """Corta la subida (la copia del día cede ante un pedido de la web)."""
+        self._stop_reason = reason
+        self._stop.set()
 
     def _http(self):
         """Una sesión por hilo: cada parte en curso va por su propia conexión."""
@@ -168,9 +212,9 @@ class BackupUploader:
     def _headers(self, extra: dict | None = None) -> dict:
         return {"X-Job-Token": self.token, **(extra or {})}
 
-    def run(self, base_dir: str, code: str) -> bool:
+    def run(self, base_dir: str, code: str, path: Path | None = None) -> bool:
         try:
-            path = find_latest_backup(base_dir)
+            path = path if path is not None else find_latest_backup(base_dir)
             if path is None:
                 raise BackupUploadError("No hay backups del SISMED en la carpeta «backup» de esta PC")
             size = path.stat().st_size
@@ -178,8 +222,8 @@ class BackupUploader:
                 raise BackupUploadError(f"El backup pesa {size // (1024 * 1024)} MB, más de lo permitido")
             sha = sha256_file(path)
             modified = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="minutes")
-            self.send({"t": "backup_meta", "job": self.job, "name": path.name, "size": size,
-                       "sha256": sha, "modified": modified})
+            self._meta = {"name": path.name, "size": size, "sha256": sha, "modified": modified}
+            self.send({"t": "backup_meta", "job": self.job, **self._meta})
             self.log(f"  📦 Enviando backup {path.name} ({size / 1048576:.1f} MB) de {code} a la web...")
             self._upload(path, size)
             self.log(f"  ✓ Backup {path.name} enviado y verificado por tamaño.")
@@ -212,8 +256,7 @@ class BackupUploader:
             return f"HTTP {response.status_code}"
 
     def _upload(self, path: Path, size: int):
-        # La web recibe los datos del backup (backup_meta) antes de que empiece la subida.
-        self._post("start")
+        self._start()
         count = max(1, -(-size // self.part_size))
         progress = _Progress(size, lambda sent: self.send({"t": "backup_progress", "job": self.job, "sent": sent}))
 
@@ -237,7 +280,8 @@ class BackupUploader:
                     parts.append(future.result())
             except BaseException:
                 # Una parte que no salió detiene las demás: no tiene sentido seguir subiendo.
-                self._stop.set()
+                if not self._stop.is_set():
+                    self._stop.set()
                 for future in futures:
                     future.cancel()
                 raise
@@ -246,14 +290,32 @@ class BackupUploader:
         parts.sort(key=lambda part: part["partNumber"])
         self._post("complete", json={"parts": parts})
 
+    def _start(self):
+        """Abre la subida. Los datos del backup van también aquí (2.3.9).
+
+        Antes solo iban por la conexión abierta (backup_meta), y en una red congestionada (por
+        ejemplo, mientras subía la copia del día) este pedido llegaba primero y el servicio
+        respondía «Falta informar el backup». Un servicio anterior que no los lee aquí lo
+        sigue diciendo: se reintenta unos segundos, hasta que llega el backup_meta.
+        """
+        for attempt in range(1, 5):
+            try:
+                self._post("start", json=getattr(self, "_meta", None))
+                return
+            except BackupUploadError as exc:
+                if "Falta informar" not in str(exc) or attempt == 4:
+                    raise
+                self.sleep(attempt)
+
     def _upload_part(self, number: int, chunk: bytes, progress: _Progress | None = None) -> dict:
         last_error = ""
         for attempt in range(1, PART_RETRIES + 1):
             if self._stop.is_set():
-                raise BackupUploadError("Se detuvo porque otra parte no se pudo enviar")
+                raise BackupUploadError(self._stop_reason)
             if progress:
                 progress.start(number)
-            body = _CountingReader(chunk, (lambda amount: progress.add(number, amount)) if progress else (lambda _a: None))
+            body = _CountingReader(chunk, (lambda amount: progress.add(number, amount)) if progress else (lambda _a: None),
+                                   self._stop, lambda: self._stop_reason)
             try:
                 # Como archivo y no como bytes: así http.client lo envía en bloques de 16 KiB y
                 # cada bloque tiene sus 15 s. Con bytes se mandaba de un solo envío y la parte
