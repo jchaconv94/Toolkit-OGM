@@ -123,6 +123,8 @@ jobs:
           "checksum=$checksum" >> $env:GITHUB_OUTPUT
 
       - name: Guardar copia del instalador en la ejecucion
+        # Es solo una copia: si la cuota de artefactos de GitHub está llena, la Release se publica igual.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ToolkitOGM-Setup-${{ steps.release.outputs.version }}
