@@ -30,6 +30,7 @@ class _Session:
     def __init__(self, fail_part=None, fail_times=1, fail_status=None):
         self.calls = []
         self.parts = {}
+        self.bodies = []
         self.fail_part = fail_part
         self.fail_times = fail_times
         self.fail_status = fail_status
@@ -46,7 +47,8 @@ class _Session:
             if self.fail_status:
                 return _Resp(self.fail_status, {"error": "no"})
             raise backup_upload.requests.ConnectionError("corte")
-        self.parts[number] = data
+        self.bodies.append(data)
+        self.parts[number] = data.read() if hasattr(data, "read") else data
         return _Resp(200, {"partNumber": number, "etag": f"e{number}"})
 
 
@@ -121,11 +123,78 @@ class UploaderTests(unittest.TestCase):
         self.assertEqual(sum(1 for c in session.calls if c[0] == "PUT"), 1)
         self.assertEqual(self.sent[-1]["t"], "backup_error")
 
+    def test_parts_go_as_file_so_they_are_sent_in_blocks(self):
+        session = _Session()
+        self.assertTrue(self._uploader(session).run(self.tmp.name, "030S05"))
+        self.assertTrue(all(hasattr(body, "read") for body in session.bodies))
+
     def test_too_big_or_missing_is_reported(self):
         self.assertFalse(self._uploader(_Session(), max_bytes=100).run(self.tmp.name, "030S05"))
         self.assertIn("pesa", self.sent[-1]["reason"])
         self.assertFalse(self._uploader(_Session()).run(str(Path(self.tmp.name) / "nada"), "030S05"))
         self.assertIn("No hay backups", self.sent[-1]["reason"])
+
+
+class SlowLinkTests(unittest.TestCase):
+    """Con la red real: un servicio que recibe lento (como un internet de subida lento).
+
+    Mientras envía, urllib3 solo espera el tiempo de conexión. Una parte enviada como bytes
+    debía salir entera en ese tiempo; como archivo, cada bloque tiene el suyo.
+    """
+
+    def setUp(self):
+        import socket
+        import threading
+
+        self.server = socket.socket()
+        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server.bind(("127.0.0.1", 0))
+        self.server.listen(5)
+        self.addCleanup(self.server.close)
+        self.port = self.server.getsockname()[1]
+
+        def handle(conn):
+            received = b""
+            try:
+                conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 65536)
+                while b"\r\n\r\n" not in received:
+                    received += conn.recv(65536)
+                head, body = received.split(b"\r\n\r\n", 1)
+                length = int(next(line.split(b":")[1] for line in head.split(b"\r\n") if line.lower().startswith(b"content-length")))
+                got = len(body)
+                while got < length:
+                    data = conn.recv(65536)
+                    if not data:
+                        return
+                    got += len(data)
+                    time.sleep(0.02)  # unos 3 MB/s
+                answer = b'{"partNumber": 1, "etag": "e1"}'
+                conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: "
+                             + str(len(answer)).encode() + b"\r\nConnection: close\r\n\r\n" + answer)
+            except OSError:
+                pass
+            finally:
+                conn.close()
+
+        def serve():
+            while True:
+                try:
+                    conn, _ = self.server.accept()
+                except OSError:
+                    return
+                threading.Thread(target=handle, args=(conn,), daemon=True).start()
+
+        threading.Thread(target=serve, daemon=True).start()
+        original = backup_upload.REQUEST_TIMEOUT
+        backup_upload.REQUEST_TIMEOUT = (1, 60)
+        self.addCleanup(setattr, backup_upload, "REQUEST_TIMEOUT", original)
+
+    def test_slow_upload_of_a_big_part_does_not_time_out(self):
+        uploader = BackupUploader(f"http://127.0.0.1:{self.port}", "job-1", "tok", 8 * 1024 * 1024, 10**9,
+                                  send=lambda _m: None, log=lambda _m: None, sleep=lambda _s: None)
+        part = uploader._upload_part(1, b"x" * (8 * 1024 * 1024))
+        self.assertEqual(part, {"partNumber": 1, "etag": "e1"})
+
 
 
 if __name__ == "__main__":

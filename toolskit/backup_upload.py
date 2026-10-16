@@ -13,6 +13,7 @@ contraseña) al primer ingreso del día y a las 13:00. Cuando la web lo pide, el
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import re
 import time
@@ -25,6 +26,8 @@ BACKUP_NAME = re.compile(r"^BKD[AH]\d{8,12}\.zip$", re.IGNORECASE)
 # Un zip modificado hace menos de esto puede estar escribiéndose todavía.
 STILL_WRITING_SECONDS = 90
 PART_RETRIES = 4
+# (conexión, lectura). Ojo: mientras se envía el cuerpo, urllib3 solo espera el tiempo de
+# conexión; por eso cada parte se manda como archivo, en bloques (ver `_upload_part`).
 REQUEST_TIMEOUT = (15, 300)
 
 
@@ -154,7 +157,11 @@ class BackupUploader:
         last_error = ""
         for attempt in range(1, PART_RETRIES + 1):
             try:
-                response = self.http.put(self._url(f"part/{number}"), data=chunk,
+                # Como archivo (BytesIO) y no como bytes: así http.client lo envía en bloques de
+                # 16 KiB y cada bloque tiene sus 15 s. Con bytes se mandaba de un solo envío y la
+                # parte entera debía salir en 15 s; con internet de subida lento fallaba con
+                # «The write operation timed out» (Hospital II-E Bellavista, 2026-10-16).
+                response = self.http.put(self._url(f"part/{number}"), data=io.BytesIO(chunk),
                                          headers=self._headers({"Content-Type": "application/octet-stream"}),
                                          timeout=REQUEST_TIMEOUT)
                 if response.status_code == 200:
