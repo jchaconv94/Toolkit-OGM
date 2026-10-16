@@ -28,7 +28,7 @@ import requests
 
 from app_version import get_current_version
 from send_key_check import SUPABASE_URL, keys_by_code, supabase_public_key
-from backup_upload import BackupUploader, service_http_base
+from backup_upload import DEFAULT_PARALLEL, BackupUploader, service_http_base
 
 try:
     import websocket  # paquete websocket-client
@@ -325,6 +325,7 @@ class BackupConnection:
                     part_size=int(data.get("partSize") or 20 * 1024 * 1024),
                     max_bytes=int(data.get("maxBytes") or 600 * 1024 * 1024),
                     send=send, log=self.log,
+                    parallel=int(data.get("parallel") or DEFAULT_PARALLEL),
                 )
                 uploader.run(self.get_base_dir(), str(data.get("code") or ""))
             finally:

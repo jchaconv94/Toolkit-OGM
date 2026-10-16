@@ -2,6 +2,7 @@ import hashlib
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -27,8 +28,13 @@ class _Resp:
 class _Session:
     """Servicio simulado: guarda lo que recibe; puede fallar una parte."""
 
-    def __init__(self, fail_part=None, fail_times=1, fail_status=None):
+    def __init__(self, fail_part=None, fail_times=1, fail_status=None, delay=0.0):
         self.calls = []
+        self.lock = threading.Lock()
+        self.delay = delay
+        self.active = 0
+        self.max_active = 0
+        self.completed = None
         self.parts = {}
         self.bodies = []
         self.fail_part = fail_part
@@ -37,13 +43,26 @@ class _Session:
 
     def post(self, url, headers=None, timeout=None, json=None):
         self.calls.append(("POST", url, headers))
+        if url.endswith("/complete"):
+            self.completed = json
         return _Resp(200, {"ok": True})
 
     def put(self, url, data=None, headers=None, timeout=None):
         number = int(url.rsplit("/", 1)[1])
-        self.calls.append(("PUT", url, headers))
-        if number == self.fail_part and self.fail_times > 0:
-            self.fail_times -= 1
+        with self.lock:
+            self.calls.append(("PUT", url, headers))
+            failing = number == self.fail_part and self.fail_times > 0
+            if failing:
+                self.fail_times -= 1
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            if self.delay:
+                time.sleep(self.delay)
+        finally:
+            with self.lock:
+                self.active -= 1
+        if failing:
             if self.fail_status:
                 return _Resp(self.fail_status, {"error": "no"})
             raise backup_upload.requests.ConnectionError("corte")
@@ -95,9 +114,10 @@ class UploaderTests(unittest.TestCase):
         os.utime(path, (t, t))
         self.sent = []
 
-    def _uploader(self, session, part_size=1000, max_bytes=10_000):
+    def _uploader(self, session, part_size=1000, max_bytes=10_000, parallel=1):
         return BackupUploader("https://svc", "job-1", "tok", part_size, max_bytes,
-                              send=self.sent.append, log=lambda _m: None, session=session, sleep=lambda _s: None)
+                              send=self.sent.append, log=lambda _m: None, session=session, sleep=lambda _s: None,
+                              parallel=parallel)
 
     def test_uploads_in_parts_with_meta_and_progress(self):
         session = _Session()
@@ -123,6 +143,26 @@ class UploaderTests(unittest.TestCase):
         self.assertEqual(sum(1 for c in session.calls if c[0] == "PUT"), 1)
         self.assertEqual(self.sent[-1]["t"], "backup_error")
 
+    def test_several_parts_at_once_are_assembled_in_order(self):
+        session = _Session(delay=0.2)
+        self.assertTrue(self._uploader(session, parallel=3).run(self.tmp.name, "030S05"))
+        self.assertGreaterEqual(session.max_active, 2)
+        self.assertEqual(b"".join(session.parts[n] for n in sorted(session.parts)), self.data)
+        self.assertEqual([p["partNumber"] for p in session.completed["parts"]], [1, 2, 3])
+        progress = [m["sent"] for m in self.sent if m["t"] == "backup_progress"]
+        self.assertEqual(progress, sorted(progress))
+        self.assertEqual(progress[-1], 2500)
+
+    def test_a_part_that_cannot_be_sent_stops_the_rest(self):
+        session = _Session(fail_part=1, fail_status=403, delay=0.05)
+        self.assertFalse(self._uploader(session, parallel=2).run(self.tmp.name, "030S05"))
+        self.assertEqual(self.sent[-1]["t"], "backup_error")
+        self.assertIsNone(session.completed)
+
+    def test_parallel_is_kept_between_1_and_8(self):
+        self.assertEqual(self._uploader(_Session(), parallel=0).parallel, 1)
+        self.assertEqual(self._uploader(_Session(), parallel=50).parallel, 8)
+
     def test_parts_go_as_file_so_they_are_sent_in_blocks(self):
         session = _Session()
         self.assertTrue(self._uploader(session).run(self.tmp.name, "030S05"))
@@ -133,6 +173,22 @@ class UploaderTests(unittest.TestCase):
         self.assertIn("pesa", self.sent[-1]["reason"])
         self.assertFalse(self._uploader(_Session()).run(str(Path(self.tmp.name) / "nada"), "030S05"))
         self.assertIn("No hay backups", self.sent[-1]["reason"])
+
+
+class ProgressTests(unittest.TestCase):
+    def test_reports_inside_a_part_only_upwards_and_at_most_every_interval(self):
+        now = [0.0]
+        seen = []
+        progress = backup_upload._Progress(100, seen.append, every=2.0, clock=lambda: now[0])
+        progress.start(1)
+        progress.add(1, 10)          # todavía no pasaron 2 s
+        now[0] = 2.5
+        progress.add(1, 10)          # 20
+        progress.start(1)            # un reintento vuelve a cero: no se avisa menos
+        now[0] = 5.0
+        progress.add(1, 5)
+        progress.finish(1, 60)       # al terminar una parte se avisa siempre
+        self.assertEqual(seen, [20, 60])
 
 
 class SlowLinkTests(unittest.TestCase):
