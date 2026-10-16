@@ -5,8 +5,9 @@ contraseña) al primer ingreso del día y a las 13:00. Cuando la web lo pide, el
 
 1. toma el zip más reciente de esa carpeta **sin abrirlo ni modificarlo**;
 2. calcula su huella SHA-256 y su tamaño y se los informa a la web;
-3. lo sube por partes de 20 MiB al servicio `sismed-conexion`, que las guarda en R2;
-   una parte que falla se reintenta sola, sin repetir las anteriores;
+3. lo sube por partes (el tamaño y cuántas a la vez los dicta el servicio) a
+   `sismed-conexion`, que las guarda en R2; una parte que falla se reintenta sola, sin
+   repetir las demás;
 4. avisa que terminó. La web lo descarga, comprueba la huella y lo borra de R2.
 """
 
@@ -16,7 +17,9 @@ import hashlib
 import io
 import os
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -29,6 +32,13 @@ PART_RETRIES = 4
 # (conexión, lectura). Ojo: mientras se envía el cuerpo, urllib3 solo espera el tiempo de
 # conexión; por eso cada parte se manda como archivo, en bloques (ver `_upload_part`).
 REQUEST_TIMEOUT = (15, 300)
+# Partes que se suben a la vez si el servicio no dice otra cosa. Una sola conexión no pasa de
+# ~0,5 Mbps en la red del Hospital II-E Bellavista, que mide 4,1 Mbps de subida con varias
+# (fast.com, 2026-10-16): con varias conexiones se aprovecha la línea.
+DEFAULT_PARALLEL = 4
+MAX_PARALLEL = 8
+# Cada cuánto se avisa a la web cuánto se lleva enviado, también a mitad de una parte.
+PROGRESS_EVERY_SECONDS = 2.0
 
 
 def find_latest_backup(base_dir: str, now: float | None = None) -> Path | None:
@@ -72,9 +82,64 @@ class BackupUploadError(Exception):
     pass
 
 
+class _CountingReader(io.BytesIO):
+    """Una parte como archivo que avisa cuántos bytes va leyendo http.client al enviarla."""
+
+    def __init__(self, data: bytes, on_read):
+        super().__init__(data)
+        self._on_read = on_read
+
+    def read(self, size=-1):
+        chunk = super().read(size)
+        if chunk:
+            self._on_read(len(chunk))
+        return chunk
+
+
+class _Progress:
+    """Lo enviado entre todas las partes en curso. Solo avisa cifras mayores a la anterior."""
+
+    def __init__(self, total: int, report, every: float = PROGRESS_EVERY_SECONDS, clock=time.monotonic):
+        self.total = total
+        self.report = report
+        self.every = every
+        self.clock = clock
+        self.lock = threading.Lock()
+        self.done = 0
+        self.inflight: dict[int, int] = {}
+        self.reported = 0
+        self.last = clock()
+
+    def start(self, number: int):
+        with self.lock:
+            self.inflight[number] = 0  # un reintento vuelve a contar la parte desde cero
+
+    def add(self, number: int, amount: int):
+        with self.lock:
+            self.inflight[number] = self.inflight.get(number, 0) + amount
+            self._maybe_report(False)
+
+    def finish(self, number: int, size: int):
+        with self.lock:
+            self.inflight.pop(number, None)
+            self.done += size
+            self._maybe_report(True)
+
+    def _maybe_report(self, force: bool):
+        current = min(self.total, self.done + sum(self.inflight.values()))
+        if current <= self.reported:
+            return
+        now = self.clock()
+        if not force and now - self.last < self.every:
+            return
+        self.last = now
+        self.reported = current
+        self.report(current)  # dentro del candado: los avisos salen de a uno
+
+
 class BackupUploader:
     def __init__(self, base_url: str, job: str, token: str, part_size: int, max_bytes: int,
-                 send, log, session=None, sleep=time.sleep):
+                 send, log, session=None, sleep=time.sleep, parallel: int = DEFAULT_PARALLEL):
         self.base_url = base_url.rstrip("/")
         self.job = job
         self.token = token
@@ -82,8 +147,20 @@ class BackupUploader:
         self.max_bytes = int(max_bytes)
         self.send = send
         self.log = log
-        self.http = session or requests.Session()
+        self._session = session
+        self._local = threading.local()
         self.sleep = sleep
+        self.parallel = max(1, min(MAX_PARALLEL, int(parallel or 1)))
+        self._stop = threading.Event()
+
+    def _http(self):
+        """Una sesión por hilo: cada parte en curso va por su propia conexión."""
+        if self._session is not None:
+            return self._session
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = self._local.session = requests.Session()
+        return session
 
     def _url(self, action: str) -> str:
         return f"{self.base_url}/backup/{self.job}/{action}"
@@ -121,7 +198,7 @@ class BackupUploader:
             pass
 
     def _post(self, action: str, **kwargs):
-        response = self.http.post(self._url(action), headers=self._headers(kwargs.pop("headers", None)),
+        response = self._http().post(self._url(action), headers=self._headers(kwargs.pop("headers", None)),
                                   timeout=REQUEST_TIMEOUT, **kwargs)
         if response.status_code != 200:
             raise BackupUploadError(self._error_text(response))
@@ -137,33 +214,54 @@ class BackupUploader:
     def _upload(self, path: Path, size: int):
         # La web recibe los datos del backup (backup_meta) antes de que empiece la subida.
         self._post("start")
-        parts = []
-        sent = 0
-        with open(path, "rb") as fh:
-            number = 1
-            while True:
+        count = max(1, -(-size // self.part_size))
+        progress = _Progress(size, lambda sent: self.send({"t": "backup_progress", "job": self.job, "sent": sent}))
+
+        def task(number: int) -> dict:
+            offset = (number - 1) * self.part_size
+            with open(path, "rb") as fh:
+                fh.seek(offset)
                 chunk = fh.read(self.part_size)
-                if not chunk:
-                    break
-                parts.append(self._upload_part(number, chunk))
-                sent += len(chunk)
-                self.send({"t": "backup_progress", "job": self.job, "sent": sent})
-                number += 1
-        if sent != size:
+            if len(chunk) != min(self.part_size, size - offset):
+                raise BackupUploadError("El backup cambió mientras se enviaba; vuelva a pedirlo")
+            part = self._upload_part(number, chunk, progress)
+            progress.finish(number, len(chunk))
+            return part
+
+        parts = []
+        workers = min(self.parallel, count)
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="backup-part") as pool:
+            futures = [pool.submit(task, number) for number in range(1, count + 1)]
+            try:
+                for future in as_completed(futures):
+                    parts.append(future.result())
+            except BaseException:
+                # Una parte que no salió detiene las demás: no tiene sentido seguir subiendo.
+                self._stop.set()
+                for future in futures:
+                    future.cancel()
+                raise
+        if path.stat().st_size != size:
             raise BackupUploadError("El backup cambió mientras se enviaba; vuelva a pedirlo")
+        parts.sort(key=lambda part: part["partNumber"])
         self._post("complete", json={"parts": parts})
 
-    def _upload_part(self, number: int, chunk: bytes) -> dict:
+    def _upload_part(self, number: int, chunk: bytes, progress: _Progress | None = None) -> dict:
         last_error = ""
         for attempt in range(1, PART_RETRIES + 1):
+            if self._stop.is_set():
+                raise BackupUploadError("Se detuvo porque otra parte no se pudo enviar")
+            if progress:
+                progress.start(number)
+            body = _CountingReader(chunk, (lambda amount: progress.add(number, amount)) if progress else (lambda _a: None))
             try:
-                # Como archivo (BytesIO) y no como bytes: así http.client lo envía en bloques de
-                # 16 KiB y cada bloque tiene sus 15 s. Con bytes se mandaba de un solo envío y la
-                # parte entera debía salir en 15 s; con internet de subida lento fallaba con
-                # «The write operation timed out» (Hospital II-E Bellavista, 2026-10-16).
-                response = self.http.put(self._url(f"part/{number}"), data=io.BytesIO(chunk),
-                                         headers=self._headers({"Content-Type": "application/octet-stream"}),
-                                         timeout=REQUEST_TIMEOUT)
+                # Como archivo y no como bytes: así http.client lo envía en bloques de 16 KiB y
+                # cada bloque tiene sus 15 s. Con bytes se mandaba de un solo envío y la parte
+                # entera debía salir en 15 s; con internet de subida lento fallaba con «The write
+                # operation timed out» (Hospital II-E Bellavista, 2026-10-16).
+                response = self._http().put(self._url(f"part/{number}"), data=body,
+                                            headers=self._headers({"Content-Type": "application/octet-stream"}),
+                                            timeout=REQUEST_TIMEOUT)
                 if response.status_code == 200:
                     data = response.json()
                     return {"partNumber": int(data["partNumber"]), "etag": str(data["etag"])}
