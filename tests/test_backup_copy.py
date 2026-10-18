@@ -131,7 +131,7 @@ class CopyOfferTests(unittest.TestCase):
         conn = backup_connection.BackupConnection(
             log=lambda _m: None, get_keys=lambda: "06502-AAAA", get_device_id=lambda: "d",
             get_equipo=lambda: "PC", get_base_dir=lambda: self.tmp.name)
-        conn._watcher = BackupWatcher(state_path=self.state)
+        conn._watcher = BackupWatcher(state_path=self.state, created=lambda st: st.st_mtime)
         return conn
 
     def test_offers_the_latest_backup_once(self):
@@ -194,7 +194,7 @@ class CopyOfferTests(unittest.TestCase):
         self.assertEqual(self.conn._copy_seen[("06502", self.path.name)][1], True)
 
         other = self._connection()
-        other._watcher = BackupWatcher(state_path=Path(self.tmp.name) / "otro.json")
+        other._watcher = BackupWatcher(state_path=Path(self.tmp.name) / "otro.json", created=lambda st: st.st_mtime)
         other._offer_copy(self.ws)
         other._copy_skipped({"code": "06502", "reason": "La nube está cerca del límite gratuito"})
         at, finished = other._copy_seen[("06502", self.path.name)]
@@ -280,6 +280,10 @@ class WatcherTests(unittest.TestCase):
         self.now = [1000.0]
 
     def watcher(self, created=None):
+        # Por omisión, cada archivo es uno recién hecho por el SISMED: se crea y se escribe con el mismo
+        # reloj de la PC. Así la prueba no depende de que `os.utime` cambie solo la modificación (en
+        # Windows la creación quedaba en hoy y el archivo parecía copiado de otra PC).
+        created = created or (lambda st: st.st_mtime)
         return BackupWatcher(state_path=self.state, clock=lambda: self.now[0], created=created)
 
     def add(self, name, text="datos", mtime=None):
