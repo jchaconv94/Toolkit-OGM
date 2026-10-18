@@ -117,6 +117,7 @@ class BackupConnection:
         # archivo ofrecido por código y lo ya ofrecido: (código, archivo) -> (cuándo, terminado).
         self._copy_uploader: BackupUploader | None = None
         self._copy_pending: dict[str, object] = {}
+        self._copy_pending_at: dict[str, float] = {}
         self._copy_seen: dict[tuple[str, str], tuple[float, bool]] = {}
         self._copy_sha: dict[tuple[str, int, float], str] = {}
         self._copy_checked_at = 0.0
@@ -382,7 +383,10 @@ class BackupConnection:
             if path is None:
                 return
             now = time.monotonic()
-            codes = [code for code in sorted(self._keys()) if self._copy_due(code, path.name, now)]
+            # Mientras una oferta espera respuesta no se hace otra: el copy_go solo trae el código, y
+            # con dos ofertas en vuelo la respuesta de la vieja subiría el archivo nuevo.
+            codes = [code for code in sorted(self._keys()) if self._copy_due(code, path.name, now)
+                     and not (code in self._copy_pending and now - self._copy_pending_at.get(code, 0) < COPY_RETRY_SECONDS)]
             if not codes:
                 return
             stat = path.stat()
@@ -392,6 +396,7 @@ class BackupConnection:
             modified = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="minutes")
             for code in codes:
                 self._copy_pending[code] = path
+                self._copy_pending_at[code] = now
                 self._copy_seen[(code, path.name)] = (now, False)
                 ws.send(json.dumps({"t": "copy_offer", "code": code, "name": path.name, "size": stat.st_size,
                                     "sha256": sha, "modified": modified}))

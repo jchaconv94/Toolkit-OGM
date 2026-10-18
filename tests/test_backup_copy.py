@@ -140,6 +140,18 @@ class CopyOfferTests(unittest.TestCase):
         self.conn._offer_copy(self.ws)
         self.assertEqual([m["name"] for m in self.ws.sent], [self.path.name, newer.name])
 
+    def test_no_second_offer_while_the_first_waits_for_an_answer(self):
+        self.conn._offer_copy(self.ws)
+        newer = self.path.with_name(self.path.name.replace("0001", "1300"))
+        newer.write_bytes(b"backup de la tarde")
+        t = time.time() - 300
+        os.utime(newer, (t, t))
+        self.conn._offer_copy(self.ws)
+        self.assertEqual([m["name"] for m in self.ws.sent], [self.path.name])
+        self.conn._copy_skipped({"code": "06502", "reason": "La nube ya tiene esta copia"})
+        self.conn._offer_copy(self.ws)
+        self.assertEqual([m["name"] for m in self.ws.sent], [self.path.name, newer.name])
+
     def test_what_a_web_request_uploaded_is_not_offered_again(self):
         path = self.path
 
