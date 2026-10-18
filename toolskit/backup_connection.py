@@ -29,7 +29,7 @@ import requests
 
 from app_version import get_current_version
 from send_key_check import SUPABASE_URL, keys_by_code, supabase_public_key
-from backup_upload import DEFAULT_PARALLEL, BackupUploader, find_morning_backup, service_http_base, sha256_file
+from backup_upload import DEFAULT_PARALLEL, BackupUploader, find_latest_backup, service_http_base, sha256_file
 
 try:
     import websocket  # paquete websocket-client
@@ -39,8 +39,9 @@ except Exception:  # pragma: no cover - si falta el paquete, la función queda a
 SERVICE_URL = "wss://sismed-conexion.jchaconvillacis.workers.dev/pc"
 ENABLED_RECHECK_SECONDS = 30 * 60
 PING_SECONDS = 50
-# Copia del día (2.3.9): cada cuánto se mira si hay un backup de la mañana por subir, y cuánto
-# se espera para volver a ofrecerlo si no se pudo (sin espacio, otra subida, corte de red).
+# Copia en la nube (2.3.9; desde 2.3.10, cada backup nuevo): cada cuánto se mira si hay un
+# backup nuevo por subir, y cuánto se espera para volver a ofrecerlo si no se pudo (sin
+# espacio, otra subida, corte de red).
 COPY_CHECK_SECONDS = 300
 COPY_RETRY_SECONDS = 3600
 PONG_TIMEOUT_SECONDS = 120
@@ -112,7 +113,7 @@ class BackupConnection:
         self._last_pong = 0.0
         self._enabled_checked_at = 0.0
         self._enabled_codes: list[str] = []
-        # Copia del día: la subida en curso (para cederle el paso a un pedido de la web), el
+        # Copia en la nube: la subida en curso (para cederle el paso a un pedido de la web), el
         # archivo ofrecido por código y lo ya ofrecido: (código, archivo) -> (cuándo, terminado).
         self._copy_uploader: BackupUploader | None = None
         self._copy_pending: dict[str, object] = {}
@@ -332,7 +333,7 @@ class BackupConnection:
             ws.send(json.dumps(message))
 
         def work():
-            # Un pedido de la web tiene prioridad: si se está subiendo la copia del día, se corta.
+            # Un pedido de la web tiene prioridad: si se está subiendo la copia, se corta.
             copy = self._copy_uploader
             if copy is not None:
                 copy.cancel("Se detuvo para atender un pedido de la web")
@@ -350,13 +351,16 @@ class BackupConnection:
                     send=send, log=self.log,
                     parallel=int(data.get("parallel") or DEFAULT_PARALLEL),
                 )
-                uploader.run(self.get_base_dir(), str(data.get("code") or ""))
+                code = str(data.get("code") or "")
+                # Lo que sube un pedido queda también como copia en la nube: no se vuelve a ofrecer.
+                if uploader.run(self.get_base_dir(), code) and getattr(uploader, "path", None) is not None:
+                    self._copy_seen[(code, uploader.path.name)] = (time.monotonic(), True)
             finally:
                 self._upload_lock.release()
 
         threading.Thread(target=work, name="backup-upload", daemon=True).start()
 
-    # --- copia del día ---------------------------------------------------------------
+    # --- copia en la nube ------------------------------------------------------------
     def _copy_due(self, code: str, name: str, now: float) -> bool:
         seen = self._copy_seen.get((code, name))
         if seen is None:
@@ -365,11 +369,16 @@ class BackupConnection:
         return not finished and now - at > COPY_RETRY_SECONDS
 
     def _offer_copy(self, ws):
-        """Ofrece a la nube el backup de la mañana, una vez por archivo y establecimiento."""
+        """Ofrece a la nube el backup más reciente, una vez por archivo y establecimiento.
+
+        Desde la 2.3.10 (2026-10-18) es cada backup nuevo que genera el SISMED (antes, solo el
+        de la mañana): la nube lo guarda en lugar del anterior, que borra recién cuando el
+        nuevo terminó de subir. Así siempre está el último y nadie tiene que pedirlo otra vez.
+        """
         if self._upload_lock.locked():
             return
         try:
-            path = find_morning_backup(self.get_base_dir())
+            path = find_latest_backup(self.get_base_dir())
             if path is None:
                 return
             now = time.monotonic()
@@ -387,7 +396,7 @@ class BackupConnection:
                 ws.send(json.dumps({"t": "copy_offer", "code": code, "name": path.name, "size": stat.st_size,
                                     "sha256": sha, "modified": modified}))
         except Exception as exc:  # una copia que no se pudo ofrecer no debe cortar la conexión
-            self._report(f"copy:{type(exc).__name__}", f"  ⚠ Copia del día: no se pudo ofrecer ({_short(exc)}).")
+            self._report(f"copy:{type(exc).__name__}", f"  ⚠ Copia en la nube: no se pudo ofrecer ({_short(exc)}).")
 
     def _copy_skipped(self, data: dict):
         code = str(data.get("code") or "")
@@ -423,11 +432,11 @@ class BackupConnection:
 
         def work():
             try:
-                self.log(f"  ☁ Copia del día: subiendo {path.name} de {code} a la nube en segundo plano...")
+                self.log(f"  ☁ Copia en la nube: subiendo {path.name} de {code} a la nube en segundo plano...")
                 ok = uploader.run(self.get_base_dir(), code, path=path)
                 self._copy_seen[(code, path.name)] = (time.monotonic(), ok)
                 if ok:
-                    self.log(f"  ✓ Copia del día de {code} guardada en la nube.")
+                    self.log(f"  ✓ Backup {path.name} de {code} guardado en la nube (reemplaza al anterior).")
             finally:
                 self._copy_uploader = None
                 self._upload_lock.release()

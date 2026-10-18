@@ -8,7 +8,11 @@ contraseña) al primer ingreso del día y a las 13:00. Cuando la web lo pide, el
 3. lo sube por partes (el tamaño y cuántas a la vez los dicta el servicio) a
    `sismed-conexion`, que las guarda en R2; una parte que falla se reintenta sola, sin
    repetir las demás;
-4. avisa que terminó. La web lo descarga, comprueba la huella y lo borra de R2.
+4. avisa que terminó. La web lo descarga y comprueba la huella.
+
+Desde la 2.3.10 (2026-10-18) cada backup nuevo también sube solo, y en la nube queda solo el
+más reciente de cada establecimiento. Si la web pide uno y la nube ya tiene ese mismo, el
+servicio responde `reused` al iniciar y no se sube nada: la web baja el de la nube.
 """
 
 from __future__ import annotations
@@ -62,39 +66,6 @@ def find_latest_backup(base_dir: str, now: float | None = None) -> Path | None:
         return None
     candidates.sort()
     return candidates[-1][2]
-
-
-def find_morning_backup(base_dir: str, now: float | None = None) -> Path | None:
-    """El primer backup del día (el de la mañana), si ya terminó de escribirse.
-
-    Es el que se sube solo como copia del día (Toolkit 2.3.9): el usuario pidió el de la
-    mañana, no el de las 13:00. Mientras ese se esté escribiendo, todavía no hay copia.
-    """
-    folder = Path(str(base_dir or "").strip()) / "backup"
-    if not folder.is_dir():
-        return None
-    now = time.time() if now is None else now
-    today = datetime.fromtimestamp(now).strftime("%Y%m%d")
-    todays = []
-    for entry in folder.iterdir():
-        try:
-            if not entry.is_file() or not BACKUP_NAME.match(entry.name):
-                continue
-            digits = re.sub(r"\D", "", entry.name)
-            if digits[:8] != today:
-                continue
-            stat = entry.stat()
-        except OSError:
-            continue
-        if stat.st_size > 0:
-            todays.append((digits, entry.name, entry, stat))
-    if not todays:
-        return None
-    todays.sort()
-    _digits, _name, entry, stat = todays[0]
-    if now - stat.st_mtime < STILL_WRITING_SECONDS:
-        return None
-    return entry
 
 
 def sha256_file(path: Path, chunk: int = 1024 * 1024) -> str:
@@ -191,6 +162,8 @@ class BackupUploader:
         self.parallel = max(1, min(MAX_PARALLEL, int(parallel or 1)))
         self._stop = threading.Event()
         self._stop_reason = "Se detuvo porque otra parte no se pudo enviar"
+        # El backup que se envía (o que la nube ya tenía), para no volver a ofrecerlo como copia.
+        self.path: Path | None = None
 
     def cancel(self, reason: str = "Se detuvo la subida"):
         """Corta la subida (la copia del día cede ante un pedido de la web)."""
@@ -224,8 +197,11 @@ class BackupUploader:
             modified = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="minutes")
             self._meta = {"name": path.name, "size": size, "sha256": sha, "modified": modified}
             self.send({"t": "backup_meta", "job": self.job, **self._meta})
+            self.path = path
             self.log(f"  📦 Enviando backup {path.name} ({size / 1048576:.1f} MB) de {code} a la web...")
-            self._upload(path, size)
+            if not self._upload(path, size):
+                self.log(f"  ✓ La nube ya tenía el backup {path.name}: no se volvió a subir.")
+                return True
             self.log(f"  ✓ Backup {path.name} enviado y verificado por tamaño.")
             return True
         except BackupUploadError as exc:
@@ -255,8 +231,10 @@ class BackupUploader:
         except Exception:
             return f"HTTP {response.status_code}"
 
-    def _upload(self, path: Path, size: int):
-        self._start()
+    def _upload(self, path: Path, size: int) -> bool:
+        """Sube el backup. False si no hizo falta: la nube ya lo tenía (2.3.10)."""
+        if self._start().get("reused"):
+            return False
         count = max(1, -(-size // self.part_size))
         progress = _Progress(size, lambda sent: self.send({"t": "backup_progress", "job": self.job, "sent": sent}))
 
@@ -289,6 +267,7 @@ class BackupUploader:
             raise BackupUploadError("El backup cambió mientras se enviaba; vuelva a pedirlo")
         parts.sort(key=lambda part: part["partNumber"])
         self._post("complete", json={"parts": parts})
+        return True
 
     def _start(self):
         """Abre la subida. Los datos del backup van también aquí (2.3.9).
@@ -297,11 +276,13 @@ class BackupUploader:
         ejemplo, mientras subía la copia del día) este pedido llegaba primero y el servicio
         respondía «Falta informar el backup». Un servicio anterior que no los lee aquí lo
         sigue diciendo: se reintenta unos segundos, hasta que llega el backup_meta.
+
+        Desde el 2026-10-18 el servicio responde `reused` si la nube ya tiene ese mismo backup
+        (por ejemplo, alguien pidió «uno nuevo» y el SISMED no generó otro): no se sube nada.
         """
         for attempt in range(1, 5):
             try:
-                self._post("start", json=getattr(self, "_meta", None))
-                return
+                return self._post("start", json=getattr(self, "_meta", None)) or {}
             except BackupUploadError as exc:
                 if "Falta informar" not in str(exc) or attempt == 4:
                     raise

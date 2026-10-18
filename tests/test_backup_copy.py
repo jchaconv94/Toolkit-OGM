@@ -1,4 +1,4 @@
-"""Copia del día (Toolkit 2.3.9): la PC sube sola el backup de la mañana."""
+"""Copia en la nube: la PC sube sola cada backup nuevo del SISMED (2.3.9 la de la mañana; 2.3.10 todos)."""
 
 import json
 import os
@@ -17,10 +17,12 @@ if str(TOOLKIT_DIR) not in sys.path:
 
 import backup_connection  # noqa: E402
 import backup_upload  # noqa: E402
-from backup_upload import BackupUploader, find_morning_backup  # noqa: E402
+from backup_upload import BackupUploader, find_latest_backup  # noqa: E402
 
 
-class MorningBackupTests(unittest.TestCase):
+class LatestBackupTests(unittest.TestCase):
+    """Desde la 2.3.10 la copia es cada backup nuevo, no solo el de la mañana."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -35,20 +37,16 @@ class MorningBackupTests(unittest.TestCase):
         os.utime(path, (t, t))
         return path
 
-    def test_takes_the_first_backup_of_today_not_the_one_at_13(self):
+    def test_takes_the_one_at_13_after_the_morning_one(self):
         self._file("BKDA202610150805.zip", 60 * 24)
-        self._file("BKDA202610161300.zip", 120)
         self._file("BKDA202610160812.zip", 400)
-        self.assertEqual(find_morning_backup(self.tmp.name, self.now).name, "BKDA202610160812.zip")
+        self._file("BKDA202610161300.zip", 120)
+        self.assertEqual(find_latest_backup(self.tmp.name, self.now).name, "BKDA202610161300.zip")
 
-    def test_waits_while_the_morning_backup_is_still_being_written(self):
+    def test_while_the_new_one_is_being_written_it_stays_with_the_previous(self):
+        self._file("BKDA202610160812.zip", 400)
         self._file("BKDA202610161459.zip", 0.5)
-        self.assertIsNone(find_morning_backup(self.tmp.name, self.now))
-
-    def test_without_a_backup_of_today_there_is_no_copy(self):
-        self._file("BKDA202610150805.zip", 60 * 24)
-        self.assertIsNone(find_morning_backup(self.tmp.name, self.now))
-        self.assertIsNone(find_morning_backup(str(Path(self.tmp.name) / "nada"), self.now))
+        self.assertEqual(find_latest_backup(self.tmp.name, self.now).name, "BKDA202610160812.zip")
 
 
 class _SlowSession:
@@ -123,7 +121,7 @@ class CopyOfferTests(unittest.TestCase):
             get_equipo=lambda: "PC", get_base_dir=lambda: self.tmp.name)
         self.ws = _Ws()
 
-    def test_offers_the_morning_backup_once(self):
+    def test_offers_the_latest_backup_once(self):
         self.conn._offer_copy(self.ws)
         self.assertEqual(len(self.ws.sent), 1)
         offer = self.ws.sent[0]
@@ -131,6 +129,39 @@ class CopyOfferTests(unittest.TestCase):
         self.assertEqual(len(offer["sha256"]), 64)
         self.conn._offer_copy(self.ws)  # ya ofrecida: no se repite hasta saber qué pasó
         self.assertEqual(len(self.ws.sent), 1)
+
+    def test_a_newer_backup_is_offered_even_after_the_previous_one_was_uploaded(self):
+        self.conn._offer_copy(self.ws)
+        self.conn._copy_skipped({"code": "06502", "reason": "La nube ya tiene esta copia"})
+        newer = self.path.with_name(self.path.name.replace("0001", "1300"))
+        newer.write_bytes(b"backup de la tarde")
+        t = time.time() - 300
+        os.utime(newer, (t, t))
+        self.conn._offer_copy(self.ws)
+        self.assertEqual([m["name"] for m in self.ws.sent], [self.path.name, newer.name])
+
+    def test_what_a_web_request_uploaded_is_not_offered_again(self):
+        path = self.path
+
+        class FakeUploader:
+            def __init__(self, **kwargs):
+                self.path = None
+
+            def run(self, base_dir, code, path_=None):
+                self.path = path
+                return True
+
+        original = backup_connection.BackupUploader
+        backup_connection.BackupUploader = FakeUploader
+        self.addCleanup(setattr, backup_connection, "BackupUploader", original)
+        self.conn._start_backup(self.ws, {"t": "backup", "job": "j9", "code": "06502", "token": "t"})
+        for _ in range(50):
+            if ("06502", path.name) in self.conn._copy_seen and not self.conn._upload_lock.locked():
+                break
+            time.sleep(0.02)
+        self.assertTrue(self.conn._copy_seen[("06502", path.name)][1])
+        self.conn._offer_copy(self.ws)
+        self.assertEqual(self.ws.sent, [])
 
     def test_if_the_cloud_has_it_it_is_not_offered_again_otherwise_it_retries_later(self):
         self.conn._offer_copy(self.ws)

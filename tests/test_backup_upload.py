@@ -190,6 +190,22 @@ class UploaderTests(unittest.TestCase):
         session.post = post
         self.assertTrue(self._uploader(session).run(self.tmp.name, "030S05"))
 
+    def test_if_the_cloud_already_has_it_nothing_is_uploaded(self):
+        session = _Session()
+        original = session.post
+
+        def post(url, headers=None, timeout=None, json=None):
+            if url.endswith("/start"):
+                return _Resp(200, {"ok": True, "reused": True})
+            return original(url, headers=headers, timeout=timeout, json=json)
+
+        session.post = post
+        uploader = self._uploader(session)
+        self.assertTrue(uploader.run(self.tmp.name, "030S05"))
+        self.assertFalse(any(c[0] == "PUT" for c in session.calls))
+        self.assertFalse(any(m["t"] == "backup_error" for m in self.sent))
+        self.assertEqual(uploader.path.name, "BKDA202610011300.zip")
+
     def test_parallel_is_kept_between_1_and_8(self):
         self.assertEqual(self._uploader(_Session(), parallel=0).parallel, 1)
         self.assertEqual(self._uploader(_Session(), parallel=50).parallel, 8)
