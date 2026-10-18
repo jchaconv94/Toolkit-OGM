@@ -29,7 +29,7 @@ import requests
 
 from app_version import get_current_version
 from send_key_check import SUPABASE_URL, keys_by_code, supabase_public_key
-from backup_upload import DEFAULT_PARALLEL, BackupUploader, find_latest_backup, service_http_base, sha256_file
+from backup_upload import DEFAULT_PARALLEL, BackupUploader, BackupWatcher, service_http_base, sha256_file
 
 try:
     import websocket  # paquete websocket-client
@@ -121,6 +121,8 @@ class BackupConnection:
         self._copy_seen: dict[tuple[str, str], tuple[float, bool]] = {}
         self._copy_sha: dict[tuple[str, int, float], str] = {}
         self._copy_checked_at = 0.0
+        # Cuál es el backup más reciente, por orden de aparición y no por la fecha de la PC.
+        self._watcher = BackupWatcher()
         # Último problema anotado en el registro: cada motivo se anota una vez, no en cada intento.
         self._last_problem: str | None = None
         self.connected = False
@@ -353,9 +355,11 @@ class BackupConnection:
                     parallel=int(data.get("parallel") or DEFAULT_PARALLEL),
                 )
                 code = str(data.get("code") or "")
+                base = self.get_base_dir()
                 # Lo que sube un pedido queda también como copia en la nube: no se vuelve a ofrecer.
-                if uploader.run(self.get_base_dir(), code) and getattr(uploader, "path", None) is not None:
+                if uploader.run(base, code, path=self._watcher.latest(base)) and getattr(uploader, "path", None) is not None:
                     self._copy_seen[(code, uploader.path.name)] = (time.monotonic(), True)
+                    self._watcher.mark_done(uploader.path.name)
             finally:
                 self._upload_lock.release()
 
@@ -379,7 +383,7 @@ class BackupConnection:
         if self._upload_lock.locked():
             return
         try:
-            path = find_latest_backup(self.get_base_dir())
+            path = self._watcher.candidate(self.get_base_dir())
             if path is None:
                 return
             now = time.monotonic()
@@ -411,6 +415,8 @@ class BackupConnection:
         # La nube ya la tiene: no se vuelve a ofrecer. Por otro motivo, se reintenta en una hora.
         finished = "ya tiene" in str(data.get("reason") or "")
         self._copy_seen[(code, path.name)] = (time.monotonic(), finished)
+        if finished:
+            self._watcher.mark_done(path.name)
 
     def _start_copy(self, ws, data: dict):
         code = str(data.get("code") or "")
@@ -441,6 +447,7 @@ class BackupConnection:
                 ok = uploader.run(self.get_base_dir(), code, path=path)
                 self._copy_seen[(code, path.name)] = (time.monotonic(), ok)
                 if ok:
+                    self._watcher.mark_done(path.name)
                     self.log(f"  ✓ Backup {path.name} de {code} guardado en la nube (reemplaza al anterior).")
             finally:
                 self._copy_uploader = None
