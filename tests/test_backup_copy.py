@@ -1,4 +1,4 @@
-"""Copia del día (Toolkit 2.3.9): la PC sube sola el backup de la mañana."""
+"""Copia en la nube: la PC sube sola cada backup nuevo del SISMED (2.3.9 la de la mañana; 2.3.10 todos)."""
 
 import json
 import os
@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -17,10 +18,12 @@ if str(TOOLKIT_DIR) not in sys.path:
 
 import backup_connection  # noqa: E402
 import backup_upload  # noqa: E402
-from backup_upload import BackupUploader, find_morning_backup  # noqa: E402
+from backup_upload import BackupUploader, BackupWatcher, find_latest_backup  # noqa: E402
 
 
-class MorningBackupTests(unittest.TestCase):
+class LatestBackupTests(unittest.TestCase):
+    """Desde la 2.3.10 la copia es cada backup nuevo, no solo el de la mañana."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -35,20 +38,16 @@ class MorningBackupTests(unittest.TestCase):
         os.utime(path, (t, t))
         return path
 
-    def test_takes_the_first_backup_of_today_not_the_one_at_13(self):
+    def test_takes_the_one_at_13_after_the_morning_one(self):
         self._file("BKDA202610150805.zip", 60 * 24)
-        self._file("BKDA202610161300.zip", 120)
         self._file("BKDA202610160812.zip", 400)
-        self.assertEqual(find_morning_backup(self.tmp.name, self.now).name, "BKDA202610160812.zip")
+        self._file("BKDA202610161300.zip", 120)
+        self.assertEqual(find_latest_backup(self.tmp.name, self.now).name, "BKDA202610161300.zip")
 
-    def test_waits_while_the_morning_backup_is_still_being_written(self):
+    def test_while_the_new_one_is_being_written_it_stays_with_the_previous(self):
+        self._file("BKDA202610160812.zip", 400)
         self._file("BKDA202610161459.zip", 0.5)
-        self.assertIsNone(find_morning_backup(self.tmp.name, self.now))
-
-    def test_without_a_backup_of_today_there_is_no_copy(self):
-        self._file("BKDA202610150805.zip", 60 * 24)
-        self.assertIsNone(find_morning_backup(self.tmp.name, self.now))
-        self.assertIsNone(find_morning_backup(str(Path(self.tmp.name) / "nada"), self.now))
+        self.assertEqual(find_latest_backup(self.tmp.name, self.now).name, "BKDA202610160812.zip")
 
 
 class _SlowSession:
@@ -99,6 +98,12 @@ class CancelTests(unittest.TestCase):
         self.assertIn("pedido de la web", sent[-1]["reason"])
 
 
+def _zip(path: Path, text: str = "datos"):
+    """Un backup de prueba: un zip completo, como el que deja el SISMED."""
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("datos.dbf", text)
+
+
 class _Ws:
     def __init__(self):
         self.sent = []
@@ -115,15 +120,21 @@ class CopyOfferTests(unittest.TestCase):
         folder.mkdir()
         today = datetime.now().strftime("%Y%m%d")
         self.path = folder / f"BKDA{today}0001.zip"
-        self.path.write_bytes(b"copia de prueba")
+        _zip(self.path, "copia de prueba")
         t = time.time() - 600
         os.utime(self.path, (t, t))
-        self.conn = backup_connection.BackupConnection(
-            log=lambda _m: None, get_keys=lambda: "06502-AAAA", get_device_id=lambda: "d",
-            get_equipo=lambda: "PC", get_base_dir=lambda: self.tmp.name)
+        self.state = Path(self.tmp.name) / "conocidos.json"
+        self.conn = self._connection()
         self.ws = _Ws()
 
-    def test_offers_the_morning_backup_once(self):
+    def _connection(self):
+        conn = backup_connection.BackupConnection(
+            log=lambda _m: None, get_keys=lambda: "06502-AAAA", get_device_id=lambda: "d",
+            get_equipo=lambda: "PC", get_base_dir=lambda: self.tmp.name)
+        conn._watcher = BackupWatcher(state_path=self.state)
+        return conn
+
+    def test_offers_the_latest_backup_once(self):
         self.conn._offer_copy(self.ws)
         self.assertEqual(len(self.ws.sent), 1)
         offer = self.ws.sent[0]
@@ -132,14 +143,58 @@ class CopyOfferTests(unittest.TestCase):
         self.conn._offer_copy(self.ws)  # ya ofrecida: no se repite hasta saber qué pasó
         self.assertEqual(len(self.ws.sent), 1)
 
+    def test_a_newer_backup_is_offered_even_after_the_previous_one_was_uploaded(self):
+        self.conn._offer_copy(self.ws)
+        self.conn._copy_skipped({"code": "06502", "reason": "La nube ya tiene esta copia"})
+        newer = self.path.with_name(self.path.name.replace("0001", "1300"))
+        _zip(newer, "backup de la tarde")
+        t = time.time() - 300
+        os.utime(newer, (t, t))
+        self.conn._offer_copy(self.ws)
+        self.assertEqual([m["name"] for m in self.ws.sent], [self.path.name, newer.name])
+
+    def test_no_second_offer_while_the_first_waits_for_an_answer(self):
+        self.conn._offer_copy(self.ws)
+        newer = self.path.with_name(self.path.name.replace("0001", "1300"))
+        _zip(newer, "backup de la tarde")
+        t = time.time() - 300
+        os.utime(newer, (t, t))
+        self.conn._offer_copy(self.ws)
+        self.assertEqual([m["name"] for m in self.ws.sent], [self.path.name])
+        self.conn._copy_skipped({"code": "06502", "reason": "La nube ya tiene esta copia"})
+        self.conn._offer_copy(self.ws)
+        self.assertEqual([m["name"] for m in self.ws.sent], [self.path.name, newer.name])
+
+    def test_what_a_web_request_uploaded_is_not_offered_again(self):
+        target = path = self.path
+
+        class FakeUploader:
+            def __init__(self, **kwargs):
+                self.path = None
+
+            def run(self, base_dir, code, path=None):
+                self.path = target
+                return True
+
+        original = backup_connection.BackupUploader
+        backup_connection.BackupUploader = FakeUploader
+        self.addCleanup(setattr, backup_connection, "BackupUploader", original)
+        self.conn._start_backup(self.ws, {"t": "backup", "job": "j9", "code": "06502", "token": "t"})
+        for _ in range(50):
+            if ("06502", path.name) in self.conn._copy_seen and not self.conn._upload_lock.locked():
+                break
+            time.sleep(0.02)
+        self.assertTrue(self.conn._copy_seen[("06502", path.name)][1])
+        self.conn._offer_copy(self.ws)
+        self.assertEqual(self.ws.sent, [])
+
     def test_if_the_cloud_has_it_it_is_not_offered_again_otherwise_it_retries_later(self):
         self.conn._offer_copy(self.ws)
         self.conn._copy_skipped({"code": "06502", "reason": "La nube ya tiene esta copia"})
         self.assertEqual(self.conn._copy_seen[("06502", self.path.name)][1], True)
 
-        other = backup_connection.BackupConnection(
-            log=lambda _m: None, get_keys=lambda: "06502-AAAA", get_device_id=lambda: "d",
-            get_equipo=lambda: "PC", get_base_dir=lambda: self.tmp.name)
+        other = self._connection()
+        other._watcher = BackupWatcher(state_path=Path(self.tmp.name) / "otro.json")
         other._offer_copy(self.ws)
         other._copy_skipped({"code": "06502", "reason": "La nube está cerca del límite gratuito"})
         at, finished = other._copy_seen[("06502", self.path.name)]
@@ -211,3 +266,87 @@ class CopyOfferTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WatcherTests(unittest.TestCase):
+    """El más reciente es el último que apareció en la carpeta, no el de fecha más alta (2026-10-18)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.folder = Path(self.tmp.name) / "backup"
+        self.folder.mkdir()
+        self.state = Path(self.tmp.name) / "conocidos.json"
+        self.now = [1000.0]
+
+    def watcher(self, created=None):
+        return BackupWatcher(state_path=self.state, clock=lambda: self.now[0], created=created)
+
+    def add(self, name, text="datos", mtime=None):
+        path = self.folder / name
+        _zip(path, text)
+        if mtime is not None:
+            os.utime(path, (mtime, mtime))
+        return path
+
+    def test_first_time_only_the_newest_by_date_is_offered(self):
+        self.add("BKDA202610150700.zip", mtime=time.time() - 86400)
+        newest = self.add("BKDA202610160700.zip", mtime=time.time() - 60)
+        w = self.watcher()
+        self.assertEqual(w.candidate(self.tmp.name), newest)
+        w.mark_done(newest.name)
+        self.assertIsNone(w.candidate(self.tmp.name))
+
+    def test_after_moving_the_date_back_the_real_newest_wins(self):
+        # Fin de mes: la PC estuvo en el 25 y la regresaron al 17. El backup del «25» apareció antes.
+        w = self.watcher()
+        forward = self.add("BKDA202610250800.zip", mtime=time.time() + 8 * 86400)
+        self.assertEqual(w.candidate(self.tmp.name), forward)
+        w.mark_done(forward.name)
+        real = self.add("BKDA202610170730.zip", "otro", mtime=time.time())
+        self.assertEqual(w.candidate(self.tmp.name), real)
+        self.assertEqual(w.latest(self.tmp.name), real)
+
+    def test_the_order_survives_a_restart_and_what_appeared_meanwhile_is_new(self):
+        w = self.watcher()
+        first = self.add("BKDA202610170700.zip", mtime=time.time() - 3600)
+        self.assertEqual(w.candidate(self.tmp.name), first)
+        w.mark_done(first.name)
+        # El Toolkit se cierra; mientras tanto el SISMED hace el backup de las 13:00 con la fecha cambiada.
+        later = self.add("BKDA202610101300.zip", "tarde", mtime=time.time() - 30 * 86400)
+        again = self.watcher()
+        self.assertEqual(again.candidate(self.tmp.name), later)
+
+    def test_waits_while_the_newest_is_being_written(self):
+        w = self.watcher()
+        done = self.add("BKDA202610170700.zip", mtime=time.time() - 3600)
+        self.assertEqual(w.candidate(self.tmp.name), done)
+        w.mark_done(done.name)
+        partial = self.folder / "BKDA202610171300.zip"
+        partial.write_bytes(b"PK\x03\x04 a medio escribir")
+        self.assertIsNone(w.candidate(self.tmp.name))
+        self.assertIsNone(w.latest(self.tmp.name))
+        _zip(partial, "terminado")
+        self.assertEqual(w.candidate(self.tmp.name), partial)
+
+    def test_a_broken_backup_that_no_longer_grows_is_skipped(self):
+        w = self.watcher()
+        good = self.add("BKDA202610170700.zip", mtime=time.time() - 3600)
+        self.assertEqual(w.latest(self.tmp.name), good)
+        broken = self.folder / "BKDA202610171300.zip"
+        broken.write_bytes(b"no es un zip")
+        self.assertIsNone(w.latest(self.tmp.name))
+        self.now[0] += backup_upload.BROKEN_AFTER_SECONDS + 1
+        self.assertEqual(w.latest(self.tmp.name), good)
+
+    def test_an_old_backup_copied_into_the_folder_is_ignored(self):
+        def created(st):
+            # Simula Windows: el «copiado» se creó hoy, su contenido es de hace 10 días.
+            return time.time() if st.st_mtime < time.time() - 5 * 86400 else st.st_mtime
+        w = self.watcher(created=created)
+        good = self.add("BKDA202610170700.zip", mtime=time.time() - 3600)
+        self.assertEqual(w.candidate(self.tmp.name), good)
+        w.mark_done(good.name)
+        self.add("BKDA202610070700.zip", "viejo", mtime=time.time() - 10 * 86400)
+        self.assertIsNone(w.candidate(self.tmp.name))
+        self.assertEqual(w.latest(self.tmp.name), good)

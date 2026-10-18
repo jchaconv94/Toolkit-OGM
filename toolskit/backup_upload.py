@@ -8,17 +8,24 @@ contraseña) al primer ingreso del día y a las 13:00. Cuando la web lo pide, el
 3. lo sube por partes (el tamaño y cuántas a la vez los dicta el servicio) a
    `sismed-conexion`, que las guarda en R2; una parte que falla se reintenta sola, sin
    repetir las demás;
-4. avisa que terminó. La web lo descarga, comprueba la huella y lo borra de R2.
+4. avisa que terminó. La web lo descarga y comprueba la huella.
+
+Desde la 2.3.10 (2026-10-18) cada backup nuevo también sube solo, y en la nube queda solo el
+más reciente de cada establecimiento. Si la web pide uno y la nube ya tiene ese mismo, el
+servicio responde `reused` al iniciar y no se sube nada: la web baja el de la nube.
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import re
+import tempfile
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
@@ -64,37 +71,169 @@ def find_latest_backup(base_dir: str, now: float | None = None) -> Path | None:
     return candidates[-1][2]
 
 
-def find_morning_backup(base_dir: str, now: float | None = None) -> Path | None:
-    """El primer backup del día (el de la mañana), si ya terminó de escribirse.
+# Un zip inválido cuyo tamaño ya no cambia en este tiempo está dañado (no es que se esté escribiendo).
+BROKEN_AFTER_SECONDS = 15 * 60
+# Un backup copiado de otro lado conserva la fecha de su contenido: si se creó en la carpeta más
+# de un día después, no es uno recién hecho por el SISMED (en Windows `st_ctime` es la creación).
+COPIED_GAP_SECONDS = 24 * 3600
 
-    Es el que se sube solo como copia del día (Toolkit 2.3.9): el usuario pidió el de la
-    mañana, no el de las 13:00. Mientras ese se esté escribiendo, todavía no hay copia.
+
+def default_watch_state() -> Path:
+    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    return Path(base) / "ToolkitOGM" / "backups_conocidos.json"
+
+
+def _zip_ok(path: Path) -> bool:
+    """El zip está completo: tiene su índice al final y los datos coinciden (no lo descomprime a disco)."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return archive.testzip() is None
+    except (zipfile.BadZipFile, OSError, RuntimeError, NotImplementedError, EOFError):
+        return False
+    except Exception:
+        return False
+
+
+class BackupWatcher:
+    """Cuál es el backup más reciente de la carpeta, sin creerle al reloj de la PC (2.3.10, 2026-10-18).
+
+    El SISMED nombra el backup con la fecha de la PC (`BKDA20261025…`) y a fin de mes la adelantan
+    para cerrar y luego la regresan: ni el nombre ni la fecha del archivo dicen cuál es el último.
+    El más reciente es **el último que apareció en la carpeta**: se recuerda en qué orden se vio
+    cada archivo, también entre reinicios (`backups_conocidos.json` del equipo).
+
+    Un archivo se da por terminado cuando el zip está completo (su índice va al final, así que uno
+    a medio escribir no pasa la prueba). Mientras el más reciente no esté terminado no se ofrece
+    ninguno: se espera a ese. Uno dañado que ya no crece se salta, y vuelve a contar el anterior.
     """
-    folder = Path(str(base_dir or "").strip()) / "backup"
-    if not folder.is_dir():
-        return None
-    now = time.time() if now is None else now
-    today = datetime.fromtimestamp(now).strftime("%Y%m%d")
-    todays = []
-    for entry in folder.iterdir():
+
+    def __init__(self, state_path: str | os.PathLike | None = None, clock=time.monotonic, created=None):
+        self.state_path = Path(state_path) if state_path else default_watch_state()
+        self.clock = clock
+        # Fecha de creación del archivo (Windows); en otros sistemas no se conoce.
+        self.created = created or (lambda st: st.st_ctime if os.name == "nt" else None)
+        self._lock = threading.Lock()
+        self._sizes: dict[str, tuple[int, float]] = {}
+        self._checked: dict[tuple[str, int, float], bool] = {}
+        self._state = self._load()
+
+    # --- estado guardado ---------------------------------------------------------
+    def _load(self):
         try:
-            if not entry.is_file() or not BACKUP_NAME.match(entry.name):
-                continue
-            digits = re.sub(r"\D", "", entry.name)
-            if digits[:8] != today:
-                continue
-            stat = entry.stat()
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or not isinstance(data.get("files"), dict):
+            return None
+        files = {str(k): int(v) for k, v in data["files"].items() if isinstance(v, int)}
+        return {"folder": str(data.get("folder") or ""), "seq": int(data.get("seq") or 0),
+                "files": files, "done": [str(n) for n in data.get("done") or [] if str(n) in files]}
+
+    def _save(self):
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.state_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self._state, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.state_path)
         except OSError:
-            continue
-        if stat.st_size > 0:
-            todays.append((digits, entry.name, entry, stat))
-    if not todays:
+            pass  # sin poder guardar, igual funciona mientras el Toolkit siga abierto
+
+    # --- revisión de la carpeta ----------------------------------------------------
+    def _scan(self, base_dir: str) -> dict[str, tuple[Path, os.stat_result]]:
+        folder = Path(str(base_dir or "").strip()) / "backup"
+        present: dict[str, tuple[Path, os.stat_result]] = {}
+        if folder.is_dir():
+            for entry in folder.iterdir():
+                try:
+                    if entry.is_file() and BACKUP_NAME.match(entry.name):
+                        stat = entry.stat()
+                        if stat.st_size > 0:
+                            present[entry.name] = (entry, stat)
+                except OSError:
+                    continue
+        key = str(folder).lower()
+        by_date = lambda names: sorted(names, key=lambda n: (present[n][1].st_mtime, n))
+        changed = False
+        if self._state is None or self._state["folder"] != key:
+            # Primera vez en esta carpeta: lo que ya estaba se ordena por fecha del archivo (una
+            # sola vez) y se da por visto todo menos el último, que se ofrece.
+            order = by_date(present)
+            self._state = {"folder": key, "seq": len(order), "files": {n: i + 1 for i, n in enumerate(order)},
+                           "done": order[:-1]}
+            changed = True
+        else:
+            for name in by_date([n for n in present if n not in self._state["files"]]):
+                self._state["seq"] += 1
+                self._state["files"][name] = self._state["seq"]
+                changed = True
+        for name in [n for n in self._state["files"] if n not in present]:
+            del self._state["files"][name]
+            changed = True
+        self._state["done"] = [n for n in self._state["done"] if n in self._state["files"]]
+        now = self.clock()
+        for name, (_entry, stat) in present.items():
+            previous = self._sizes.get(name)
+            if previous is None or previous[0] != stat.st_size:
+                self._sizes[name] = (stat.st_size, now)
+        self._sizes = {n: v for n, v in self._sizes.items() if n in present}
+        if changed:
+            self._save()
+        return present
+
+    def _copied(self, stat: os.stat_result) -> bool:
+        created = self.created(stat)
+        return created is not None and created - stat.st_mtime > COPIED_GAP_SECONDS
+
+    def _finished(self, name: str, entry: Path, stat: os.stat_result) -> bool | None:
+        """True terminado, False dañado (se salta), None todavía escribiéndose."""
+        key = (name, stat.st_size, stat.st_mtime)
+        if key not in self._checked:
+            ok = _zip_ok(entry)
+            try:
+                same = entry.stat().st_size == stat.st_size
+            except OSError:
+                same = False
+            if not same:
+                return None
+            self._checked = {k: v for k, v in self._checked.items() if k[0] in self._sizes}
+            self._checked[key] = ok
+        if self._checked[key]:
+            return True
+        _size, since = self._sizes.get(name, (stat.st_size, self.clock()))
+        return False if self.clock() - since >= BROKEN_AFTER_SECONDS else None
+
+    def _newest(self, base_dir: str) -> Path | None:
+        present = self._scan(base_dir)
+        order = sorted(present, key=lambda n: self._state["files"].get(n, 0), reverse=True)
+        for name in order:
+            entry, stat = present[name]
+            if self._copied(stat):
+                continue
+            finished = self._finished(name, entry, stat)
+            if finished is None:
+                return None  # el más reciente todavía se escribe: se espera a ese
+            if finished:
+                return entry
         return None
-    todays.sort()
-    _digits, _name, entry, stat = todays[0]
-    if now - stat.st_mtime < STILL_WRITING_SECONDS:
-        return None
-    return entry
+
+    # --- lo que usa la conexión -----------------------------------------------------
+    def latest(self, base_dir: str) -> Path | None:
+        """El backup más reciente ya terminado (para un pedido de la web)."""
+        with self._lock:
+            return self._newest(base_dir)
+
+    def candidate(self, base_dir: str) -> Path | None:
+        """El más reciente, si todavía no está en la nube (para subirlo solo)."""
+        with self._lock:
+            path = self._newest(base_dir)
+            return None if path is None or path.name in self._state["done"] else path
+
+    def mark_done(self, name: str):
+        """Ese backup ya está en la nube: no se vuelve a ofrecer."""
+        with self._lock:
+            if self._state and name in self._state["files"] and name not in self._state["done"]:
+                self._state["done"].append(name)
+                self._save()
 
 
 def sha256_file(path: Path, chunk: int = 1024 * 1024) -> str:
@@ -191,6 +330,8 @@ class BackupUploader:
         self.parallel = max(1, min(MAX_PARALLEL, int(parallel or 1)))
         self._stop = threading.Event()
         self._stop_reason = "Se detuvo porque otra parte no se pudo enviar"
+        # El backup que se envía (o que la nube ya tenía), para no volver a ofrecerlo como copia.
+        self.path: Path | None = None
 
     def cancel(self, reason: str = "Se detuvo la subida"):
         """Corta la subida (la copia del día cede ante un pedido de la web)."""
@@ -224,8 +365,11 @@ class BackupUploader:
             modified = datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="minutes")
             self._meta = {"name": path.name, "size": size, "sha256": sha, "modified": modified}
             self.send({"t": "backup_meta", "job": self.job, **self._meta})
+            self.path = path
             self.log(f"  📦 Enviando backup {path.name} ({size / 1048576:.1f} MB) de {code} a la web...")
-            self._upload(path, size)
+            if not self._upload(path, size):
+                self.log(f"  ✓ La nube ya tenía el backup {path.name}: no se volvió a subir.")
+                return True
             self.log(f"  ✓ Backup {path.name} enviado y verificado por tamaño.")
             return True
         except BackupUploadError as exc:
@@ -255,8 +399,10 @@ class BackupUploader:
         except Exception:
             return f"HTTP {response.status_code}"
 
-    def _upload(self, path: Path, size: int):
-        self._start()
+    def _upload(self, path: Path, size: int) -> bool:
+        """Sube el backup. False si no hizo falta: la nube ya lo tenía (2.3.10)."""
+        if self._start().get("reused"):
+            return False
         count = max(1, -(-size // self.part_size))
         progress = _Progress(size, lambda sent: self.send({"t": "backup_progress", "job": self.job, "sent": sent}))
 
@@ -289,6 +435,7 @@ class BackupUploader:
             raise BackupUploadError("El backup cambió mientras se enviaba; vuelva a pedirlo")
         parts.sort(key=lambda part: part["partNumber"])
         self._post("complete", json={"parts": parts})
+        return True
 
     def _start(self):
         """Abre la subida. Los datos del backup van también aquí (2.3.9).
@@ -297,11 +444,13 @@ class BackupUploader:
         ejemplo, mientras subía la copia del día) este pedido llegaba primero y el servicio
         respondía «Falta informar el backup». Un servicio anterior que no los lee aquí lo
         sigue diciendo: se reintenta unos segundos, hasta que llega el backup_meta.
+
+        Desde el 2026-10-18 el servicio responde `reused` si la nube ya tiene ese mismo backup
+        (por ejemplo, alguien pidió «uno nuevo» y el SISMED no generó otro): no se sube nada.
         """
         for attempt in range(1, 5):
             try:
-                self._post("start", json=getattr(self, "_meta", None))
-                return
+                return self._post("start", json=getattr(self, "_meta", None)) or {}
             except BackupUploadError as exc:
                 if "Falta informar" not in str(exc) or attempt == 4:
                     raise
