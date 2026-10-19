@@ -1,7 +1,12 @@
 """Generar ICI: el libro de Excel con el diseño aprobado por el usuario el 2026-10-19.
 
-Hojas: ICI (para imprimir horizontal y firmar), Vencimientos, Alertas de farmacia, Lotes sin
-movimiento, Guías de ingreso y Correcciones de lote.
+Hojas, en este orden: ICI (para imprimir horizontal y firmar), Guías de ingreso, Vencimientos,
+Alertas de farmacia, Lotes sin movimiento y Correcciones de lote.
+
+Se arman dos versiones del mismo libro: la de Excel (para revisarla en la PC: filtro en el ICI,
+paneles fijos) y la de imprimir, que se pasa a PDF. En la de imprimir cada hoja ya viene cortada
+en páginas y cada tabla repite su encabezado al empezar una página nueva (`Page`): el PDF que
+armaba el Excel de la PC no repetía los «títulos de impresión» (2026-10-19).
 
 Decisiones del usuario que no hay que deshacer (docs/ICI_SISMED.md del ToolKit SISMED Web):
 cifras sin separador de miles (con coma parecía decimal), precios completos, la misma letra en
@@ -14,15 +19,15 @@ from __future__ import annotations
 
 import collections
 import datetime as dt
-import unicodedata
 
 from openpyxl import Workbook
 from openpyxl.formatting.rule import CellIsRule, FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter as L
 from openpyxl.worksheet.page import PageMargins
+from openpyxl.worksheet.pagebreak import Break
 
-from ici_data import CONSUMO, CONCEPTOS, MESES, IciReport, Movement, ipress_of
+from ici_data import CONSUMO, CONCEPTOS, MESES, IciReport, Movement, ipress_of, plain_text
 
 F = "Arial"
 NAVY, NAVY2, GRID, SOFT, ZEBRA, INK, MUTED, WHITE = (
@@ -113,8 +118,87 @@ def box(ws, r1, c1, r2, c2, value=None, font=None, fill_=None, align=None, borde
 
 
 def lines(value, per_line):
-    """Líneas que ocupa un texto en su celda (misma letra en todas las filas)."""
-    return max(1, -(-len(str(value)) // per_line))
+    """Líneas que ocupa un texto en su celda, cortando por palabras como lo hace Excel."""
+    count, used = 1, 0
+    for word in str(value or "").split():
+        extra = len(word) + (1 if used else 0)
+        if used and used + extra > per_line:
+            count += 1
+            used = len(word)
+        else:
+            used += extra
+        while used > per_line:
+            count += 1
+            used -= per_line
+    return count
+
+
+def row_height(text, width, size=7.5):
+    """Alto de fila para que un texto largo se vea completo en su columna.
+
+    Calculado para nombres en mayúsculas (los del SISMED), que en Arial ocupan casi un carácter
+    por unidad de ancho de columna a 7,4 puntos: a otros tamaños entran proporcionalmente más o
+    menos. Mejor que sobre un poco a que el nombre quede cortado (pasó con 56 por línea)."""
+    per_line = max(6, int((width - 1.5) * 7.4 / size))
+    return max(13.0, lines(text, per_line) * size * 1.5 + 3)
+
+
+A4_LANDSCAPE = (842.0, 595.0)  # puntos
+
+
+class Page:
+    """Lo que entra en cada página impresa (A4 horizontal, a todo el ancho de la hoja).
+
+    La escala sale del ancho de las columnas, así cada hoja ocupa el ancho de la página (también
+    las angostas, que antes quedaban en una esquina). En la versión de imprimir, `keep` corta la
+    página antes de una fila que ya no entra y repite el encabezado de su tabla."""
+
+    def __init__(self, ws, widths, printable, margins=(0.3, 0.3, 0.4, 0.45), max_scale=150):
+        self.ws, self.printable, self.margins = ws, printable, margins
+        width_pt = sum(w * 7 + 5 for w in widths) * 0.75
+        usable_width = (A4_LANDSCAPE[0] - (margins[0] + margins[1]) * 72) * 0.96
+        self.scale = max(10, min(max_scale, int(usable_width / width_pt * 100)))
+        usable_height = (A4_LANDSCAPE[1] - (margins[2] + margins[3]) * 72 - 16) * 0.94
+        self.capacity = usable_height * 100 / self.scale
+        self.used = 0.0
+        self.counted = 0
+
+    def _height(self, r):
+        height = self.ws.row_dimensions[r].height
+        return 15.0 if height is None else height
+
+    def _count_until(self, r):
+        for k in range(self.counted + 1, r):
+            self.used += self._height(k)
+        self.counted = max(self.counted, r - 1)
+
+    def keep(self, r, height, header=None) -> int:
+        """Antes de escribir en la fila r algo de `height` puntos que no debe partirse. Si no entra en
+        lo que queda de la página (solo en la versión de imprimir), corta la página y escribe el
+        encabezado con `header(r)`, que devuelve la fila siguiente. Devuelve dónde seguir."""
+        if not self.printable:
+            return r
+        self._count_until(r)
+        if self.used > 0 and self.used + height > self.capacity:
+            self.ws.row_breaks.append(Break(id=r - 1))
+            self.used = 0.0
+            if header is not None:
+                r = header(r)
+                self._count_until(r)
+        return r
+
+    def setup(self, label, report, titles=None):
+        ws = self.ws
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.paperSize = ws.PAPERSIZE_A4
+        ws.sheet_properties.pageSetUpPr.fitToPage = False
+        ws.page_setup.scale = self.scale
+        left, right, top, bottom = self.margins
+        ws.page_margins = PageMargins(left=left, right=right, top=top, bottom=bottom, footer=0.2)
+        ws.print_options.horizontalCentered = True
+        if titles and not self.printable:
+            ws.print_title_rows = titles  # en la de imprimir el encabezado ya va repetido
+        _footer(ws, label, report)
 
 
 def month_title(report: IciReport) -> str:
@@ -136,15 +220,6 @@ def _footer(ws, label: str, report: IciReport):
     ws.oddFooter.right.size = 7
 
 
-def _landscape(ws, margins=(0.3, 0.3, 0.4, 0.45)):
-    ws.page_setup.orientation = "landscape"
-    ws.page_setup.paperSize = ws.PAPERSIZE_A4
-    ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
-    ws.sheet_properties.pageSetUpPr.fitToPage = True
-    left, right, top, bottom = margins
-    ws.page_margins = PageMargins(left=left, right=right, top=top, bottom=bottom, footer=0.2)
-
-
 def _title(ws, nc, title, report: IciReport, subtitle: str, size=14, split=4):
     box(ws, 1, 1, 1, nc - split, title, fnt(size, True, WHITE), NAVY, LEFT, border=False)
     box(ws, 1, nc - split + 1, 1, nc, month_title(report), fnt(size, True, WHITE), NAVY, RIGHT, border=False)
@@ -155,15 +230,17 @@ def _title(ws, nc, title, report: IciReport, subtitle: str, size=14, split=4):
 # ── Hoja ICI ───────────────────────────────────────────────────────────────────
 
 
-def ici_sheet(wb, report: IciReport):
+def ici_sheet(wb, report: IciReport, printable=False):
     rows = report.rows
     C = Columns(rows)
     IX, NCOL = C.ix, C.n
+    widths = [c[1] for c in C.cols]
     ws = wb.active
     ws.title = "ICI"
     ws.sheet_view.showGridLines = False
-    for i, c in enumerate(C.cols, 1):
-        ws.column_dimensions[L(i)].width = c[1]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[L(i)].width = w
+    page = Page(ws, widths, printable, margins=(0.25, 0.25, 0.35, 0.45))
 
     box(ws, 1, 1, 1, NCOL - 8, "INFORME DE CONSUMO INTEGRADO  ·  ICI", fnt(15, True, WHITE), NAVY, LEFT, border=False)
     box(ws, 1, NCOL - 7, 1, NCOL, month_title(report), fnt(15, True, WHITE), NAVY, RIGHT, border=False)
@@ -174,76 +251,41 @@ def ici_sheet(wb, report: IciReport):
     ws.row_dimensions[2].height = 16
     ws.row_dimensions[3].height = 6
 
+    def header(r):
+        """Fila de grupos y fila de encabezados de columna (se repite en cada página impresa)."""
+        start = 1
+        for i in range(2, NCOL + 2):
+            if i == NCOL + 1 or C.cols[i - 1][2] != C.cols[start - 1][2]:
+                box(ws, r, start, r, i - 1, GROUPS[C.cols[start - 1][2]], fnt(7, True, WHITE), NAVY, CENTER)
+                start = i
+        for i, c in enumerate(C.cols, 1):
+            box(ws, r + 1, i, r + 1, i, c[0], fnt(6.8, True, WHITE), NAVY2,
+                Alignment(horizontal="center", vertical="center", wrap_text=True, text_rotation=90 if c[1] < 9 else 0))
+        ws.row_dimensions[r].height = 15
+        ws.row_dimensions[r + 1].height = 72
+        return r + 2
+
+    # Los datos empiezan en la fila 16; en la versión de imprimir llevan dentro los encabezados
+    # repetidos, así que la última fila se conoce al terminar de escribirlos.
     first = 16
-    lastr = first + max(len(rows), 1) - 1
-    R = lambda f: f"${L(IX[f])}${first}:${L(IX[f])}${lastr}"
-    P = R("PRECIO")
-    SP = lambda *fs: "+".join(f"SUMPRODUCT({P},{R(f)})" for f in fs if f in IX)
+    gr, rr = 11, 13
+    header(gr)
+    ws.row_dimensions[14].height = 3
+    if printable:
+        ws.row_dimensions[15].height = 3
+    else:
+        # Letras de columna con el filtro de Excel, para filtrar rápido (pedido del usuario).
+        for i in range(1, NCOL + 1):
+            box(ws, 15, i, 15, i, L(i), fnt(6.5, True, MUTED), SOFT, MID)
+        ws.row_dimensions[15].height = 14
 
-    # Bloque A: datos del establecimiento
-    box(ws, 4, 1, 4, 9, "DATOS DEL ESTABLECIMIENTO", fnt(7.5, True, WHITE), NAVY, LEFT)
-    for k, (label, value) in enumerate(list(report.ficha.items())[:5]):
-        r = 5 + k
-        box(ws, r, 1, r, 2, label, fnt(7.5, True, MUTED), SOFT, LEFT)
-        box(ws, r, 3, r, 9, value, fnt(8, True), None, LEFT)
-    # Bloque B: resumen valorizado
-    box(ws, 4, 11, 4, 22, "RESUMEN VALORIZADO DEL MES (S/)", fnt(7.5, True, WHITE), NAVY, LEFT)
-    left = [("Saldo anterior", SP("SALDO")), ("Ingresos", SP("INGRE", "ING_REGULA")), ("Reingresos", SP("REINGRE")),
-            ("Consumo total", SP(*CONSUMO)), ("Stock final", f"SUMPRODUCT({P},{R('=STOCK')})")]
-    right = [("Venta", SP("VENTA")), ("S.I.S.", SP("SIS")), ("Interv. sanitaria", SP("INTERSAN")),
-             ("Devoluciones", SP("DEVOL")), ("Vencidos", SP("VENCIDO"))]
-    for k in range(5):
-        r = 5 + k
-        for (label, formula), (c1, c2, c3) in ((left[k], (11, 13, 16)), (right[k], (17, 19, 22))):
-            strong = label in ("Stock final", "Consumo total")
-            box(ws, r, c1, r, c2, label, fnt(7.5, True, MUTED), SOFT, LEFT)
-            box(ws, r, c2 + 1, r, c3, f"={formula}", fnt(8.5 if strong else 8, True, INKT["venc"] if label == "Vencidos" else INK),
-                None, RIGHT, fmt=MONEY)
-    # Bloque C: control del mes
-    box(ws, 4, 24, 4, NCOL, "CONTROL DEL MES", fnt(7.5, True, WHITE), NAVY, LEFT)
-    end = report.hasta
-    pe = f"DATE({end.year},{end.month},{end.day})"
-    control = [
-        ("Lotes con stock", f"=COUNTIF({R('=STOCK')},\">0\")", INK),
-        ("Por vencer en 6 meses", f"=COUNTIFS({R('FEC_EXP')},\">\"&{pe},{R('FEC_EXP')},\"<=\"&EDATE({pe},6),{R('=STOCK')},\">0\")", INKT["dev"]),
-        ("Vencidos con stock", f"=COUNTIFS({R('FEC_EXP')},\"<=\"&{pe},{R('=STOCK')},\">0\")", INKT["venc"]),
-        ("Productos sin precio", f"=COUNTIFS({P},0,{R('=STOCK')},\">0\")", INK),
-        ("Guías de ingreso", len(report.guias), INK),
-    ]
-    for k, (label, value, color) in enumerate(control):
-        r = 5 + k
-        box(ws, r, 24, r, NCOL - 2, label, fnt(7.5, True, MUTED), SOFT, LEFT)
-        box(ws, r, NCOL - 1, r, NCOL, value, fnt(8.5, True, color), None, CENTER, fmt=INT0)
-    ws.row_dimensions[10].height = 6
-
-    # Encabezado de la tabla
-    gr, hr, rr = 11, 12, 13
-    start = 1
-    for i in range(2, NCOL + 2):
-        if i == NCOL + 1 or C.cols[i - 1][2] != C.cols[start - 1][2]:
-            box(ws, gr, start, gr, i - 1, GROUPS[C.cols[start - 1][2]], fnt(7, True, WHITE), NAVY, CENTER)
-            start = i
-    for i, c in enumerate(C.cols, 1):
-        box(ws, hr, i, hr, i, c[0], fnt(6.8, True, WHITE), NAVY2,
-            Alignment(horizontal="center", vertical="center", wrap_text=True, text_rotation=90 if c[1] < 9 else 0))
-    ws.row_dimensions[hr].height = 72
-    box(ws, rr, 1, rr, IX["VENTA"] - 1, "N° DE RECETAS (CONSUMOS)  ·  N° DE LOTES (OTRAS SALIDAS)",
-        fnt(7, True, INKT["cons"]), TINT["cons"], RIGHT)
-    for f, value in zip(CONSUMO, report.recetas):
-        box(ws, rr, IX[f], rr, IX[f], value, fnt(7.5, True, INKT["cons"]), TINT["cons"], CENTER, fmt=INT0)
-    for f in ("DEVOL", "VENCIDO", "MERMA", "OTRAS", "SAL_REGULA", "SAL_CONINS"):
-        box(ws, rr, IX[f], rr, IX[f], f"=COUNTIF({R(f)},\">0\")", fnt(7.5, True, INKT["dev"]), TINT["dev"], CENTER, fmt=INT0)
-    box(ws, rr, IX["=TOTAL"], rr, NCOL, None, None, TINT["cons"])
-    ws.row_dimensions[rr].height = 18
-    for r in (14, 15):
-        ws.row_dimensions[r].height = 3
-
-    # Detalle
     total_formula = lambda r: f"=SUM({L(IX['VENTA'])}{r}:{L(IX['SAL_CONINS'])}{r})"
     stock_formula = lambda r: ("=" + "+".join(f"{L(IX[f])}{r}" for f in ("SALDO", "INGRE", "REINGRE", "ING_REGULA") if f in IX)
                                + f"-{L(IX['=TOTAL'])}{r}")
+    r = first
     for k, row in enumerate(rows):
-        r = first + k
+        height = row_height(row["DESC"], C.cols[IX["DESC"] - 1][1], 7.2)
+        r = page.keep(r, height, header)
         fixed = "correccion" in row["flags"]
         for i, (_, _, _, fld, _) in enumerate(C.cols, 1):
             cell = ws.cell(r, i)
@@ -269,32 +311,88 @@ def ici_sheet(wb, report: IciReport):
                 cell.font = fnt(7.2, True, INKT["fix"])
             elif k % 2:
                 cell.fill = fill(ZEBRA)
-        ws.row_dimensions[r].height = 13 * lines(row["DESC"], 56)
+        ws.row_dimensions[r].height = height
+        r += 1
+    if not rows:
+        box(ws, r, 1, r, NCOL, "Sin lotes en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
+        r += 1
+    lastr = r - 1
+
+    R = lambda f: f"${L(IX[f])}${first}:${L(IX[f])}${lastr}"
+    P = R("PRECIO")
+    # SUMPRODUCT toma como cero el texto de los encabezados repetidos de la versión de imprimir.
+    SP = lambda *fs: "+".join(f"SUMPRODUCT({P},{R(f)})" for f in fs if f in IX)
+
+    # Bloque A: datos del establecimiento
+    box(ws, 4, 1, 4, 9, "DATOS DEL ESTABLECIMIENTO", fnt(7.5, True, WHITE), NAVY, LEFT)
+    for k, (label, value) in enumerate(list(report.ficha.items())[:5]):
+        box(ws, 5 + k, 1, 5 + k, 2, label, fnt(7.5, True, MUTED), SOFT, LEFT)
+        box(ws, 5 + k, 3, 5 + k, 9, value, fnt(8, True), None, LEFT)
+    # Bloque B: resumen valorizado
+    box(ws, 4, 11, 4, 22, "RESUMEN VALORIZADO DEL MES (S/)", fnt(7.5, True, WHITE), NAVY, LEFT)
+    left = [("Saldo anterior", SP("SALDO")), ("Ingresos", SP("INGRE", "ING_REGULA")), ("Reingresos", SP("REINGRE")),
+            ("Consumo total", SP(*CONSUMO)), ("Stock final", f"SUMPRODUCT({P},{R('=STOCK')})")]
+    right = [("Venta", SP("VENTA")), ("S.I.S.", SP("SIS")), ("Interv. sanitaria", SP("INTERSAN")),
+             ("Devoluciones", SP("DEVOL")), ("Vencidos", SP("VENCIDO"))]
+    for k in range(5):
+        for (label, formula), (c1, c2, c3) in ((left[k], (11, 13, 16)), (right[k], (17, 19, 22))):
+            strong = label in ("Stock final", "Consumo total")
+            box(ws, 5 + k, c1, 5 + k, c2, label, fnt(7.5, True, MUTED), SOFT, LEFT)
+            box(ws, 5 + k, c2 + 1, 5 + k, c3, f"={formula}",
+                fnt(8.5 if strong else 8, True, INKT["venc"] if label == "Vencidos" else INK), None, RIGHT, fmt=MONEY)
+    # Bloque C: control del mes
+    box(ws, 4, 24, 4, NCOL, "CONTROL DEL MES", fnt(7.5, True, WHITE), NAVY, LEFT)
+    end = report.hasta
+    pe = f"DATE({end.year},{end.month},{end.day})"
+    control = [
+        ("Lotes con stock", f"=COUNTIF({R('=STOCK')},\">0\")", INK),
+        ("Por vencer en 6 meses", f"=COUNTIFS({R('FEC_EXP')},\">\"&{pe},{R('FEC_EXP')},\"<=\"&EDATE({pe},6),{R('=STOCK')},\">0\")", INKT["dev"]),
+        ("Vencidos con stock", f"=COUNTIFS({R('FEC_EXP')},\"<=\"&{pe},{R('=STOCK')},\">0\")", INKT["venc"]),
+        ("Productos sin precio", f"=COUNTIFS({P},0,{R('=STOCK')},\">0\")", INK),
+        ("Guías de ingreso", len(report.guias), INK),
+    ]
+    for k, (label, value, color) in enumerate(control):
+        box(ws, 5 + k, 24, 5 + k, NCOL - 2, label, fnt(7.5, True, MUTED), SOFT, LEFT)
+        box(ws, 5 + k, NCOL - 1, 5 + k, NCOL, value, fnt(8.5, True, color), None, CENTER, fmt=INT0)
+    ws.row_dimensions[10].height = 6
+
+    # Recetas bajo sus columnas y, bajo las otras salidas, cuántos lotes las tuvieron
+    box(ws, rr, 1, rr, IX["VENTA"] - 1, "N° DE RECETAS (CONSUMOS)  ·  N° DE LOTES (OTRAS SALIDAS)",
+        fnt(7, True, INKT["cons"]), TINT["cons"], RIGHT)
+    for f, value in zip(CONSUMO, report.recetas):
+        box(ws, rr, IX[f], rr, IX[f], value, fnt(7.5, True, INKT["cons"]), TINT["cons"], CENTER, fmt=INT0)
+    for f in ("DEVOL", "VENCIDO", "MERMA", "OTRAS", "SAL_REGULA", "SAL_CONINS"):
+        box(ws, rr, IX[f], rr, IX[f], f"=COUNTIF({R(f)},\">0\")", fnt(7.5, True, INKT["dev"]), TINT["dev"], CENTER, fmt=INT0)
+    box(ws, rr, IX["=TOTAL"], rr, NCOL, None, None, TINT["cons"])
+    ws.row_dimensions[rr].height = 18
+
     if rows:
         for tint in ("in", "cons", "dev", "venc"):
             for i in (i for i, c in enumerate(C.cols, 1) if c[4] == tint):
                 col = L(i)
-                ws.conditional_formatting.add(f"{col}{first}:{col}{lastr}", CellIsRule(
-                    operator="greaterThan", formula=["0"], fill=fill(TINT[tint]), font=Font(name=F, color=INKT[tint], bold=True)))
+                ws.conditional_formatting.add(f"{col}{first}:{col}{lastr}", FormulaRule(
+                    formula=[f"AND(ISNUMBER({col}{first}),{col}{first}>0)"], fill=fill(TINT[tint]),
+                    font=Font(name=F, color=INKT[tint], bold=True)))
         E, S = L(IX["FEC_EXP"]), L(IX["=STOCK"])
+        expired = f"AND(ISNUMBER({E}{first}),{S}{first}>0,{E}{first}<={pe})"
+        soon = f"AND(ISNUMBER({E}{first}),{S}{first}>0,{E}{first}>{pe},{E}{first}<=EDATE({pe},6))"
         ws.conditional_formatting.add(f"{E}{first}:{E}{lastr}", FormulaRule(
-            formula=[f"AND({S}{first}>0,{E}{first}<={pe})"], fill=fill(TINT["venc"]), font=Font(name=F, color=INKT["venc"], bold=True)))
+            formula=[expired], fill=fill(TINT["venc"]), font=Font(name=F, color=INKT["venc"], bold=True)))
         ws.conditional_formatting.add(f"{E}{first}:{E}{lastr}", FormulaRule(
-            formula=[f"AND({S}{first}>0,{E}{first}>{pe},{E}{first}<=EDATE({pe},6))"], fill=fill(TINT["dev"]),
-            font=Font(name=F, color=INKT["dev"], bold=True)))
-    else:
-        box(ws, first, 1, first, NCOL, "Sin lotes en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
+            formula=[soon], fill=fill(TINT["dev"]), font=Font(name=F, color=INKT["dev"], bold=True)))
 
-    tr = lastr + 1
+    tr = page.keep(lastr + 1, 16, header)
     box(ws, tr, 1, tr, IX["PRECIO"], f"TOTAL  ·  {len(rows)} lotes", fnt(7.5, True, WHITE), NAVY, RIGHT)
     for i in range(IX["SALDO"], NCOL + 1):
-        box(ws, tr, i, tr, i, f"=SUM({L(i)}{first}:{L(i)}{lastr})", fnt(7.2, True, WHITE), NAVY, CENTER, fmt=INT0)
+        # SUBTOTAL: en el Excel, al filtrar, el total es de lo que se ve.
+        total = f"=SUM({L(i)}{first}:{L(i)}{lastr})" if printable else f"=SUBTOTAL(9,{L(i)}{first}:{L(i)}{lastr})"
+        box(ws, tr, i, tr, i, total, fnt(7.2, True, WHITE), NAVY, CENTER, fmt=INT0)
     ws.row_dimensions[tr].height = 16
 
     notes = ["Colores:  ingresos y reingresos en azul · consumos en verde · devoluciones y otras salidas en ámbar · "
              "vencidos en rojo · vencimiento en rojo si el lote ya venció con stock y en ámbar si vence en los próximos 6 meses."]
     if report.corrections:
-        notes.append("Lote en morado: corrección de lote del mes (salió y volvió a entrar en la misma farmacia); "
+        notes.append("Lote en morado: tuvo una corrección de lote o de código en el mes; "
                      "el detalle está en la hoja «Correcciones de lote».")
     if report.consolidated:
         if report.internal_estimated:
@@ -309,13 +407,14 @@ def ici_sheet(wb, report: IciReport):
     for note in notes:
         box(ws, r, 1, r, NCOL, note, fnt(6.5, False, MUTED, True), None, LEFT, border=False)
         r += 1
-    _signature(ws, r + 1, [c[1] for c in C.cols])
+    # La declaración jurada y las firmas no se parten entre dos páginas.
+    r = page.keep(r + 1, SIGNATURE_HEIGHT)
+    _signature(ws, r, widths)
 
-    ws.freeze_panes = ws.cell(first, 3)
-    ws.print_title_rows = f"{gr}:{hr}"
-    _landscape(ws, (0.25, 0.25, 0.35, 0.45))
-    ws.print_options.horizontalCentered = True
-    _footer(ws, "ICI", report)
+    if not printable:
+        ws.freeze_panes = ws.cell(first, 3)
+        ws.auto_filter.ref = f"A15:{L(NCOL)}{lastr}"
+    page.setup("ICI", report, titles=f"{gr}:{gr + 1}")
     return ws
 
 
@@ -348,6 +447,9 @@ def signature_blocks(widths) -> tuple[tuple[int, int], tuple[int, int]]:
     a = sum(widths[: left[0] - 1]) / total
     b = sum(widths[: left[1]]) / total
     return left, column_span(widths, 1 - b, 1 - a)
+
+
+SIGNATURE_HEIGHT = 15 + 30 + 18 + 4 * 14 + 30 + 15 + 2 * 18 + 6
 
 
 def _signature(ws, r, widths):
@@ -393,14 +495,35 @@ def expiry_groups(rows, end: dt.date):
     ]
 
 
-def expiry_sheet(wb, report: IciReport):
+def _section(ws, page, r, nc, title, header_row, first_height):
+    """Título de una tabla y su fila de encabezados, sin dejarlos solos al pie de una página.
+    Devuelve (fila siguiente, función que repite título y encabezados en una página nueva)."""
+    def repeat(rr, suffix="  ·  continuación"):
+        box(ws, rr, 1, rr, nc, title + suffix, fnt(8, True, WHITE), NAVY, LEFT)
+        ws.row_dimensions[rr].height = 15
+        header_row(rr + 1)
+        return rr + 2
+
+    r = page.keep(r, 15 + 22 + first_height)
+    return repeat(r, ""), repeat
+
+
+def _cells_header(ws, r, header):
+    for i, h in enumerate(header, 1):
+        box(ws, r, i, r, i, h, fnt(7, True, NAVY), SOFT, CENTER)
+    ws.row_dimensions[r].height = 22
+
+
+def expiry_sheet(wb, report: IciReport, printable=False):
     ws = wb.create_sheet("Vencimientos")
     ws.sheet_view.showGridLines = False
     cols = [("CÓDIGO", 7), ("DESCRIPCIÓN", 40), ("UNIDAD", 8), ("LOTE", 13), ("VENCE", 10), ("MESES", 6.5),
             ("STOCK", 8.5), ("CONSUMO DEL MES", 9), ("PRECIO S/", 8.5), ("VALOR S/", 11)]
-    for i, (_, w) in enumerate(cols, 1):
+    widths = [w for _, w in cols]
+    for i, w in enumerate(widths, 1):
         ws.column_dimensions[L(i)].width = w
     nc = len(cols)
+    page = Page(ws, widths, printable)
     end = report.hasta
     _title(ws, nc, "REPORTE DE VENCIMIENTOS", report,
            f"{report.title}  ·  Meses contados desde el cierre del mes ({end:%d/%m/%Y})")
@@ -418,18 +541,19 @@ def expiry_sheet(wb, report: IciReport):
         ws.row_dimensions[rr].height = 17
     r += 6
     for title, ink, tint, items, qf in groups:
-        box(ws, r, 1, r, nc, f"{title}  ·  {len(items)} lotes", fnt(8, True, WHITE), NAVY, LEFT)
-        r += 1
-        for i, (h, _) in enumerate(cols, 1):
-            box(ws, r, i, r, i, "SALIÓ" if (h == "STOCK" and qf == "VENCIDO") else h, fnt(7, True, NAVY), SOFT, CENTER)
-        ws.row_dimensions[r].height = 22
-        r += 1
+        header = ["SALIÓ" if (h == "STOCK" and qf == "VENCIDO") else h for h, _ in cols]
+        ordered = sorted(items, key=lambda t: (t["FEC_EXP"] or end, -t["PRECIO"] * t[qf]))
+        first_height = row_height(ordered[0]["DESC"], 40) if ordered else 15
+        r, repeat = _section(ws, page, r, nc, f"{title}  ·  {len(items)} lotes",
+                             lambda rr: _cells_header(ws, rr, header), first_height)
         if not items:
             box(ws, r, 1, r, nc, "Sin lotes en este grupo.", fnt(7.5, False, MUTED, True), None, LEFT)
             r += 2
             continue
         start = r
-        for t in sorted(items, key=lambda t: (t["FEC_EXP"] or end, -t["PRECIO"] * t[qf])):
+        for k, t in enumerate(ordered):
+            height = row_height(t["DESC"], 40)
+            r = page.keep(r, height, repeat)
             d = t["FEC_EXP"]
             values = [t["CODIGO_MED"], t["DESC"], t["MEDFF"], t["MEDLOTE"], _as_datetime(d),
                       round((d - end).days / 30.4375, 1) if d else None, t[qf], consumo(t), t["PRECIO"], f"=G{r}*I{r}"]
@@ -439,16 +563,15 @@ def expiry_sheet(wb, report: IciReport):
                 c.border = BOX
                 c.alignment = WRAP_LEFT if i == 2 else MID
                 c.number_format = {5: "dd/mm/yyyy", 6: '0.0;-0.0;"–"', 7: INT0, 8: INT0, 9: PRICE, 10: "0.00"}.get(i, "General")
-                if (r - start) % 2:
+                if k % 2:
                     c.fill = fill(ZEBRA)
-            ws.row_dimensions[r].height = 13 * lines(t["DESC"], 52)
+            ws.row_dimensions[r].height = height
             r += 1
+        r = page.keep(r, 15, repeat)
         box(ws, r, 1, r, 9, "Total", fnt(7.5, True, ink), tint, RIGHT)
         box(ws, r, 10, r, 10, f"=SUM(J{start}:J{r - 1})", fnt(7.5, True, ink), tint, CENTER, fmt='"S/ "0.00')
         r += 2
-    ws.print_title_rows = "1:2"
-    _landscape(ws)
-    _footer(ws, "Vencimientos", report)
+    page.setup("Vencimientos", report, titles="1:2")
 
 
 # ── Alertas de farmacia y lotes sin movimiento ─────────────────────────────────
@@ -473,13 +596,14 @@ def alerts(rows):
     return out, top, total, still
 
 
-def alerts_sheet(wb, report: IciReport):
+def alerts_sheet(wb, report: IciReport, printable=False):
     ws = wb.create_sheet("Alertas de farmacia")
     ws.sheet_view.showGridLines = False
     widths = [8, 30, 18, 8, 13, 11, 11, 11, 11, 12]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[L(i)].width = w
     nc = len(widths)
+    page = Page(ws, widths, printable)
     _title(ws, nc, "ALERTAS DE FARMACIA", report, f"{report.title}  ·  Al cierre del {report.hasta:%d/%m/%Y}", split=3)
     out, top, total, still = alerts(report.rows)
     still_value = sum(t["STOCK_FIN"] * t["PRECIO"] for t in still)
@@ -498,24 +622,36 @@ def alerts_sheet(wb, report: IciReport):
 
     def table(title, cols, data, note):
         nonlocal r
+        desc_width = next(sum(widths[c - 1] for c in range(c1, c2 + 1)) for h, c1, c2, _ in cols if h == "DESCRIPCIÓN")
+        heights = [row_height(values[1], desc_width) for values in data]
+
+        def header_row(rr):
+            for h, c1, c2, _ in cols:
+                box(ws, rr, c1, rr, c2, h, fnt(7, True, NAVY), SOFT, CENTER)
+            ws.row_dimensions[rr].height = 22
+
+        r = page.keep(r, 15 + 15 + 22 + (heights[0] if heights else 15))
         box(ws, r, 1, r, nc, title, fnt(8, True, WHITE), NAVY, LEFT)
-        r += 1
-        box(ws, r, 1, r, nc, note, fnt(7, False, MUTED, True), None, LEFT, border=False)
-        r += 1
-        for h, c1, c2, _ in cols:
-            box(ws, r, c1, r, c2, h, fnt(7, True, NAVY), SOFT, CENTER)
-        ws.row_dimensions[r].height = 22
-        r += 1
+        box(ws, r + 1, 1, r + 1, nc, note, fnt(7, False, MUTED, True), None, LEFT, border=False)
+        header_row(r + 2)
+        r += 3
+
+        def repeat(rr):
+            box(ws, rr, 1, rr, nc, f"{title}  ·  continuación", fnt(8, True, WHITE), NAVY, LEFT)
+            ws.row_dimensions[rr].height = 15
+            header_row(rr + 1)
+            return rr + 2
+
         if not data:
             box(ws, r, 1, r, nc, "Sin registros.", fnt(7.5, False, MUTED, True), None, LEFT)
             r += 2
             return
-        desc_width = next(sum(widths[c - 1] for c in range(c1, c2 + 1)) for h, c1, c2, _ in cols if h == "DESCRIPCIÓN")
-        for k, values in enumerate(data):
+        for k, (values, height) in enumerate(zip(data, heights)):
+            r = page.keep(r, height, repeat)
             for j, ((h, c1, c2, fmt), v) in enumerate(zip(cols, values)):
                 box(ws, r, c1, r, c2, v, fnt(7.5, bold=j == len(cols) - 1), ZEBRA if k % 2 else None,
                     WRAP_LEFT if h == "DESCRIPCIÓN" else MID, fmt=fmt)
-            ws.row_dimensions[r].height = 13 * lines(values[1], int(desc_width * 1.2))
+            ws.row_dimensions[r].height = height
             r += 1
         r += 1
 
@@ -537,38 +673,45 @@ def alerts_sheet(wb, report: IciReport):
             t["STOCK_FIN"] * t["PRECIO"]] for t in shown],
           "Lotes con stock que no tuvieron ninguna entrada ni salida en el mes. De mayor a menor valor. "
           "La lista completa está en la hoja «Lotes sin movimiento».")
-    ws.print_title_rows = "1:2"
-    _landscape(ws)
-    _footer(ws, "Alertas de farmacia", report)
+    page.setup("Alertas de farmacia", report, titles="1:2")
+    return {"desabastecidos": len(out), "sin_movimiento": len(still), "sin_movimiento_valor": still_value,
+            "top10": share}, still, still_value
 
-    full = wb.create_sheet("Lotes sin movimiento")
-    full.sheet_view.showGridLines = False
+
+def still_sheet(wb, report: IciReport, still, still_value, printable=False):
+    ws = wb.create_sheet("Lotes sin movimiento")
+    ws.sheet_view.showGridLines = False
     header = ["CÓDIGO", "DESCRIPCIÓN", "UNIDAD", "LOTE", "VENCE", "STOCK", "PRECIO S/", "VALOR S/"]
-    for i, (h, w) in enumerate(zip(header, [8, 52, 8, 14, 11, 9, 10, 12]), 1):
-        full.column_dimensions[L(i)].width = w
-    box(full, 1, 1, 1, len(header), f"LOTES SIN MOVIMIENTO  ·  {month_title(report)}  ·  {len(still)} lotes  ·  S/ {still_value:.2f}",
+    widths = [8, 52, 8, 14, 11, 9, 10, 12]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[L(i)].width = w
+    page = Page(ws, widths, printable)
+    box(ws, 1, 1, 1, len(header), f"LOTES SIN MOVIMIENTO  ·  {month_title(report)}  ·  {len(still)} lotes  ·  S/ {still_value:.2f}",
         fnt(11, True, WHITE), NAVY, LEFT, border=False)
-    full.row_dimensions[1].height = 22
-    for i, h in enumerate(header, 1):
-        box(full, 2, i, 2, i, h, fnt(7.5, True, NAVY), SOFT, CENTER)
+    ws.row_dimensions[1].height = 22
+
+    def header_row(rr):
+        _cells_header(ws, rr, header)
+        return rr + 1
+
+    r = header_row(2)
     for k, t in enumerate(still):
-        rr = 3 + k
-        values = [t["CODIGO_MED"], t["DESC"], t["MEDFF"], t["MEDLOTE"], _as_datetime(t["FEC_EXP"]), t["STOCK_FIN"], t["PRECIO"], f"=F{rr}*G{rr}"]
+        height = row_height(t["DESC"], 52, 8)
+        r = page.keep(r, height, header_row)
+        values = [t["CODIGO_MED"], t["DESC"], t["MEDFF"], t["MEDLOTE"], _as_datetime(t["FEC_EXP"]), t["STOCK_FIN"], t["PRECIO"], f"=F{r}*G{r}"]
         for i, v in enumerate(values, 1):
-            c = full.cell(rr, i, v)
+            c = ws.cell(r, i, v)
             c.font, c.border = fnt(8, bold=i == 8), BOX
             c.alignment = WRAP_LEFT if i == 2 else MID
             c.number_format = {5: "dd/mm/yyyy", 6: INT0, 7: PRICE, 8: "0.00"}.get(i, "General")
             if k % 2:
                 c.fill = fill(ZEBRA)
-        full.row_dimensions[rr].height = 13 * lines(t["DESC"], 62)
-    full.freeze_panes = "A3"
-    full.auto_filter.ref = f"A2:H{2 + max(len(still), 1)}"
-    full.print_title_rows = "1:2"
-    _landscape(full)
-    _footer(full, "Lotes sin movimiento", report)
-    return {"desabastecidos": len(out), "sin_movimiento": len(still), "sin_movimiento_valor": still_value,
-            "top10": share}
+        ws.row_dimensions[r].height = height
+        r += 1
+    if not printable:
+        ws.freeze_panes = "A3"
+        ws.auto_filter.ref = f"A2:H{max(r - 1, 3)}"
+    page.setup("Lotes sin movimiento", report, titles="1:2")
 
 
 # ── Guías de ingreso y correcciones de lote ────────────────────────────────────
@@ -585,17 +728,20 @@ def _concept(code: str) -> str:
 
 
 # La referencia de la guía la escriben a mano en el almacén; normalmente dice de qué es.
-REFERENCE_GROUPS = ("SISMED", "INTERVENCIÓN", "TRANSFERENCIAS")
+REFERENCE_GROUPS = ("SISMED", "ESTRATEGIA", "TRANSFERENCIAS")
 OTHER_REFERENCES = "OTRAS REFERENCIAS"
 
 
 def reference_group(reference: str) -> str:
-    """«SISMED», «INTERVENCIÓN», «TRANSFERENCIAS» u «OTRAS REFERENCIAS», según lo que escribieron."""
-    plain = unicodedata.normalize("NFKD", str(reference or "")).encode("ascii", "ignore").decode().upper()
+    """«SISMED», «ESTRATEGIA», «TRANSFERENCIAS» u «OTRAS REFERENCIAS», según lo que escribieron.
+
+    En la UNGET del usuario los productos estratégicos llevan la referencia «ESTRATEGIA»; también
+    se reconoce «INTERVENCIÓN», por si otra UNGET la escribe así."""
+    plain = plain_text(reference)
     if "SISMED" in plain:
         return "SISMED"
-    if "INTERV" in plain:
-        return "INTERVENCIÓN"
+    if "ESTRATEG" in plain or "INTERV" in plain:
+        return "ESTRATEGIA"
     if "TRANSF" in plain:
         return "TRANSFERENCIAS"
     return OTHER_REFERENCES
@@ -605,27 +751,22 @@ def _guide_number(move: Movement) -> str:
     return move.doc_numero or move.numero
 
 
-def _header_row(ws, r, header):
-    for i, h in enumerate(header, 1):
-        box(ws, r, i, r, i, h, fnt(7.5, True, NAVY), SOFT, CENTER)
-    ws.row_dimensions[r].height = 22
+def _data_row(ws, r, values, formats, zebra):
+    for i, v in enumerate(values, 1):
+        c = ws.cell(r, i, v)
+        c.font, c.border = fnt(8), BOX
+        c.alignment = WRAP_LEFT if formats.get(i) == "text" else MID
+        c.number_format = formats.get(i, "General") if formats.get(i) != "text" else "General"
+        if zebra:
+            c.fill = fill(ZEBRA)
 
 
-def _data_rows(ws, r, data, formats):
-    """Escribe las filas desde r y devuelve la fila siguiente."""
-    for k, values in enumerate(data):
-        rr = r + k
-        for i, v in enumerate(values, 1):
-            c = ws.cell(rr, i, v)
-            c.font, c.border = fnt(8), BOX
-            c.alignment = WRAP_LEFT if formats.get(i) == "text" else MID
-            c.number_format = formats.get(i, "General") if formats.get(i) != "text" else "General"
-            if k % 2:
-                c.fill = fill(ZEBRA)
-    return r + len(data)
+def _text_height(values, columns):
+    """Alto de la fila según el texto más largo de sus columnas de texto."""
+    return max([row_height(v, c[1], 8) for v, c in zip(values, columns) if c[2] == "text" and v] or [15.0])
 
 
-def guides_sheet(wb, report: IciReport):
+def guides_sheet(wb, report: IciReport, printable=False):
     ws = wb.create_sheet("Guías de ingreso")
     ws.sheet_view.showGridLines = False
     # En el consolidado también se dice a qué farmacia entró cada guía.
@@ -636,9 +777,11 @@ def guides_sheet(wb, report: IciReport):
     columns += [("ÍTEMS", 7, INT0), ("VALOR S/", 12, MONEY)]
     header = [c[0] for c in columns]
     formats = {i: c[2] for i, c in enumerate(columns, 1) if c[2]}
+    widths = [c[1] for c in columns]
     nc = len(columns)
-    for i, c in enumerate(columns, 1):
-        ws.column_dimensions[L(i)].width = c[1]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[L(i)].width = w
+    page = Page(ws, widths, printable)
     total = sum(m.valor or 0 for m in report.guias)
     _title(ws, nc, "GUÍAS DE INGRESO", report,
            f"{report.title}  ·  {len(report.guias)} guías  ·  S/ {total:.2f}  ·  Del {report.desde:%d/%m/%Y} al {report.hasta:%d/%m/%Y}", split=2)
@@ -667,15 +810,6 @@ def guides_sheet(wb, report: IciReport):
 
     value_col = L(nc)
     for name, moves in groups.items():
-        box(ws, r, 1, r, nc, f"{name}  ·  {len(moves)} guías", fnt(8, True, WHITE), NAVY, LEFT)
-        r += 1
-        if not moves:
-            box(ws, r, 1, r, nc, "Sin guías con esta referencia.", fnt(7.5, False, MUTED, True), None, LEFT)
-            r += 2
-            continue
-        _header_row(ws, r, header)
-        r += 1
-        start = r
         data = []
         for m in moves:
             row = [_as_datetime(m.fecha), _guide_number(m), _place_name(m.origen, report.names), _concept(m.concepto),
@@ -683,54 +817,116 @@ def guides_sheet(wb, report: IciReport):
             if report.consolidated:
                 row.append(m.destino[-3:])
             data.append(row + [len(m.lines), m.valor])
-        r = _data_rows(ws, r, data, formats)
+        heights = [_text_height(values, columns) for values in data]
+        r, repeat = _section(ws, page, r, nc, f"{name}  ·  {len(moves)} guías", lambda rr: _cells_header(ws, rr, header),
+                             heights[0] if heights else 15)
+        if not moves:
+            box(ws, r, 1, r, nc, "Sin guías con esta referencia.", fnt(7.5, False, MUTED, True), None, LEFT)
+            r += 2
+            continue
+        start = r
+        for k, (values, height) in enumerate(zip(data, heights)):
+            r = page.keep(r, height, repeat)
+            _data_row(ws, r, values, formats, k % 2)
+            ws.row_dimensions[r].height = height
+            r += 1
+        r = page.keep(r, 15, repeat)
         box(ws, r, 1, r, nc - 1, "Subtotal", fnt(7.5, True, NAVY), SOFT, RIGHT)
         box(ws, r, nc, r, nc, f"=SUM({value_col}{start}:{value_col}{r - 1})", fnt(7.5, True, NAVY), SOFT, CENTER, fmt=MONEY)
         r += 2
-    ws.print_title_rows = "1:2"
-    _landscape(ws)
-    _footer(ws, "Guías de ingreso", report)
+    page.setup("Guías de ingreso", report, titles="1:2")
 
 
-def corrections_sheet(wb, report: IciReport, products: dict):
+def corrections_sheet(wb, report: IciReport, products: dict, printable=False):
+    """Cada guía de corrección completa: su cabecera (número, fecha, movimiento, concepto, referencia,
+    de dónde viene o adónde va) y debajo los productos que llevó, como para revisarla una por una
+    (pedido del usuario: «prácticamente toda la guía se imprimiría»)."""
     ws = wb.create_sheet("Correcciones de lote")
     ws.sheet_view.showGridLines = False
-    columns = [("FECHA", 10, "dd/mm/yyyy"), ("N° DE GUÍA", 13, None), ("FARMACIA", 9, None), ("MOVIMIENTO", 11, None),
-               ("CONCEPTO", 20, "text"), ("REFERENCIA", 22, "text"), ("CÓDIGO", 8, None), ("DESCRIPCIÓN", 38, "text"),
-               ("LOTE", 14, None), ("VENCIMIENTO", 11, "dd/mm/yyyy"), ("CANTIDAD", 9, INT0)]
+    columns = [("CÓDIGO", 12, None), ("DESCRIPCIÓN", 48, "text"), ("UNIDAD", 9, None), ("LOTE", 15, None),
+               ("VENCIMIENTO", 12, "dd/mm/yyyy"), ("CANTIDAD", 10, INT0), ("PRECIO S/", 10, PRICE), ("VALOR S/", 12, MONEY)]
+    widths = [c[1] for c in columns]
     nc = len(columns)
-    for i, c in enumerate(columns, 1):
-        ws.column_dimensions[L(i)].width = c[1]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[L(i)].width = w
+    page = Page(ws, widths, printable)
+    total = sum(m.valor or 0 for m in report.corrections)
     _title(ws, nc, "CORRECCIONES DE LOTE", report,
-           f"{report.title}  ·  Guías con las que un producto salió y volvió a entrar en la misma farmacia (para cambiarle "
-           "el lote o el código). En el ICI quedan en Devolución y Reingreso.", split=2)
+           f"{report.title}  ·  {len(report.corrections)} guías  ·  S/ {total:.2f}  ·  Guías con que se corrige un lote o un código: salen "
+           "(devolución) y vuelven a entrar (reingreso). En el ICI quedan en Devolución y Reingreso.", split=2)
     if not report.corrections:
         box(ws, 4, 1, 4, nc, "Sin correcciones de lote en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
-    else:
-        _header_row(ws, 4, [c[0] for c in columns])
-        # El vencimiento sale del detalle de la guía; si no lo trae, del lote en el ICI.
-        expiry = {(r["CODIGO_MED"], r["MEDLOTE"]): r["FEC_EXP"] for r in report.rows if r["FEC_EXP"]}
-        data = []
-        for m in sorted(report.corrections, key=lambda m: (m.fecha or dt.date.min, m.doc_numero, m.tipo != "S")):
-            for line in m.lines:
-                data.append([_as_datetime(m.fecha), _guide_number(m), m.origen[-3:], "Salida" if m.tipo == "S" else "Entrada",
-                             _concept(m.concepto), m.referencia or "—", line.code, products.get(line.code, ""), line.lote,
-                             _as_datetime(line.vence or expiry.get((line.code, line.lote))), line.qty])
-        _data_rows(ws, 5, data, {i: c[2] for i, c in enumerate(columns, 1) if c[2]})
-        ws.freeze_panes = "A5"
-    ws.print_title_rows = "1:4"
-    _landscape(ws)
-    _footer(ws, "Correcciones de lote", report)
+        page.setup("Correcciones de lote", report, titles="1:2")
+        return
+    # El vencimiento sale del detalle de la guía; si no lo trae, del lote en el ICI.
+    expiry = {(row["CODIGO_MED"], row["MEDLOTE"]): row["FEC_EXP"] for row in report.rows if row["FEC_EXP"]}
+    formats = {i: c[2] for i, c in enumerate(columns, 1) if c[2]}
+    header = [c[0] for c in columns]
+
+    r = 4
+    for m in sorted(report.corrections, key=lambda m: (m.fecha or dt.date.min, m.doc_numero, m.tipo != "S", m.numero)):
+        salida = m.tipo == "S"
+        farmacia = m.origen if salida else m.destino
+        otro = m.destino if salida else m.origen
+        lines_data = []
+        for line in m.lines:
+            desc, unit = products.get(line.code, ("", ""))
+            price = (line.total / line.qty) if (line.total is not None and line.qty) else None
+            lines_data.append([line.code, desc, unit, line.lote, _as_datetime(line.vence or expiry.get((line.code, line.lote))),
+                               line.qty, price, line.total])
+        heights = [_text_height(values, columns) for values in lines_data]
+        title = f"GUÍA N° {_guide_number(m)}  ·  {'SALIDA' if salida else 'ENTRADA'}  ·  {m.fecha:%d/%m/%Y}" if m.fecha \
+            else f"GUÍA N° {_guide_number(m)}  ·  {'SALIDA' if salida else 'ENTRADA'}"
+
+        def items_header(rr):
+            _cells_header(ws, rr, header)
+            return rr + 1
+
+        def repeat(rr, title=title):
+            box(ws, rr, 1, rr, nc, f"{title}  ·  continuación", fnt(8, True, WHITE), NAVY, LEFT)
+            ws.row_dimensions[rr].height = 15
+            return items_header(rr + 1)
+
+        # Cabecera de la guía (no se separa de su primer producto)
+        r = page.keep(r, 15 + 3 * 15 + 22 + (heights[0] if heights else 15))
+        box(ws, r, 1, r, nc, title, fnt(8.5, True, WHITE), NAVY, LEFT)
+        ws.row_dimensions[r].height = 16
+        fields = [
+            ("Farmacia", _place_name(farmacia, report.names), "Movimiento", "Salida" if salida else "Entrada (reingreso)"),
+            ("Concepto", _concept(m.concepto), "Referencia", m.referencia or "—"),
+            ("Destino" if salida else "Procedencia", _place_name(otro, report.names) if otro else "—",
+             "Productos / valor", f"{len(m.lines)}  ·  S/ {(m.valor or 0):.2f}"),
+        ]
+        for k, (l1, v1, l2, v2) in enumerate(fields, 1):
+            box(ws, r + k, 1, r + k, 1, l1, fnt(7.5, True, MUTED), SOFT, LEFT)
+            box(ws, r + k, 2, r + k, 3, v1, fnt(8, True), None, LEFT)
+            box(ws, r + k, 4, r + k, 5, l2, fnt(7.5, True, MUTED), SOFT, LEFT)
+            box(ws, r + k, 6, r + k, nc, v2, fnt(8, True), None, LEFT)
+            ws.row_dimensions[r + k].height = 15
+        r = items_header(r + 4)
+        start = r
+        for k, (values, height) in enumerate(zip(lines_data, heights)):
+            r = page.keep(r, height, repeat)
+            _data_row(ws, r, values, formats, k % 2)
+            ws.row_dimensions[r].height = height
+            r += 1
+        r = page.keep(r, 15, repeat)
+        box(ws, r, 1, r, nc - 1, "Total de la guía", fnt(7.5, True, NAVY), SOFT, RIGHT)
+        box(ws, r, nc, r, nc, f"=SUM({L(nc)}{start}:{L(nc)}{r - 1})", fnt(7.5, True, NAVY), SOFT, CENTER, fmt=MONEY)
+        r += 2
+    page.setup("Correcciones de lote", report, titles="1:2")
 
 
-def build_workbook(report: IciReport) -> tuple[Workbook, dict]:
-    """Arma el libro completo. Devuelve (libro, cifras para mostrar en la consola)."""
+def build_workbook(report: IciReport, printable: bool = False) -> tuple[Workbook, dict]:
+    """Arma el libro completo; `printable` es la versión que se pasa a PDF. Devuelve (libro,
+    cifras para la consola). Las guías van justo después del ICI (pedido del usuario)."""
     wb = Workbook()
-    ici_sheet(wb, report)
-    expiry_sheet(wb, report)
-    summary = alerts_sheet(wb, report)
-    guides_sheet(wb, report)
-    corrections_sheet(wb, report, {r["CODIGO_MED"]: r["DESC"] for r in report.rows})
+    ici_sheet(wb, report, printable)
+    guides_sheet(wb, report, printable)
+    expiry_sheet(wb, report, printable)
+    summary, still, still_value = alerts_sheet(wb, report, printable)
+    still_sheet(wb, report, still, still_value, printable)
+    corrections_sheet(wb, report, {r["CODIGO_MED"]: (r["DESC"], r["MEDFF"]) for r in report.rows}, printable)
     wb.active = 0
     return wb, summary
 
@@ -740,11 +936,28 @@ def _safe_name(value: str) -> str:
     return " ".join(cleaned.split()).strip(" .")[:90]
 
 
+def main_report_name(month, consolidated: bool = True) -> str:
+    """Nombre que se propone en la ventana de guardar: el del consolidado (o de la única farmacia)."""
+    from ici_data import month_label
+
+    label = month_label(month.annomes)
+    if not month.establishments:
+        return f"ICI {label}"
+    est = month.establishments[0]
+    if consolidated and len(est.pharmacies) > 1:
+        return _safe_name(f"ICI CONSOLIDADO {label} - {est.code} - {est.name}")
+    ph = est.pharmacies[0]
+    return _safe_name(f"ICI {label} - {ph.code} - {ph.name}")
+
+
 def write_reports(month, out_dir: str, consolidated: bool = True, per_pharmacy: bool = True, pdf: bool = True,
-                  log=print, open_exporter=None) -> list[str]:
+                  log=print, open_exporter=None, main_name: str | None = None) -> list[str]:
     """Escribe un libro por farmacia y el consolidado de cada establecimiento, cada uno en Excel y
-    en PDF (todas las hojas, para imprimir). Devuelve las rutas de todos los archivos."""
+    en PDF (todas las hojas, para imprimir). `main_name` es el nombre que eligió el usuario en la
+    ventana de guardar para el primero; los demás van a la misma carpeta con su nombre de siempre.
+    Devuelve las rutas de todos los archivos."""
     import os
+    import tempfile
 
     from ici_data import balance_errors, month_label
 
@@ -763,7 +976,8 @@ def write_reports(month, out_dir: str, consolidated: bool = True, per_pharmacy: 
         if bad:
             log(f"⚠️ {bad} lotes de {report.title} no cuadran (saldo + entradas − salidas ≠ stock final).")
         wb, summary = build_workbook(report)
-        path = os.path.join(out_dir, f"{_safe_name(file_name)}.xlsx")
+        name = _safe_name(main_name) if (main_name and not paths) else _safe_name(file_name)
+        path = os.path.join(out_dir, f"{name}.xlsx")
         wb.save(path)
         paths.append(path)
         log(f"✅ {os.path.basename(path)}  ·  {len(report.rows)} lotes · {summary['desabastecidos']} desabastecidos · "
@@ -771,7 +985,11 @@ def write_reports(month, out_dir: str, consolidated: bool = True, per_pharmacy: 
         if exporter is not None:
             pdf_path = path[:-len(".xlsx")] + ".pdf"
             try:
-                exporter.export(path, pdf_path)
+                # El PDF sale de la versión para imprimir: páginas cortadas y encabezados repetidos.
+                with tempfile.TemporaryDirectory(prefix="toolkit_ici_print_") as tmp:
+                    printable = os.path.join(tmp, f"{name}.xlsx")
+                    build_workbook(report, printable=True)[0].save(printable)
+                    exporter.export(printable, pdf_path)
                 paths.append(pdf_path)
                 log(f"📄 {os.path.basename(pdf_path)}")
             except Exception as exc:  # noqa: BLE001 - el Excel ya quedó; se avisa y se sigue

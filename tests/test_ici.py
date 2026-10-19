@@ -13,7 +13,7 @@ if str(TOOLKIT_DIR) not in sys.path:
 
 import ici_data
 import ici_pdf
-from ici_excel import COLS, build_workbook, column_span, signature_blocks, date_in_words, reference_group, write_reports
+from ici_excel import COLS, Page, build_workbook, row_height, column_span, signature_blocks, date_in_words, reference_group, write_reports
 
 MONTH = "202608"
 
@@ -186,8 +186,9 @@ class IciExcelTests(unittest.TestCase):
 
     def test_workbook_has_the_approved_sheets(self):
         wb, summary = build_workbook(self._report())
-        self.assertEqual(wb.sheetnames, ["ICI", "Vencimientos", "Alertas de farmacia", "Lotes sin movimiento",
-                                         "Guías de ingreso", "Correcciones de lote"])
+        # Las guías van justo después del ICI (pedido del usuario).
+        self.assertEqual(wb.sheetnames, ["ICI", "Guías de ingreso", "Vencimientos", "Alertas de farmacia",
+                                         "Lotes sin movimiento", "Correcciones de lote"])
         ws = wb["ICI"]
         headers = [ws.cell(12, c).value for c in range(1, ws.max_column + 1)]
         self.assertNotIn("AJUSTE DE INVENTARIO (+)", headers)
@@ -200,15 +201,64 @@ class IciExcelTests(unittest.TestCase):
             guides = openpyxl.load_workbook(path)["Guías de ingreso"]
             cells = [c.value for row in guides.iter_rows() for c in row if c.value is not None]
         # Una sección por referencia, en el orden SISMED, intervención, transferencias.
-        self.assertLess(cells.index("SISMED  ·  1 guías"), cells.index("INTERVENCIÓN  ·  1 guías"))
-        self.assertLess(cells.index("INTERVENCIÓN  ·  1 guías"), cells.index("TRANSFERENCIAS  ·  0 guías"))
+        self.assertLess(cells.index("SISMED  ·  1 guías"), cells.index("ESTRATEGIA  ·  1 guías"))
+        self.assertLess(cells.index("ESTRATEGIA  ·  1 guías"), cells.index("TRANSFERENCIAS  ·  0 guías"))
         self.assertIn("Distribución", cells)
         self.assertNotIn("04 Distribución", cells)
         self.assertIn("Intervención sanitaria", cells)
 
+    def test_excel_has_the_column_letters_with_filter(self):
+        wb, _ = build_workbook(self._report())
+        ws = wb["ICI"]
+        self.assertEqual([ws.cell(15, c).value for c in (1, 2, 3)], ["A", "B", "C"])
+        self.assertTrue(ws.auto_filter.ref.startswith("A15:"))
+        self.assertTrue(str(ws.cell(18, ws.max_column).value).startswith("=SUBTOTAL(9,"))
+
+    def test_print_version_repeats_the_header_on_every_page(self):
+        rows = [tformdet("06502F01", f"{k:03d}", f"L{k}", SALDO=10 + k, SIS=1) for k in range(150)]
+        m = month(rows)
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        wb, _ = build_workbook(report, printable=True)
+        ws = wb["ICI"]
+        breaks = [b.id for b in ws.row_breaks.brk]
+        self.assertGreaterEqual(len(breaks), 2)
+        # Cada página nueva empieza con el encabezado de la tabla (o con la declaración jurada).
+        for brk in breaks:
+            self.assertIn(ws.cell(brk + 1, 1).value, ("PRODUCTO FARMACÉUTICO", "DECLARACIÓN JURADA"))
+            if ws.cell(brk + 1, 1).value == "PRODUCTO FARMACÉUTICO":
+                self.assertEqual(ws.cell(brk + 2, 2).value, "DESCRIPCIÓN")
+        self.assertFalse(ws.print_title_rows)
+        self.assertIsNone(ws.auto_filter.ref)
+        # El PDF ocupa el ancho de la hoja: escala propia, no «ajustar a una página».
+        self.assertFalse(ws.sheet_properties.pageSetUpPr.fitToPage)
+        self.assertEqual(ws.page_setup.scale, Page(ws, [c[1] for c in COLS], True, (0.25, 0.25, 0.35, 0.45)).scale)
+
+    def test_long_names_get_a_taller_row(self):
+        long_name = "ACIDO FOLICO + FERROSO SULFATO (EQUIV. DE HIERRO ELEMENTAL) 400 UG + 60 MG FE TABLETA RECUBIERTA"
+        self.assertGreaterEqual(row_height(long_name, 46, 7.2), 24)
+        self.assertEqual(row_height("PARACETAMOL 500 mg", 46, 7.2), 13.8)
+
+    def test_correction_reference_goes_to_corrections_not_to_guides(self):
+        rows = [tformdet("06502F01", "001", "L1", SALDO=10, REINGRE=5)]
+        m = month(rows, heads=[head("E", "1", "05", "030A0001", "06502F0101", doc=("04", "G-9"), refe="Corrección de lote")],
+                  details=[detail("E", "1", "001", "L1", 5, 5)])
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        self.assertEqual(report.guias, [])
+        self.assertEqual([c.doc_numero for c in report.corrections], ["G-9"])
+        self.assertIn("correccion", report.rows[0]["flags"])
+        # Cada guía de corrección sale completa: cabecera con su referencia y debajo sus productos.
+        wb, _ = build_workbook(report)
+        cells = [c.value for row in wb["Correcciones de lote"].iter_rows() for c in row if c.value is not None]
+        self.assertIn("GUÍA N° G-9  ·  ENTRADA  ·  10/08/2026", cells)
+        self.assertIn("Corrección de lote", cells)
+        self.assertIn("PARACETAMOL 500 mg", cells)
+
     def test_reference_groups_and_date_in_words(self):
         self.assertEqual(reference_group("sismed"), "SISMED")
-        self.assertEqual(reference_group("INTERVENCION SANITARIA"), "INTERVENCIÓN")
+        self.assertEqual(reference_group("Estrategia sanitaria TBC"), "ESTRATEGIA")
+        self.assertEqual(reference_group("INTERVENCION SANITARIA"), "ESTRATEGIA")
         self.assertEqual(reference_group("Transf. Hosp. Tarapoto"), "TRANSFERENCIAS")
         self.assertEqual(reference_group(""), "OTRAS REFERENCIAS")
         self.assertEqual(date_in_words(date(2026, 10, 18)), "18 de octubre de 2026")
