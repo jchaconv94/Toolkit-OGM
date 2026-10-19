@@ -1024,10 +1024,9 @@ def internal_sheet(wb, report: IciReport, products: dict, printable=False):
     r = 4
     for m in entries:
         title = f"GUÍA N° {_guide_number(m)}" + (f"  ·  {m.fecha:%d/%m/%Y}" if m.fecha else "")
-        fields = [("Procedencia", _place_name(m.origen, report.names) if m.origen else "—",
-                   "Concepto", _concept(m.concepto, report.concepts)),
-                  ("Referencia", m.referencia or "—", "Farmacia",
-                   f"{_place_name(m.destino, report.names)}  ·  {len(m.lines)} productos")]
+        fields = [("Origen", _place_name(m.origen, report.names) if m.origen else "—",
+                   "Destino", _place_name(m.destino, report.names)),
+                  ("Concepto", _concept(m.concepto, report.concepts), "Referencia", m.referencia or "—")]
         items = [[line.code, products.get(line.code, ("", ""))[0], line.lote, _as_datetime(line.vence), line.regsan,
                   line.qty, line.total] for line in m.lines]
         heights = [_span_height(spans, values, widths) for values in items]
@@ -1039,7 +1038,7 @@ def internal_sheet(wb, report: IciReport, products: dict, printable=False):
 
         r = page.keep(r, _block_height(fields) + 22 + (heights[0] if heights else 15))
         r = _block_header(ws, r, nc, title, fields)
-        ws.cell(r - 1, 2).font = fnt(8.5, True, INKT["fix"])      # la referencia, que es lo que se revisa
+        ws.cell(r - 1, 5).font = fnt(8.5, True, INKT["fix"])      # la referencia, que es lo que se revisa
         r = _span_header(ws, r, spans)
         start = r
         for k, (values, height) in enumerate(zip(items, heights)):
