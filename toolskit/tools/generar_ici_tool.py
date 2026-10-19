@@ -99,22 +99,16 @@ class GenerarIciTool(SismedTool):
                 cfg_set("ici_sismed_dir", e.path)
                 input_sismed.update()
 
-        def _on_out_picked(e: ft.FilePickerResultEvent):
-            if e.path:
-                input_out.value = e.path
-                cfg_set("ici_out_dir", e.path)
-                input_out.update()
-
+        # Dónde guardar se elige al generar, con la ventana de Windows, como en las demás
+        # herramientas (pedido del usuario: sin campo «Guardar en»).
         sismed_picker = ft.FilePicker(on_result=_on_sismed_picked)
-        out_picker = ft.FilePicker(on_result=_on_out_picked)
-        page.overlay.extend([sismed_picker, out_picker])
+        save_picker = ft.FilePicker(on_result=lambda e: _on_save_picked(e))
+        page.overlay.extend([sismed_picker, save_picker])
         page.update()
 
         input_sismed, sismed_row = _folder_field(
             cfg_get("ici_sismed_dir") or cfg_get("tformdet_sismed_dir"), "Seleccione la carpeta SISMED…",
             sismed_picker, "Seleccionar carpeta SISMED")
-        input_out, out_row = _folder_field(
-            cfg_get("ici_out_dir") or "", "Carpeta donde se guardarán los ICI…", out_picker, "Seleccionar carpeta")
 
         # ── Mes ────────────────────────────────────────────────────────────────
         year0, month0 = previous_month()
@@ -191,8 +185,8 @@ class GenerarIciTool(SismedTool):
             else:
                 texto_resumen.value = f"ICI de {month_label(annomes).title()}"
                 texto_detalle.value = (" y ".join(partes).capitalize() if partes else "Marque qué generar") + \
-                    ", en Excel y en PDF (todas las hojas, para imprimir). Hojas: ICI, Vencimientos, Alertas de farmacia, " \
-                    "Lotes sin movimiento, Guías de ingreso y Correcciones de lote."
+                    ", en Excel y en PDF (todas las hojas, para imprimir). Hojas: ICI, Guías de ingreso, Vencimientos, " \
+                    "Alertas de farmacia, Lotes sin movimiento y Correcciones de lote."
                 icono_resumen.name, icono_resumen.color = ft.icons.EVENT_NOTE_ROUNDED, ACCENT
             cfg_set("ici_consolidado", bool(check_consolidado.value))
             cfg_set("ici_por_farmacia", bool(check_farmacias.value))
@@ -211,18 +205,35 @@ class GenerarIciTool(SismedTool):
         btn_open = ft.TextButton("Abrir carpeta", icon=ft.icons.FOLDER_ROUNDED, visible=False, on_click=_open_folder,
                                  style=ft.ButtonStyle(color=ACCENT))
 
+        pending = {}
+
         def _run(e):
             annomes = _annomes()
-            sismed_dir = input_sismed.value
-            out_dir = input_out.value
-            if not sismed_dir:
+            if not input_sismed.value:
                 return _snack("❌ Seleccione la carpeta del SISMED.", ft.colors.RED_700)
-            if not out_dir or not os.path.isdir(out_dir):
-                return _snack("❌ Seleccione la carpeta donde se guardarán los ICI.", ft.colors.RED_700)
             if annomes is None:
                 return _snack("❌ Escriba un año válido (por ejemplo, 2026).", ft.colors.RED_700)
             if not (check_consolidado.value or check_farmacias.value):
                 return _snack("❌ Marque el consolidado, los ICI por farmacia o los dos.", ft.colors.RED_700)
+            pending.update(annomes=annomes, sismed_dir=input_sismed.value,
+                           consolidated=bool(check_consolidado.value), per_pharmacy=bool(check_farmacias.value))
+            label = month_label(annomes)
+            last_dir = cfg_get("ici_out_dir") or ""
+            save_picker.save_file(
+                dialog_title="Guardar el ICI",
+                file_name=f"ICI CONSOLIDADO {label}.xlsx" if pending["consolidated"] else f"ICI {label}.xlsx",
+                initial_directory=last_dir if os.path.isdir(last_dir) else None,
+                allowed_extensions=["xlsx"],
+            )
+
+        def _on_save_picked(e: ft.FilePickerResultEvent):
+            if not e.path or not pending:
+                return
+            path = e.path if e.path.lower().endswith(".xlsx") else f"{e.path}.xlsx"
+            out_dir = os.path.dirname(os.path.abspath(path))
+            main_name = os.path.splitext(os.path.basename(path))[0]
+            cfg_set("ici_out_dir", out_dir)
+            job = dict(pending)
 
             log_view.controls.clear()
             btn_open.visible = False
@@ -230,9 +241,10 @@ class GenerarIciTool(SismedTool):
             page.update()
 
             def _process():
+                annomes = job["annomes"]
                 try:
                     _log(f"🚀 Generando el ICI de {month_label(annomes).title()}…")
-                    month = read_month(sismed_dir, annomes, log=_log)
+                    month = read_month(job["sismed_dir"], annomes, log=_log)
                     for warning in month.warnings:
                         _log(f"⚠️ {warning}")
                     if not month.establishments:
@@ -243,8 +255,8 @@ class GenerarIciTool(SismedTool):
                     for est in month.establishments:
                         _log(f"🏥 {est.name}: {len(est.pharmacies)} farmacia(s) · "
                              f"{sum(len(p.rows) for p in est.pharmacies)} lotes")
-                    paths = write_reports(month, out_dir, consolidated=bool(check_consolidado.value),
-                                          per_pharmacy=bool(check_farmacias.value), log=_log)
+                    paths = write_reports(month, out_dir, consolidated=job["consolidated"],
+                                          per_pharmacy=job["per_pharmacy"], log=_log, main_name=main_name)
                     generated["dir"] = out_dir
                     btn_open.visible = hasattr(os, "startfile")
                     _log(f"✨ Listo: {len(paths)} archivo(s) en {out_dir}")
@@ -298,7 +310,6 @@ class GenerarIciTool(SismedTool):
                                 ft.Column([_lbl("Directorio raíz SISMED:"), ft.Row([sismed_row])], spacing=6),
                                 ft.Column([_lbl("Mes del ICI:"), ft.Row([dropdown_mes, input_anio], spacing=8)], spacing=6),
                                 ft.Column([_lbl("Generar:"), check_consolidado, check_farmacias], spacing=2),
-                                ft.Column([_lbl("Guardar en:"), ft.Row([out_row])], spacing=6),
                                 resumen,
                                 ft.Container(height=4),
                                 ft.Row([

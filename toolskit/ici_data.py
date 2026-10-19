@@ -27,6 +27,7 @@ import collections
 import os
 import re
 import tempfile
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
@@ -79,6 +80,11 @@ def num(value) -> float:
 
 def text(value) -> str:
     return str(value or "").strip()
+
+
+def plain_text(value) -> str:
+    """En mayúsculas y sin tildes, para reconocer lo que se escribe a mano («Corrección» = «CORRECCION»)."""
+    return unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().upper()
 
 
 def ipress_of(code: str) -> str:
@@ -417,8 +423,15 @@ def is_internal(move: Movement) -> bool:
 
 
 def is_correction(move: Movement) -> bool:
-    """Sale y vuelve a entrar en la misma farmacia (corrección de lote o de código)."""
-    return bool(move.origen) and move.origen == move.destino
+    """Corrección de lote o de código: la guía dice «corrección…» en la referencia (en la UNGET del
+    usuario las hace el almacén y entran como reingreso), o el producto salió y volvió a entrar en
+    la misma farmacia."""
+    return "CORREC" in plain_text(move.referencia) or (bool(move.origen) and move.origen == move.destino)
+
+
+def touches(move: Movement, code: str) -> bool:
+    """El movimiento sale de esa farmacia o entra a ella."""
+    return (move.tipo == "S" and move.origen == code) or (move.tipo == "E" and move.destino == code)
 
 
 def apply_vencidos(month: IciMonth) -> None:
@@ -470,7 +483,7 @@ def pharmacy_report(month: IciMonth, est: Establishment, ph: Pharmacy) -> IciRep
     rows = _copy_rows(ph.rows)
     guias = [m for m in month.movements
              if m.tipo == "E" and m.destino == ph.code and m.concepto != "21" and not is_correction(m)]
-    corrections = [m for m in month.movements if is_correction(m) and m.origen == ph.code]
+    corrections = [m for m in month.movements if is_correction(m) and touches(m, ph.code)]
     _mark_corrections(rows, corrections)
     ficha = {
         **_place(est),
@@ -603,7 +616,7 @@ def consolidated_report(month: IciMonth, est: Establishment) -> IciReport:
         internal, transit = estimate_internal(rows), 0.0
     else:
         internal, transit = net_internal(rows, moves)
-    corrections = [m for m in moves if is_correction(m)]
+    corrections = [m for m in moves if is_correction(m) and any(touches(m, code) for code in codes)]
     _mark_corrections(rows, corrections)
     guias = [m for m in moves if m.tipo == "E" and m.destino in codes and m.concepto != "21"
              and not is_correction(m) and not is_internal(m)]
