@@ -290,7 +290,7 @@ class IciReport:
     desde: date
     hasta: date
     guias: list[Movement]              # ingresos del mes que no son correcciones
-    corrections: list[Correction]
+    internos: list[Correction]        # ingresos internos (reingresos y entregas de otra farmacia)
     names: dict[str, str]
     consolidated: bool = False
     internal_value: float = 0.0
@@ -673,15 +673,19 @@ def compare_lines(salida: Movement | None, entrada: Movement | None) -> list[Cha
     return changes
 
 
-def find_corrections(month: IciMonth, codes: set[str]) -> list[Correction]:
-    """Correcciones del mes en esas farmacias.
+def is_internal_entry(move: Movement) -> bool:
+    """Ingreso interno (regla del usuario, 2026-10-19): lo que entra a la columna REINGRESO —la
+    devolución por sobrestock y demás que ingresó el responsable de farmacia para hacer algún cambio
+    (corrección de lote, de vencimiento, de registro sanitario, ajuste, productos recuperados…)— y lo
+    que entrega otra farmacia del establecimiento, aunque sea por distribución: no viene del almacén."""
+    return move.tipo == "E" and (move.concepto in REINGRESO_CONCEPTOS or is_internal(move))
 
-    Un reingreso es una corrección si su salida (la enlazada en TMOVIMTRF o, si no, la de la misma
-    guía) llevaba el mismo producto con otro lote, vencimiento, registro sanitario, tipo de
-    suministro, financiamiento o código. También lo es la guía cuya referencia dice «corrección…»
-    (en la UNGET del usuario el almacén hace el cambio y lo devuelve como reingreso), y una salida
-    «para corrección» que todavía no volvió queda como pendiente. Un reingreso sin cambios
-    (productos recuperados, devoluciones de pacientes, entregas entre farmacias) no es corrección."""
+
+def internal_entries(month: IciMonth, codes: set[str]) -> list[Correction]:
+    """Los ingresos internos del mes en esas farmacias, cada uno con su salida si el SISMED la enlazó
+    (TMOVIMTRF, o la de la misma guía) y, producto por producto, qué cambió entre lo que salió y lo que
+    volvió a entrar: lote, vencimiento, registro sanitario, tipo de suministro, financiamiento o código.
+    Lo que se revisa es la referencia, porque ahí escriben el cambio."""
     ipress = {ipress_of(code) for code in codes}
     group = {ph.code for est in month.establishments if est.code in ipress for ph in est.pharmacies} | set(codes)
     salidas = [m for m in month.movements if m.tipo == "S" and m.origen in group]
@@ -690,28 +694,17 @@ def find_corrections(month: IciMonth, codes: set[str]) -> list[Correction]:
     for m in salidas:
         if m.doc_numero:
             by_doc[(m.doc_tipo, _doc_key(m.doc_numero))].append(m)
-    entradas = sorted((m for m in month.movements if m.tipo == "E" and m.destino in codes
-                       and m.concepto in REINGRESO_CONCEPTOS), key=_move_order)
+    entradas = sorted((m for m in month.movements if m.destino in codes and is_internal_entry(m)), key=_move_order)
     used, found = set(), []
     for entrada in entradas:
         salida = by_number.get(month.links.get(entrada.numero))
         if salida is None and entrada.doc_numero:
             salida = next((m for m in by_doc.get((entrada.doc_tipo, _doc_key(entrada.doc_numero)), [])
                            if m.numero not in used), None)
-        if salida is None and mentions_correction(entrada):
-            # Corrección hecha en el almacén: la salida es otra guía, también «para corrección».
-            wanted = {(line.code, line.qty) for line in entrada.lines}
-            salida = next((m for m in salidas if m.numero not in used and mentions_correction(m) and m.origen in codes
-                           and wanted & {(line.code, line.qty) for line in m.lines}), None)
-        changes = compare_lines(salida, entrada)
-        if any(c.fields for c in changes) or mentions_correction(entrada) or (salida and mentions_correction(salida)):
-            found.append(Correction(salida, entrada, changes))
-            if salida:
-                used.add(salida.numero)
-    for salida in salidas:
-        if salida.numero not in used and salida.origen in codes and mentions_correction(salida):
-            found.append(Correction(salida, None, compare_lines(salida, None)))
-    return sorted(found, key=lambda c: (c.fecha or date.min, c.salida.numero if c.salida else ""))
+        if salida is not None:
+            used.add(salida.numero)
+        found.append(Correction(salida, entrada, compare_lines(salida, entrada)))
+    return found
 
 
 # Conceptos de dispensación que cuenta el SISMED como recetas (procesar_ici), en las columnas del ICI.
@@ -782,12 +775,12 @@ def apply_vencidos(month: IciMonth) -> None:
                 pending -= moved
 
 
-def _mark_corrections(rows: list[dict], corrections: list[Correction]) -> None:
-    """Marca los lotes que se corrigieron en el mes (los de antes y los de después)."""
+def _mark_corrections(rows: list[dict], internos: list[Correction]) -> None:
+    """Marca los lotes que cambiaron en un ingreso interno (los de antes y los de después)."""
     keys = set()
-    for correction in corrections:
-        for change in correction.changes:
-            if change.fields or not correction.changed:
+    for entry in internos:
+        for change in entry.changes:
+            if change.fields:
                 keys |= {(line.code, line.lote) for line in (change.before, change.after) if line}
     for row in rows:
         if (row["CODIGO_MED"], row["MEDLOTE"]) in keys:
@@ -804,11 +797,10 @@ def _place(est: Establishment) -> dict:
 
 def pharmacy_report(month: IciMonth, est: Establishment, ph: Pharmacy) -> IciReport:
     rows = _copy_rows(ph.rows)
-    corrections = find_corrections(month, {ph.code})
-    in_corrections = {m.numero for c in corrections for m in c.movements}
+    internos = internal_entries(month, {ph.code})
     guias = [m for m in month.movements if m.tipo == "E" and m.destino == ph.code and is_guide(m)
-             and m.numero not in in_corrections]
-    _mark_corrections(rows, corrections)
+             and not is_internal_entry(m)]
+    _mark_corrections(rows, internos)
     ficha = {
         **_place(est),
         "Establecimiento": est.name,
@@ -817,7 +809,7 @@ def pharmacy_report(month: IciMonth, est: Establishment, ph: Pharmacy) -> IciRep
     }
     return IciReport(
         annomes=month.annomes, title=ph.name, ficha=ficha, rows=rows, recetas=list(ph.recetas),
-        desde=ph.desde, hasta=ph.hasta, guias=sorted(guias, key=_move_order), corrections=corrections,
+        desde=ph.desde, hasta=ph.hasta, guias=sorted(guias, key=_move_order), internos=internos,
         names=month.names, codes={ph.code}, concepts=month.concepts, products=month.products,
         valores=list(ph.valores) if ph.valores else None,
         recetas_diarias=daily_recetas(month, {ph.code}, ph.desde, ph.hasta) if month.has_dispensations else [],
@@ -942,11 +934,10 @@ def consolidated_report(month: IciMonth, est: Establishment) -> IciReport:
         internal, transit = estimate_internal(rows), 0.0
     else:
         internal, transit = net_internal(rows, moves)
-    corrections = find_corrections(month, codes)
-    in_corrections = {m.numero for c in corrections for m in c.movements}
-    _mark_corrections(rows, corrections)
+    internos = internal_entries(month, codes)
+    _mark_corrections(rows, internos)
     guias = [m for m in moves if m.tipo == "E" and m.destino in codes and is_guide(m)
-             and m.numero not in in_corrections and not is_internal(m)]
+             and not is_internal_entry(m)]
     recetas = [sum(ph.recetas[i] for ph in est.pharmacies) for i in range(len(CONSUMO))]
     # Los valores del SISMED solo se usan si todas las farmacias tienen su ICI procesado.
     valores = ([sum(ph.valores[i] for ph in est.pharmacies) for i in range(len(CONSUMO))]
@@ -961,7 +952,7 @@ def consolidated_report(month: IciMonth, est: Establishment) -> IciReport:
     desde, hasta = min(ph.desde for ph in est.pharmacies), max(ph.hasta for ph in est.pharmacies)
     return IciReport(
         annomes=month.annomes, title=est.name, ficha=ficha, rows=rows, recetas=recetas, desde=desde, hasta=hasta,
-        guias=sorted(guias, key=_move_order), corrections=corrections,
+        guias=sorted(guias, key=_move_order), internos=internos,
         names=month.names, consolidated=True, internal_value=internal, internal_estimated=estimated,
         in_transit=transit, codes=codes, concepts=month.concepts, products=month.products, valores=valores,
         recetas_diarias=daily_recetas(month, codes, desde, hasta) if month.has_dispensations else [],

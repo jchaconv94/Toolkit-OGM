@@ -29,7 +29,7 @@ from openpyxl.utils import get_column_letter as L
 from openpyxl.worksheet.page import PageMargins
 from openpyxl.worksheet.pagebreak import Break
 
-from ici_data import CONSUMO, CONCEPTOS, MESES, IciReport, Movement, VALORES_FIELDS, entry_kind, ipress_of, plain_text
+from ici_data import CONSUMO, CONCEPTOS, MESES, IciReport, Movement, VALORES_FIELDS, ipress_of, plain_text
 
 F = "Arial"
 NAVY, NAVY2, GRID, SOFT, ZEBRA, INK, MUTED, WHITE = (
@@ -358,9 +358,9 @@ def ici_sheet(wb, report: IciReport, printable=False):
         notes.append("Venta, S.I.S., intervención sanitaria y el consumo total en soles: los que calculó el SISMED (cada venta "
                      "a su precio del día), más otros convenios y factor de pérdida, que el SISMED no guarda; esos y los "
                      "demás montos, cantidad × precio de cada lote.")
-    if report.corrections:
-        notes.append("Lote en morado: tuvo una corrección en el mes (lote, vencimiento, registro sanitario, tipo de "
-                     "suministro, financiamiento o código); el detalle está en la hoja «Correcciones de lote».")
+    if any(entry.changed for entry in report.internos):
+        notes.append("Lote en morado: cambió en un ingreso interno del mes (lote, vencimiento, registro sanitario, tipo de "
+                     "suministro, financiamiento o código); el detalle está en la hoja «Ingresos internos».")
     if report.consolidated:
         if report.internal_estimated:
             notes.append(f"Consolidado: se descontaron, estimadas por lote, las entregas entre farmacias del establecimiento "
@@ -946,19 +946,13 @@ def guides_sheet(wb, report: IciReport, products: dict, printable=False):
            f"{report.title}  ·  {len(report.guias)} guías  ·  S/ {total:.2f}  ·  Del {report.desde:%d/%m/%Y} al {report.hasta:%d/%m/%Y}", split=2)
 
     groups = {name: [] for name in REFERENCE_GROUPS}
-    internal = []
-    for move in report.guias:
-        if entry_kind(move) == "almacen":
-            groups.setdefault(reference_group(move.referencia), []).append(move)
-        else:
-            internal.append(move)
+    for move in report.guias:      # solo lo que llegó del almacén por distribución
+        groups.setdefault(reference_group(move.referencia), []).append(move)
     if not groups.get(OTHER_REFERENCES):
         groups.pop(OTHER_REFERENCES, None)
 
     # Resumen
     summary = [(f"Desde el almacén · {name.capitalize()}", moves) for name, moves in groups.items()]
-    if internal:
-        summary.append(("Desde otras farmacias del establecimiento", internal))
     r = 4
     box(ws, r, 1, r, nc - 2, "RESUMEN DE INGRESOS", fnt(7.5, True, WHITE), NAVY, LEFT)
     box(ws, r, nc - 1, r, nc - 1, "GUÍAS", fnt(7.5, True, WHITE), NAVY, CENTER)
@@ -1003,58 +997,56 @@ def guides_sheet(wb, report: IciReport, products: dict, printable=False):
 
     for name, moves in groups.items():
         r = guide_table(r, f"DESDE EL ALMACÉN · {name}", moves, "Sin guías con esta referencia.")
-    if internal:
-        r = guide_table(r, "DESDE OTRAS FARMACIAS DEL ESTABLECIMIENTO", internal, "Sin entregas de otras farmacias.")
 
     page.setup("Guías de ingreso", report, titles="1:2")
 
 
-def corrections_sheet(wb, report: IciReport, products: dict, printable=False):
-    """Cada corrección con la guía de salida y la de reingreso, y por producto qué cambió: lote,
-    vencimiento, registro sanitario, tipo de suministro, financiamiento o código."""
-    ws = wb.create_sheet("Correcciones de lote")
+def internal_sheet(wb, report: IciReport, products: dict, printable=False):
+    """Ingresos internos (antes «Correcciones de lote»; regla del usuario, 2026-10-19): todo lo que entró
+    a la columna REINGRESO —la devolución por sobrestock y demás que ingresó el responsable de farmacia
+    para hacer algún cambio— y lo que entregó otra farmacia del establecimiento. Guía por guía, con la
+    referencia a la vista (ahí escriben el cambio), sus productos y, si el SISMED enlazó la salida, qué
+    cambió en cada uno: lote, vencimiento, registro sanitario, tipo de suministro, financiamiento o código."""
+    ws = wb.create_sheet("Ingresos internos")
     ws.sheet_view.showGridLines = False
-    columns = [("CÓDIGO", 12), ("DESCRIPCIÓN", 40), ("CANTIDAD", 9), ("QUÉ CAMBIÓ", 18), ("ANTES", 28),
-               ("DESPUÉS", 28), ("VALOR S/", 11)]
+    columns = [("CÓDIGO", 9.5), ("DESCRIPCIÓN", 34), ("LOTE", 12), ("VENCIMIENTO", 10.5), ("CANTIDAD", 8.5),
+               ("QUÉ CAMBIÓ", 15), ("ANTES (LO QUE SALIÓ)", 21), ("DESPUÉS (LO QUE ENTRÓ)", 21), ("VALOR S/", 10.5)]
     widths = [w for _, w in columns]
     nc = len(columns)
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[L(i)].width = w
     page = Page(ws, widths, printable)
-    changed = sum(1 for c in report.corrections if c.changed)
-    _title(ws, nc, "CORRECCIONES DE LOTE", report,
-           f"{report.title}  ·  {len(report.corrections)} correcciones  ·  Salida (devolución) y reingreso enlazados por el "
-           "SISMED en que cambió el lote, el vencimiento, el registro sanitario, el tipo de suministro, el financiamiento "
-           "o el código, y guías con referencia «corrección». En el ICI quedan en Devolución y Reingreso.", split=2)
+    entries = report.internos
+    total = sum(e.entrada.valor or 0 for e in entries if e.entrada)
+    _title(ws, nc, "INGRESOS INTERNOS", report,
+           f"{report.title}  ·  {len(entries)} guías  ·  S/ {total:.2f}  ·  Reingresos (devolución por sobrestock y demás) que "
+           "ingresó la farmacia para hacer algún cambio, y lo que entregó otra farmacia del establecimiento. La referencia "
+           "dice qué se cambió.", split=2)
     ws.row_dimensions[2].height = 26
     ws.cell(2, 1).alignment = WRAP_LEFT
-    if not report.corrections:
-        box(ws, 4, 1, 4, nc, "Sin correcciones en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
-        page.setup("Correcciones de lote", report, titles="1:2")
+    if not entries:
+        box(ws, 4, 1, 4, nc, "Sin ingresos internos en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
+        page.setup("Ingresos internos", report, titles="1:2")
         return
     spans = [(h, i, i, fmt) for i, (h, fmt) in enumerate(
-        [("CÓDIGO", None), ("DESCRIPCIÓN", "text"), ("CANTIDAD", INT0), ("QUÉ CAMBIÓ", "text"), ("ANTES", "text"),
-         ("DESPUÉS", "text"), ("VALOR S/", MONEY)], 1)]
+        [("CÓDIGO", None), ("DESCRIPCIÓN", "text"), ("LOTE", None), ("VENCIMIENTO", "dd/mm/yyyy"), ("CANTIDAD", INT0),
+         ("QUÉ CAMBIÓ", "text"), ("ANTES (LO QUE SALIÓ)", "text"), ("DESPUÉS (LO QUE ENTRÓ)", "text"), ("VALOR S/", MONEY)], 1)]
     r = 4
-    for c in report.corrections:
-        s, e = c.salida, c.entrada
-        if s and e:
-            title = f"CORRECCIÓN  ·  GUÍA {_guide_number(s)} → GUÍA {_guide_number(e)}"
-            estado = ("Cambió: " + ", ".join(sorted({f for ch in c.changes for f in ch.fields}))) if c.changed \
-                else "Volvió sin cambios"
-        elif s:
-            title = f"SALIÓ PARA CORRECCIÓN  ·  GUÍA {_guide_number(s)}"
-            estado = "Pendiente: todavía no vuelve a ingresar"
+    for entry in entries:
+        s, e = entry.salida, entry.entrada
+        title = (f"GUÍA N° {_guide_number(e)}" + (f"  ·  {e.fecha:%d/%m/%Y}" if e.fecha else "")
+                 + f"  ·  {_concept(e.concepto, report.concepts)}")
+        if s is None:
+            estado = "Sin salida enlazada en el SISMED"
+        elif entry.changed:
+            estado = "Cambió: " + ", ".join(sorted({f for ch in entry.changes for f in ch.fields}))
         else:
-            title = f"REINGRESO POR CORRECCIÓN  ·  GUÍA {_guide_number(e)}"
-            estado = "Sin la salida enlazada en el SISMED"
-        fields = [("Farmacia", _place_name(c.farmacia, report.names), "Estado", estado),
-                  ("Salida", _move_line(s, report) if s else "—", "Destino",
-                   _place_name(s.destino, report.names) if s and s.destino else "—"),
-                  ("Reingreso", _move_line(e, report) if e else "—", "Procedencia",
-                   _place_name(e.origen, report.names) if e and e.origen else "—")]
+            estado = "Volvió igual que salió"
+        fields = [("Referencia", e.referencia or "—", "Procedencia", _place_name(e.origen, report.names) if e.origen else "—"),
+                  ("Farmacia", f"{_place_name(e.destino, report.names)}  ·  {len(e.lines)} productos  ·  S/ {(e.valor or 0):.2f}",
+                   "Salida", (_move_line(s, report) + f"  ·  {estado}") if s else estado)]
         items, tints = [], []
-        for ch in c.changes:
+        for ch in entry.changes:
             line = ch.after or ch.before
             desc = products.get(line.code, ("", ""))[0]
             if ch.fields:
@@ -1064,12 +1056,11 @@ def corrections_sheet(wb, report: IciReport, products: dict, printable=False):
             elif ch.after is None:
                 what, before, after = "Salió, no volvió", ch.before.describe(["Lote", "Vencimiento"]), "—"
             elif ch.before is None:
-                what, before, after = "Entró sin salida", "—", ch.after.describe(["Lote", "Vencimiento"])
+                what, before, after = "—", "—", "—"
             else:
-                what = "Sin cambio"
-                before = after = ch.after.describe(["Lote", "Vencimiento"])
-            items.append([line.code, desc, line.qty, what, before, after, line.total])
-            tints.append({3: TINT["fix"]} if ch.fields else None)
+                what, before, after = "Sin cambio", "—", "—"
+            items.append([line.code, desc, line.lote, _as_datetime(line.vence), line.qty, what, before, after, line.total])
+            tints.append({5: TINT["fix"]} if ch.fields else None)
         heights = [_span_height(spans, values, widths) for values in items]
 
         def repeat(rr, title=title):
@@ -1079,6 +1070,8 @@ def corrections_sheet(wb, report: IciReport, products: dict, printable=False):
 
         r = page.keep(r, _block_height(fields) + 22 + (heights[0] if heights else 15))
         r = _block_header(ws, r, nc, title, fields)
+        # La referencia, que es lo que se revisa, resaltada.
+        ws.cell(r - len(fields), 2).font = fnt(8.5, True, INKT["fix"])
         r = _span_header(ws, r, spans)
         for k, (values, height, tint) in enumerate(zip(items, heights, tints)):
             r = page.keep(r, height, repeat)
@@ -1086,7 +1079,7 @@ def corrections_sheet(wb, report: IciReport, products: dict, printable=False):
             ws.row_dimensions[r].height = height
             r += 1
         r += 1
-    page.setup("Correcciones de lote", report, titles="1:2")
+    page.setup("Ingresos internos", report, titles="1:2")
 
 
 RECETA_COLUMNS = (("VENTA", "VENTA"), ("SIS", "S.I.S."), ("INTERSAN", "INTERV. SANITARIA"), ("EXO", "EXONERACIÓN"),
@@ -1230,14 +1223,14 @@ EXCEL_ONLY = ("Alertas de farmacia", "Lotes sin movimiento")   # hojas que no va
 
 def build_workbook(report: IciReport, printable: bool | str = False) -> tuple[Workbook, dict]:
     """Arma el libro completo; `printable` es la versión que se pasa a PDF. Devuelve (libro,
-    cifras para la consola). Orden del usuario (2026-10-19): ICI, guías de ingreso, correcciones de
-    lote, vencimientos y recetas diarias; alertas y lotes sin movimiento van al final y solo en el
+    cifras para la consola). Orden del usuario (2026-10-19): ICI, guías de ingreso, ingresos internos,
+    vencimientos y recetas diarias; alertas y lotes sin movimiento van al final y solo en el
     Excel, no en el PDF."""
     wb = Workbook()
     products = {**report.products, **{r["CODIGO_MED"]: (r["DESC"], r["MEDFF"]) for r in report.rows}}
     ici_sheet(wb, report, printable)
     guides_sheet(wb, report, products, printable)
-    corrections_sheet(wb, report, products, printable)
+    internal_sheet(wb, report, products, printable)
     expiry_sheet(wb, report, printable)
     recetas_sheet(wb, report, printable)
     summary, still, still_value = alerts_sheet(wb, report, printable)
