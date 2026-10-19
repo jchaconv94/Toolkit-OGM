@@ -297,9 +297,20 @@ class IciExcelTests(unittest.TestCase):
                 self.assertEqual(ws.cell(brk + 2, 2).value, "DESCRIPCIÓN")
         self.assertFalse(ws.print_title_rows)
         self.assertIsNone(ws.auto_filter.ref)
-        # El PDF ocupa el ancho de la hoja: escala propia, no «ajustar a una página».
-        self.assertFalse(ws.sheet_properties.pageSetUpPr.fitToPage)
-        self.assertEqual(ws.page_setup.scale, Page(ws, [c[1] for c in COLS], True, (0.25, 0.25, 0.35, 0.45)).scale)
+        # El ICI es más ancho que la página: se ajusta a una página de ancho (lo calcula el programa que
+        # arma el PDF, así llena el ancho en Excel y en LibreOffice) y de alto libre (cortes propios).
+        self.assertTrue(ws.sheet_properties.pageSetUpPr.fitToPage)
+        self.assertEqual((ws.page_setup.fitToWidth, ws.page_setup.fitToHeight), (1, 0))
+        # Una hoja angosta se agranda con escala fija.
+        small = build_workbook(report, printable=True)[0]["Vencimientos"]
+        self.assertFalse(small.sheet_properties.pageSetUpPr.fitToPage)
+        self.assertGreater(small.page_setup.scale, 100)
+
+    def test_prices_never_show_hashes(self):
+        wb, _ = build_workbook(self._report())
+        ws = wb["ICI"]
+        price_col = [ws.cell(13 - 1, c).value for c in range(1, ws.max_column + 1)].index("PRECIO S/") + 1
+        self.assertTrue(ws.cell(15, price_col).alignment.shrink_to_fit)
 
     def test_signatures_never_alone_on_the_last_page(self):
         for count in range(30, 140, 7):

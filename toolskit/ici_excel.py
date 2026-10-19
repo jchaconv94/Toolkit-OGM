@@ -42,6 +42,8 @@ LEFT = Alignment(horizontal="left", vertical="center", indent=1)
 RIGHT = Alignment(horizontal="right", vertical="center", indent=1)
 WRAP_LEFT = Alignment(horizontal="left", vertical="center", indent=1, wrap_text=True)
 MID = Alignment(horizontal="center", vertical="center")
+# Cifras: si no caben en la columna se achican en vez de salir como «####».
+NUM = Alignment(horizontal="center", vertical="center", shrink_to_fit=True)
 
 
 def side(color=GRID, style="thin"):
@@ -67,7 +69,7 @@ COLS = [
     ("UNIDAD", 6.0, "P", "MEDFF", None), ("LOTE", 10, "P", "MEDLOTE", None),
     ("REG. SANITARIO", 9.6, "P", "MEDREGSAN", None), ("VENCIMIENTO", 7.8, "P", "FEC_EXP", None),
     ("TIP. SUM.", 3.2, "P", "TIPSUM2", None), ("F. FINAN.", 3.8, "P", "FFINAN", None),
-    ("PRECIO S/", 6.6, "P", "PRECIO", None),
+    ("PRECIO S/", 8.4, "P", "PRECIO", None),
     ("SALDO MES ANTERIOR", 5.6, "S", "SALDO", None),
     ("INGRESOS", 5.6, "E", "INGRE", "in"), ("REINGRESOS", 5.6, "E", "REINGRE", "in"),
     ("VENTA", 4.6, "C", "VENTA", "cons"), ("S.I.S.", 5.0, "C", "SIS", "cons"),
@@ -151,17 +153,24 @@ A4_LANDSCAPE = (842.0, 595.0)  # puntos
 class Page:
     """Lo que entra en cada página impresa (A4 horizontal, a todo el ancho de la hoja).
 
-    La escala sale del ancho de las columnas, así cada hoja ocupa el ancho de la página (también
-    las angostas, que antes quedaban en una esquina). En la versión de imprimir, `keep` corta la
-    página antes de una fila que ya no entra y repite el encabezado de su tabla."""
+    Una hoja más ancha que la página se imprime «ajustada a una página de ancho»: el programa que
+    arma el PDF calcula la escala justa y la tabla llena el ancho (con una escala calculada aquí,
+    en el Excel del usuario sobraba espacio a los costados, porque Excel dibuja las columnas unos
+    5 píxeles más angostas que LibreOffice). Una hoja angosta se agranda con una escala fija. En la
+    versión de imprimir, `keep` corta la página antes de una fila que ya no entra y repite el
+    encabezado de su tabla; lo que entra por página se calcula con las medidas de Excel."""
 
     def __init__(self, ws, widths, printable, margins=(0.3, 0.3, 0.4, 0.45), max_scale=150):
         self.ws, self.printable, self.margins = ws, printable, margins
-        width_pt = sum(w * 7 + 5 for w in widths) * 0.75
-        usable_width = (A4_LANDSCAPE[0] - (margins[0] + margins[1]) * 72) * 0.96
-        self.scale = max(10, min(max_scale, int(usable_width / width_pt * 100)))
-        usable_height = (A4_LANDSCAPE[1] - (margins[2] + margins[3]) * 72 - 16) * 0.94
-        self.capacity = usable_height * 100 / self.scale
+        # Excel: una columna de ancho w mide w × 7 píxeles (Calibri 11, la letra base del libro).
+        width_pt = sum(widths) * 7 * 0.75
+        usable_width = A4_LANDSCAPE[0] - (margins[0] + margins[1]) * 72
+        fit = usable_width / width_pt
+        self.fit_width = fit < 1
+        # Agrandar: con un poco de margen, porque LibreOffice dibuja las columnas algo más anchas.
+        self.scale = int(fit * 100) if self.fit_width else max(10, min(max_scale, int(fit * 94)))
+        usable_height = (A4_LANDSCAPE[1] - (margins[2] + margins[3]) * 72) * 0.97
+        self.capacity = usable_height * 100 / max(self.scale, 1)
         self.used = 0.0
         self.counted = 0
 
@@ -228,8 +237,12 @@ class Page:
         ws = self.ws
         ws.page_setup.orientation = "landscape"
         ws.page_setup.paperSize = ws.PAPERSIZE_A4
-        ws.sheet_properties.pageSetUpPr.fitToPage = False
-        ws.page_setup.scale = self.scale
+        if self.fit_width:
+            ws.sheet_properties.pageSetUpPr.fitToPage = True
+            ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
+        else:
+            ws.sheet_properties.pageSetUpPr.fitToPage = False
+            ws.page_setup.scale = self.scale
         left, right, top, bottom = self.margins
         ws.page_margins = PageMargins(left=left, right=right, top=top, bottom=bottom, footer=0.2)
         ws.print_options.horizontalCentered = True
@@ -353,7 +366,8 @@ def ici_sheet(wb, report: IciReport, printable=False):
                 cell.value = row[fld]
             cell.font = fnt(7.2, bold=fld == "=STOCK")
             cell.border = BOX
-            cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True) if fld == "DESC" else MID
+            cell.alignment = (Alignment(horizontal="left", vertical="center", wrap_text=True) if fld == "DESC"
+                              else MID if fld in TEXT_FIELDS else NUM)
             if fld == "FEC_EXP":
                 cell.number_format = "dd/mm/yyyy"
             elif fld == "PRECIO":
@@ -414,9 +428,9 @@ def ici_sheet(wb, report: IciReport, printable=False):
     box(ws, rr, 1, rr, IX["VENTA"] - 1, "N° DE RECETAS (CONSUMOS)  ·  N° DE LOTES (OTRAS SALIDAS)",
         fnt(7, True, INKT["cons"]), TINT["cons"], RIGHT)
     for f, value in zip(CONSUMO, report.recetas):
-        box(ws, rr, IX[f], rr, IX[f], value, fnt(7.5, True, INKT["cons"]), TINT["cons"], CENTER, fmt=INT0)
+        box(ws, rr, IX[f], rr, IX[f], value, fnt(7.5, True, INKT["cons"]), TINT["cons"], NUM, fmt=INT0)
     for f in ("DEVOL", "VENCIDO", "MERMA", "OTRAS", "SAL_REGULA", "SAL_CONINS"):
-        box(ws, rr, IX[f], rr, IX[f], f"=COUNTIF({R(f)},\">0\")", fnt(7.5, True, INKT["dev"]), TINT["dev"], CENTER, fmt=INT0)
+        box(ws, rr, IX[f], rr, IX[f], f"=COUNTIF({R(f)},\">0\")", fnt(7.5, True, INKT["dev"]), TINT["dev"], NUM, fmt=INT0)
     box(ws, rr, IX["=TOTAL"], rr, NCOL, None, None, TINT["cons"])
     ws.row_dimensions[rr].height = 18
 
@@ -440,7 +454,7 @@ def ici_sheet(wb, report: IciReport, printable=False):
     for i in range(IX["SALDO"], NCOL + 1):
         # SUBTOTAL: en el Excel, al filtrar, el total es de lo que se ve.
         total = f"=SUM({L(i)}{first}:{L(i)}{lastr})" if printable else f"=SUBTOTAL(9,{L(i)}{first}:{L(i)}{lastr})"
-        box(ws, tr, i, tr, i, total, fnt(7.2, True, WHITE), NAVY, CENTER, fmt=INT0)
+        box(ws, tr, i, tr, i, total, fnt(7.2, True, WHITE), NAVY, NUM, fmt=INT0)
     ws.row_dimensions[tr].height = 16
 
     r = tr + 1
@@ -603,7 +617,7 @@ def expiry_sheet(wb, report: IciReport, printable=False):
                 c = ws.cell(r, i, v)
                 c.font = fnt(7.5, bold=i in (7, 10))
                 c.border = BOX
-                c.alignment = WRAP_LEFT if i == 2 else MID
+                c.alignment = WRAP_LEFT if i == 2 else (NUM if i >= 5 else MID)
                 c.number_format = {5: "dd/mm/yyyy", 6: '0.0;-0.0;"–"', 7: INT0, 8: INT0, 9: PRICE, 10: "0.00"}.get(i, "General")
                 if k % 2:
                     c.fill = fill(ZEBRA)
@@ -692,7 +706,7 @@ def alerts_sheet(wb, report: IciReport, printable=False):
             r = page.keep(r, height, repeat)
             for j, ((h, c1, c2, fmt), v) in enumerate(zip(cols, values)):
                 box(ws, r, c1, r, c2, v, fnt(7.5, bold=j == len(cols) - 1), ZEBRA if k % 2 else None,
-                    WRAP_LEFT if h == "DESCRIPCIÓN" else MID, fmt=fmt)
+                    WRAP_LEFT if h == "DESCRIPCIÓN" else (NUM if fmt else MID), fmt=fmt)
             ws.row_dimensions[r].height = height
             r += 1
         r += 1
@@ -744,7 +758,7 @@ def still_sheet(wb, report: IciReport, still, still_value, printable=False):
         for i, v in enumerate(values, 1):
             c = ws.cell(r, i, v)
             c.font, c.border = fnt(8, bold=i == 8), BOX
-            c.alignment = WRAP_LEFT if i == 2 else MID
+            c.alignment = WRAP_LEFT if i == 2 else (NUM if i >= 5 else MID)
             c.number_format = {5: "dd/mm/yyyy", 6: INT0, 7: PRICE, 8: "0.00"}.get(i, "General")
             if k % 2:
                 c.fill = fill(ZEBRA)
@@ -800,7 +814,7 @@ def _data_row(ws, r, values, formats, zebra):
     for i, v in enumerate(values, 1):
         c = ws.cell(r, i, v)
         c.font, c.border = fnt(8), BOX
-        c.alignment = WRAP_LEFT if formats.get(i) == "text" else MID
+        c.alignment = WRAP_LEFT if formats.get(i) == "text" else (NUM if formats.get(i) else MID)
         c.number_format = formats.get(i, "General") if formats.get(i) != "text" else "General"
         if zebra:
             c.fill = fill(ZEBRA)
@@ -841,7 +855,7 @@ def _span_row(ws, r, spans, values, zebra, bold_last=False, tints=None):
         tint = (tints or {}).get(j)
         cell = box(ws, r, c1, r, c2, v, fnt(8, bold=(bold_last and j == len(spans) - 1) or bool(tint),
                                             color=INKT["fix"] if tint else INK),
-                   tint or (ZEBRA if zebra else None), WRAP_LEFT if fmt == "text" else MID)
+                   tint or (ZEBRA if zebra else None), WRAP_LEFT if fmt == "text" else (NUM if fmt else MID))
         if fmt and fmt != "text":
             cell.number_format = fmt
 
@@ -1126,7 +1140,7 @@ def recetas_sheet(wb, report: IciReport, printable=False):
             cell = ws.cell(r, i, v)
             cell.font = fnt(8, bold=i in (nc - 1, nc), color=MUTED if day.weekday() >= 5 and i <= 2 else INK)
             cell.border = BOX
-            cell.alignment = MID
+            cell.alignment = MID if i <= 2 else NUM
             cell.number_format = {1: "dd/mm/yyyy", nc: MONEY}.get(i, INT0)
             if day.weekday() >= 5:
                 cell.fill = fill(SOFT)
