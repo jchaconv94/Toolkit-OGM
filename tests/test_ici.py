@@ -210,9 +210,11 @@ class IciExcelTests(unittest.TestCase):
     def test_excel_has_the_column_letters_with_filter(self):
         wb, _ = build_workbook(self._report())
         ws = wb["ICI"]
-        self.assertEqual([ws.cell(15, c).value for c in (1, 2, 3)], ["A", "B", "C"])
-        self.assertTrue(ws.auto_filter.ref.startswith("A15:"))
-        self.assertTrue(str(ws.cell(18, ws.max_column).value).startswith("=SUBTOTAL(9,"))
+        # Sin fila vacía: recetas en la 13, letras con el filtro en la 14 y datos desde la 15.
+        self.assertEqual([ws.cell(14, c).value for c in (1, 2, 3)], ["A", "B", "C"])
+        self.assertTrue(ws.auto_filter.ref.startswith("A14:"))
+        self.assertEqual(ws.cell(15, 2).value, "AMOXICILINA 500 mg")
+        self.assertTrue(str(ws.cell(17, ws.max_column).value).startswith("=SUBTOTAL(9,"))
 
     def test_print_version_repeats_the_header_on_every_page(self):
         rows = [tformdet("06502F01", f"{k:03d}", f"L{k}", SALDO=10 + k, SIS=1) for k in range(150)]

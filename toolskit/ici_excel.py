@@ -265,19 +265,18 @@ def ici_sheet(wb, report: IciReport, printable=False):
         ws.row_dimensions[r + 1].height = 72
         return r + 2
 
-    # Los datos empiezan en la fila 16; en la versión de imprimir llevan dentro los encabezados
+    # Sin filas vacías entre los encabezados y los datos (pedido del usuario). En el Excel, la fila
+    # 14 lleva las letras de columna con el filtro y los datos empiezan en la 15; en la versión de
+    # imprimir no hay letras y los datos empiezan en la 14. Allí llevan dentro los encabezados
     # repetidos, así que la última fila se conoce al terminar de escribirlos.
-    first = 16
-    gr, rr = 11, 13
+    gr, rr, letters = 11, 13, 14
+    first = letters if printable else letters + 1
     header(gr)
-    ws.row_dimensions[14].height = 3
-    if printable:
-        ws.row_dimensions[15].height = 3
-    else:
+    if not printable:
         # Letras de columna con el filtro de Excel, para filtrar rápido (pedido del usuario).
         for i in range(1, NCOL + 1):
-            box(ws, 15, i, 15, i, L(i), fnt(6.5, True, MUTED), SOFT, MID)
-        ws.row_dimensions[15].height = 14
+            box(ws, letters, i, letters, i, L(i), fnt(6.5, True, MUTED), SOFT, MID)
+        ws.row_dimensions[letters].height = 14
 
     total_formula = lambda r: f"=SUM({L(IX['VENTA'])}{r}:{L(IX['SAL_CONINS'])}{r})"
     stock_formula = lambda r: ("=" + "+".join(f"{L(IX[f])}{r}" for f in ("SALDO", "INGRE", "REINGRE", "ING_REGULA") if f in IX)
@@ -413,7 +412,7 @@ def ici_sheet(wb, report: IciReport, printable=False):
 
     if not printable:
         ws.freeze_panes = ws.cell(first, 3)
-        ws.auto_filter.ref = f"A15:{L(NCOL)}{lastr}"
+        ws.auto_filter.ref = f"A{letters}:{L(NCOL)}{lastr}"
     page.setup("ICI", report, titles=f"{gr}:{gr + 1}")
     return ws
 
