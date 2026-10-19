@@ -23,6 +23,7 @@ from tools.disponibilidad_report_tool import DisponibilidadReportTool
 from tools.consumo_valorizado_report_tool import ConsumoValorizadoReportTool
 from tools.change_medest_tool import ChangeMedestTool
 from tools.edit_tmovim_tool import EditTmovimTool
+from tools.generar_ici_tool import GenerarIciTool
  
  
 # ── Instancias únicas (Singleton por herramienta) ──────────────────────────────────────────────────────
@@ -31,6 +32,7 @@ from tools.edit_tmovim_tool import EditTmovimTool
 TOOLS_REGISTRY: list = [
     TformdetAppendTool(),
     DisponibilidadReportTool(),
+    GenerarIciTool(),
     DbfExcelTool(),
     ExcelMergeTool(),
     FormatTformdetTool(),

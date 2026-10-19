@@ -742,6 +742,7 @@ def main(page: ft.Page):
             "DBF a EXCEL":             6,
             "Unir EXCEL":              15,
             "Anexar TFORMDET":         19,
+            "Generar ICI":             21,
             "Format TFORMDET":         7,
             "Sync SISMED":             18,
             "Stock SISMED":            9,
@@ -1225,6 +1226,7 @@ def main(page: ft.Page):
                             controls=[
                                 make_tool_card(get_tool_by_name("Anexar TFORMDET")),
                                 make_tool_card(get_tool_by_name("Disponibilidad TFORMDET")),
+                                make_tool_card(get_tool_by_name("Generar ICI")),
                             ],
                             wrap=True,
                             spacing=16,
@@ -1357,6 +1359,12 @@ def main(page: ft.Page):
             append_tool = get_tool_by_name("Anexar TFORMDET")
             if append_tool:
                 content.controls.append(append_tool.build_view(page, navigate))
+
+        elif index == 21:
+            # Generar ICI → delegado al objeto GenerarIciTool (POO)
+            ici_tool = get_tool_by_name("Generar ICI")
+            if ici_tool:
+                content.controls.append(ici_tool.build_view(page, navigate))
 
         elif index == 9:
             # Stock SISMED → delegado al objeto StockReportTool (POO)

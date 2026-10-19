@@ -30,6 +30,9 @@ hiddenimports = [
     "send_key_config",
     # Conexión inmediata con la web (backups SISMED).
     "websocket",
+    # Generar ICI: el PDF lo arma Excel (o WPS) por COM.
+    "win32com.client",
+    "pythoncom",
 ]
 hiddenimports += collect_submodules("pdf2docx")
 
