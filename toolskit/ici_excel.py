@@ -994,6 +994,9 @@ def guides_sheet(wb, report: IciReport, products: dict, printable=False):
     page.setup("Guías de ingreso", report, titles="1:2")
 
 
+GAP = 6   # alto de la fila vacía entre los datos de una guía y la tabla de sus productos
+
+
 def internal_sheet(wb, report: IciReport, products: dict, printable=False):
     """Ingresos internos (antes «Correcciones de lote»; regla del usuario, 2026-10-19): todo lo que entró
     a la columna REINGRESO —la devolución por sobrestock y demás que ingresó el responsable de farmacia
@@ -1036,10 +1039,11 @@ def internal_sheet(wb, report: IciReport, products: dict, printable=False):
             ws.row_dimensions[rr].height = 15
             return _span_header(ws, rr + 1, spans)
 
-        r = page.keep(r, _block_height(fields) + 22 + (heights[0] if heights else 15))
+        r = page.keep(r, _block_height(fields) + GAP + 22 + (heights[0] if heights else 15))
         r = _block_header(ws, r, nc, title, fields)
         ws.cell(r - 1, 5).font = fnt(8.5, True, INKT["fix"])      # la referencia, que es lo que se revisa
-        r = _span_header(ws, r, spans)
+        ws.row_dimensions[r].height = GAP                          # separa los datos de la guía de sus productos
+        r = _span_header(ws, r + 1, spans)
         start = r
         for k, (values, height) in enumerate(zip(items, heights)):
             r = page.keep(r, height, repeat)
