@@ -158,12 +158,21 @@ class Page:
     en el Excel del usuario sobraba espacio a los costados, porque Excel dibuja las columnas unos
     5 píxeles más angostas que LibreOffice). Una hoja angosta se agranda con una escala fija. En la
     versión de imprimir, `keep` corta la página antes de una fila que ya no entra y repite el
-    encabezado de su tabla; lo que entra por página se calcula con las medidas de Excel."""
+    encabezado de su tabla.
+
+    Lo que entra por página depende del programa que arma el PDF, porque cada uno dibuja las
+    columnas distinto y con «ajustar al ancho» eso cambia la escala: `printable` es el nombre del
+    programa («excel», también para WPS, o «libreoffice»); True usa las medidas de Excel."""
+
+    COLUMN_PADDING = {"excel": 0, "libreoffice": 5}   # píxeles que se suman a 7 × ancho
 
     def __init__(self, ws, widths, printable, margins=(0.3, 0.3, 0.4, 0.45), max_scale=150):
-        self.ws, self.printable, self.margins = ws, printable, margins
-        # Excel: una columna de ancho w mide w × 7 píxeles (Calibri 11, la letra base del libro).
-        width_pt = sum(widths) * 7 * 0.75
+        self.ws, self.printable, self.margins = ws, bool(printable), margins
+        engine = printable if isinstance(printable, str) else "excel"
+        padding = self.COLUMN_PADDING.get(engine, 0)
+        # Una columna de ancho w mide 7 × w píxeles en Excel (Calibri 11, la letra base del libro) y
+        # 5 píxeles más en LibreOffice.
+        width_pt = sum(w * 7 + padding for w in widths) * 0.75
         usable_width = A4_LANDSCAPE[0] - (margins[0] + margins[1]) * 72
         fit = usable_width / width_pt
         self.fit_width = fit < 1
@@ -1167,7 +1176,7 @@ def recetas_sheet(wb, report: IciReport, printable=False):
     page.setup("Recetas diarias", report, titles="1:2")
 
 
-def build_workbook(report: IciReport, printable: bool = False) -> tuple[Workbook, dict]:
+def build_workbook(report: IciReport, printable: bool | str = False) -> tuple[Workbook, dict]:
     """Arma el libro completo; `printable` es la versión que se pasa a PDF. Devuelve (libro,
     cifras para la consola). Las guías van justo después del ICI (pedido del usuario)."""
     wb = Workbook()
@@ -1240,7 +1249,7 @@ def write_reports(month, out_dir: str, consolidated: bool = True, per_pharmacy: 
                 # El PDF sale de la versión para imprimir: páginas cortadas y encabezados repetidos.
                 with tempfile.TemporaryDirectory(prefix="toolkit_ici_print_") as tmp:
                     printable = os.path.join(tmp, f"{name}.xlsx")
-                    build_workbook(report, printable=True)[0].save(printable)
+                    build_workbook(report, printable=getattr(exporter, "engine", True))[0].save(printable)
                     exporter.export(printable, pdf_path)
                 paths.append(pdf_path)
                 log(f"📄 {os.path.basename(pdf_path)}")

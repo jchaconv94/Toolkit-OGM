@@ -43,6 +43,8 @@ def find_libreoffice() -> str | None:
 
 
 class _ComExporter:
+    # Medidas de columna con que se arma la versión de imprimir (ver ici_excel.Page).
+    engine = "excel"
     def __init__(self, prog_id: str, name: str):
         import pythoncom
         import win32com.client
@@ -79,6 +81,7 @@ class _ComExporter:
 
 class _LibreOfficeExporter:
     name = "LibreOffice"
+    engine = "libreoffice"
 
     def __init__(self, soffice: str):
         self.soffice = soffice
