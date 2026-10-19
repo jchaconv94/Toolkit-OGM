@@ -208,7 +208,7 @@ class IciDataTests(unittest.TestCase):
         report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
         self.assertEqual(report.corrections, [])
         self.assertEqual([g.doc_numero for g in report.guias], ["260322"])
-        self.assertEqual(ici_data.entry_kind(report.guias[0]), "otro")
+        self.assertEqual(ici_data.entry_kind(report.guias[0]), "reingreso")
         cells = [c.value for row in build_workbook(report)[0]["Guías de ingreso"].iter_rows() for c in row if c.value]
         self.assertIn("GUÍA N° 260322  ·  09/08/2026", cells)
         self.assertIn("PARACETAMOL 500 mg", cells)
@@ -405,6 +405,23 @@ class IciExcelTests(unittest.TestCase):
         self.assertGreaterEqual(row_height(long_name, 46, 7.2), 24)
         self.assertEqual(row_height("PARACETAMOL 500 mg", 46, 7.2), 13.8)
 
+    def test_guides_by_concept_not_by_origin(self):
+        # Distribución viene del almacén o subalmacén de la UNGET; devolución por sobrestock la ingresó la
+        # propia farmacia (corrección o productos recuperados), aunque la guía diga 030A00.
+        rows = [tformdet("06502F01", "001", "L1", SALDO=10, INGRE=5, REINGRE=2)]
+        heads = [head("E", "1", "04", "030S0501", "06502F0101", doc=("03", "030S050001694"), refe="ESTRAGIA : REGULARIZACION"),
+                 head("E", "2", "07", "030A0001", "06502F0101", doc=("04", "20260340"), refe="PRODUCTO RECUPERADO")]
+        m = month(rows, heads, [detail("E", "1", "001", "L1", 5), detail("E", "2", "001", "L1", 2)])
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        self.assertEqual([ici_data.entry_kind(g) for g in report.guias], ["almacen", "reingreso"])
+        ws = build_workbook(report)[0]["Guías de ingreso"]
+        cells = [str(c.value) for row in ws.iter_rows() for c in row if c.value is not None]
+        self.assertIn("DESDE EL ALMACÉN · ESTRATEGIA  ·  1 guías", cells)
+        self.assertNotIn("DESDE EL ALMACÉN · OTRAS REFERENCIAS  ·  1 guías", cells)
+        self.assertIn("INGRESADOS POR LA FARMACIA (DEVOLUCIÓN POR SOBRESTOCK)  ·  1 guías  ·  con su detalle", cells)
+        self.assertIn("GUÍA N° 20260340  ·  10/08/2026", cells)
+
     def test_correction_reference_goes_to_corrections_not_to_guides(self):
         rows = [tformdet("06502F01", "001", "L1", SALDO=10, REINGRE=5)]
         m = month(rows, heads=[head("E", "1", "05", "030A0001", "06502F0101", doc=("04", "G-9"), refe="Corrección de lote")],
@@ -424,6 +441,10 @@ class IciExcelTests(unittest.TestCase):
     def test_reference_groups_and_date_in_words(self):
         self.assertEqual(reference_group("sismed"), "SISMED")
         self.assertEqual(reference_group("Estrategia sanitaria TBC"), "ESTRATEGIA")
+        # Mal escrita, como llega del almacén (captura del usuario, setiembre 2026).
+        self.assertEqual(reference_group("ESTRAGIA : REGULARIZACION"), "ESTRATEGIA")
+        self.assertEqual(reference_group("ESTRATEJIA"), "ESTRATEGIA")
+        self.assertEqual(reference_group("PRODUCTO RECUPERADO"), "OTRAS REFERENCIAS")
         self.assertEqual(reference_group("INTERVENCION SANITARIA"), "ESTRATEGIA")
         self.assertEqual(reference_group("Transf. Hosp. Tarapoto"), "TRANSFERENCIAS")
         self.assertEqual(reference_group(""), "OTRAS REFERENCIAS")
@@ -514,6 +535,8 @@ class IciFilesTests(unittest.TestCase):
             doc = fitz.open(pdf)
             self.assertEqual(len(doc), total)
             for page in doc:
+                # Ninguna página queda en blanco (solo con el pie).
+                self.assertTrue(any(w[3] < ici_render.A4_LANDSCAPE[1] - 30 for w in page.get_text("words")), page.number)
                 for x0, y0, x1, y1, *_ in page.get_text("words"):
                     # Nada se sale de la página: cada hoja entra a lo ancho.
                     self.assertLessEqual(x1, ici_render.A4_LANDSCAPE[0] - 10)

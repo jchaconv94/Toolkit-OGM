@@ -619,14 +619,21 @@ def is_almacen(code: str) -> bool:
     return bool(code) and not re.fullmatch(r"\d+(F\d{2})?", code)
 
 
+# Conceptos de ingreso que el ICI cuenta como REINGRESO (informe_sismed.md): devoluciones que entran.
+REINGRESO_CONCEPTOS = {"05", "06", "07", "35", "36"}
+
+
 def entry_kind(move: Movement) -> str:
-    """De dónde viene un ingreso: «almacen» (la UNGET o la DIRESA), «interna» (otra farmacia o puesto
-    del mismo establecimiento) u «otro» (productos recuperados, reingresos de la misma farmacia…)."""
-    if is_almacen(move.origen):
-        return "almacen"
+    """De dónde viene un ingreso, por su concepto (regla del usuario, 2026-10-19):
+    «interna» si lo entregó otra farmacia o puesto del mismo establecimiento; «reingreso» si el
+    concepto es de devolución (devolución por sobrestock…): lo ingresó la propia farmacia, para
+    corregir información o con productos recuperados, aunque la guía diga que viene del almacén;
+    «almacen» los demás (distribución desde el almacén o subalmacén de la UNGET)."""
     if is_internal(move):
         return "interna"
-    return "otro"
+    if move.concepto in REINGRESO_CONCEPTOS:
+        return "reingreso"
+    return "almacen"
 
 
 def _doc_key(value: str) -> str:

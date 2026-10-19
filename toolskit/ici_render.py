@@ -292,17 +292,34 @@ class _Sheet:
     def layout(self):
         """Página y posición de cada fila: [(filas con su y)] por página."""
         top, bottom = self.margins[2], A4_LANDSCAPE[1] - self.margins[3]
+        drawn = self._drawn_rows()
         pages, current, y = [], [], top
         for r in range(1, self.nrow + 1):
             h = self.height(r) * self.scale
             if current and ((r - 1) in self.breaks or y + h > bottom + 0.01):
+                if r not in drawn and (r - 1) not in self.breaks:
+                    continue          # una fila de separación que no entra no abre otra página
                 pages.append(current)
                 current, y = [], top
+            if not current and r not in drawn:
+                continue              # ni una página empieza con una fila vacía
             current.append((r, y, h))
             y += h
         if current:
             pages.append(current)
         return pages
+
+    def _drawn_rows(self) -> set:
+        """Filas en que hay algo que dibujar: un valor, un relleno o un borde (o una celda combinada)."""
+        rows = set()
+        for (r, c), cell in self.ws._cells.items():
+            if cell.value is not None or (cell.fill is not None and cell.fill.fill_type) or (
+                    cell.border is not None and any(getattr(getattr(cell.border, side), "style", None)
+                                                for side in ("left", "right", "top", "bottom"))):
+                rows.add(r)
+        for (r, c), (r2, _) in self.merged.items():
+            rows.update(range(r, r2 + 1))
+        return rows
 
     def style(self, r, c):
         """Relleno y letra de una celda, con su formato condicional."""

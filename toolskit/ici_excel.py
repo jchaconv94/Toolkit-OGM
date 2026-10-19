@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import collections
 import datetime as dt
+import difflib
+import re
 
 from openpyxl import Workbook
 from openpyxl.formatting.rule import CellIsRule, FormulaRule
@@ -829,13 +831,16 @@ def reference_group(reference: str) -> str:
     """«SISMED», «ESTRATEGIA», «TRANSFERENCIAS» u «OTRAS REFERENCIAS», según lo que escribieron.
 
     En la UNGET del usuario los productos estratégicos llevan la referencia «ESTRATEGIA»; también
-    se reconoce «INTERVENCIÓN», por si otra UNGET la escribe así."""
+    se reconoce mal escrita («ESTRAGIA : REGULARIZACION», «ESTRATEJIA») y «INTERVENCIÓN», por si
+    otra UNGET la escribe así. Si dice estrategia y SISMED, va a estrategia."""
     plain = plain_text(reference)
-    if "SISMED" in plain:
-        return "SISMED"
-    if "ESTRATEG" in plain or "INTERV" in plain:
+    words = re.findall(r"[A-Z]+", plain)
+    looks = lambda word, target: difflib.SequenceMatcher(None, word, target).ratio() >= 0.75
+    if any(w.startswith(("ESTRA", "INTERV")) or looks(w, "ESTRATEGIA") for w in words):
         return "ESTRATEGIA"
-    if "TRANSF" in plain:
+    if "SISMED" in plain or any(looks(w, "SISMED") for w in words):
+        return "SISMED"
+    if any(w.startswith("TRANSF") or looks(w, "TRANSFERENCIA") for w in words):
         return "TRANSFERENCIAS"
     return OTHER_REFERENCES
 
@@ -949,7 +954,7 @@ def guides_sheet(wb, report: IciReport, products: dict, printable=False):
         elif kind == "interna":
             internal.append(move)
         else:
-            others.append(move)
+            others.append(move)       # reingreso de la propia farmacia (devolución por sobrestock…)
     if not groups.get(OTHER_REFERENCES):
         groups.pop(OTHER_REFERENCES, None)
 
@@ -957,7 +962,7 @@ def guides_sheet(wb, report: IciReport, products: dict, printable=False):
     summary = [(f"Desde el almacén · {name.capitalize()}", moves) for name, moves in groups.items()]
     if internal or not report.consolidated:
         summary.append(("Desde otras farmacias del establecimiento", internal))
-    summary.append(("Otros ingresos (productos recuperados y demás)", others))
+    summary.append(("Ingresados por la farmacia (devolución por sobrestock)", others))
     r = 4
     box(ws, r, 1, r, nc - 2, "RESUMEN DE INGRESOS", fnt(7.5, True, WHITE), NAVY, LEFT)
     box(ws, r, nc - 1, r, nc - 1, "GUÍAS", fnt(7.5, True, WHITE), NAVY, CENTER)
@@ -1005,19 +1010,22 @@ def guides_sheet(wb, report: IciReport, products: dict, printable=False):
     if internal or not report.consolidated:
         r = guide_table(r, "DESDE OTRAS FARMACIAS DEL ESTABLECIMIENTO", internal, "Sin entregas de otras farmacias.")
 
-    # Otros ingresos, guía por guía con sus productos (pedido del usuario: los productos recuperados
-    # del hospital —lo que salió, sobró y volvió a ingresar— se revisan uno por uno).
+    # Lo que ingresó la propia farmacia con concepto de devolución (devolución por sobrestock): una
+    # guía de salida para corregir información o productos recuperados. Guía por guía con sus
+    # productos, para revisarlos uno por uno (regla del usuario, 2026-10-19).
     spans = [("CÓDIGO", 1, 1, None), ("DESCRIPCIÓN", 2, 3, "text"), ("LOTE", 4, 4, None),
              ("VENCIMIENTO", 5, 5, "dd/mm/yyyy"), ("CANTIDAD", nc - 1, nc - 1, INT0), ("VALOR S/", nc, nc, MONEY)]
     if report.consolidated:
         spans.insert(4, ("PRECIO S/", 6, 6, PRICE))
     r = page.keep(r, 15 + 22)
-    box(ws, r, 1, r, nc, f"OTROS INGRESOS (PRODUCTOS RECUPERADOS Y DEMÁS)  ·  {len(others)} guías  ·  con su detalle",
+    box(ws, r, 1, r, nc, f"INGRESADOS POR LA FARMACIA (DEVOLUCIÓN POR SOBRESTOCK)  ·  {len(others)} guías  ·  con su detalle",
         fnt(8.5, True, WHITE), NAVY2, LEFT)
     ws.row_dimensions[r].height = 18
+    box(ws, r + 1, 1, r + 1, nc, "Guías de ingreso hechas por la propia farmacia: para corregir información después de "
+        "una guía de salida, o con productos recuperados.", fnt(7, False, MUTED, True), None, LEFT, border=False)
     r += 2
     if not others:
-        box(ws, r, 1, r, nc, "Sin otros ingresos en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
+        box(ws, r, 1, r, nc, "Sin ingresos de este tipo en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
     for m in others:
         items = []
         for line in m.lines:
