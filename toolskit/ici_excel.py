@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import collections
 import datetime as dt
+import unicodedata
 
 from openpyxl import Workbook
 from openpyxl.formatting.rule import CellIsRule, FormulaRule
@@ -21,7 +22,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter as L
 from openpyxl.worksheet.page import PageMargins
 
-from ici_data import CONSUMO, CONCEPTOS, DOCUMENTOS, MESES, IciReport, Movement, ipress_of
+from ici_data import CONSUMO, CONCEPTOS, MESES, IciReport, Movement, ipress_of
 
 F = "Arial"
 NAVY, NAVY2, GRID, SOFT, ZEBRA, INK, MUTED, WHITE = (
@@ -308,7 +309,7 @@ def ici_sheet(wb, report: IciReport):
     for note in notes:
         box(ws, r, 1, r, NCOL, note, fnt(6.5, False, MUTED, True), None, LEFT, border=False)
         r += 1
-    _signature(ws, r + 1, NCOL)
+    _signature(ws, r + 1, [c[1] for c in C.cols])
 
     ws.freeze_panes = ws.cell(first, 3)
     ws.print_title_rows = f"{gr}:{hr}"
@@ -318,8 +319,40 @@ def ici_sheet(wb, report: IciReport):
     return ws
 
 
-def _signature(ws, r, ncol):
-    """Declaración jurada y firmas, juntas al final del informe."""
+def date_in_words(day: dt.date) -> str:
+    """«18 de octubre de 2026»."""
+    return f"{day.day} de {MESES[day.month - 1].lower()} de {day.year}"
+
+
+def column_span(widths, start: float, end: float) -> tuple[int, int]:
+    """Columnas (desde 1) que ocupan del `start` al `end` del ancho total (fracciones de 0 a 1)."""
+    total = sum(widths)
+    first = last = None
+    acc = 0.0
+    for i, w in enumerate(widths, 1):
+        middle = (acc + w / 2) / total
+        if first is None and middle >= start:
+            first = i
+        if middle <= end:
+            last = i
+        acc += w
+    first = first or 1
+    return first, max(first, last or first)
+
+
+def signature_blocks(widths) -> tuple[tuple[int, int], tuple[int, int]]:
+    """Columnas de las dos firmas: la izquierda cerca del 10–40 % del ancho y la derecha su espejo,
+    para que queden a la misma distancia de los bordes aunque las columnas tengan anchos distintos."""
+    left = column_span(widths, 0.10, 0.40)
+    total = sum(widths)
+    a = sum(widths[: left[0] - 1]) / total
+    b = sum(widths[: left[1]]) / total
+    return left, column_span(widths, 1 - b, 1 - a)
+
+
+def _signature(ws, r, widths):
+    """Declaración jurada, fecha y las dos firmas centradas en el ancho de la hoja."""
+    ncol = len(widths)
     box(ws, r, 1, r, ncol, "DECLARACIÓN JURADA", fnt(8, True, WHITE), NAVY, LEFT)
     statement = ("Declaramos bajo juramento que la información consignada en el presente Informe de Consumo Integrado "
                  "corresponde al movimiento real de medicamentos, insumos y productos sanitarios de la farmacia durante "
@@ -328,19 +361,21 @@ def _signature(ws, r, ncol):
     box(ws, r + 1, 1, r + 2, ncol, statement, fnt(7.5), None,
         Alignment(horizontal="justify", vertical="center", wrap_text=True, indent=1))
     ws.row_dimensions[r + 1].height = ws.row_dimensions[r + 2].height = 15
-    for k in range(r + 3, r + 8):
+    box(ws, r + 3, 1, r + 3, ncol, f"Fecha: {date_in_words(dt.date.today())}", fnt(7.5, True), None, LEFT, border=False)
+    ws.row_dimensions[r + 3].height = 18
+    for k in range(r + 4, r + 8):
         ws.row_dimensions[k].height = 14
     ws.row_dimensions[r + 8].height = 30
-    for c1, c2, title in ((3, 9, "RESPONSABLE DE FARMACIA"), (19, ncol - 1, "JEFE DEL ESTABLECIMIENTO")):
+    for (c1, c2), title in zip(signature_blocks(widths), ("RESPONSABLE DE FARMACIA", "JEFE DEL ESTABLECIMIENTO")):
         for c in range(c1, c2 + 1):
             ws.cell(r + 8, c).border = Border(bottom=side(INK))
         box(ws, r + 9, c1, r + 9, c2, title, fnt(7.5, True), None, CENTER, border=False)
         for k, label in enumerate(("Nombre:", "DNI:")):
-            box(ws, r + 10 + k, c1, r + 10 + k, c1 + 1, label, fnt(7, False, MUTED), None,
-                Alignment(horizontal="left", vertical="center"), border=False)
-            for c in range(c1 + 2, c2 + 1):
+            box(ws, r + 10 + k, c1, r + 10 + k, c2, label, fnt(7, False, MUTED), None,
+                Alignment(horizontal="left", vertical="bottom"), border=False)
+            for c in range(c1, c2 + 1):
                 ws.cell(r + 10 + k, c).border = Border(bottom=side(GRID))
-    box(ws, r + 13, 1, r + 13, ncol, f"Fecha: {dt.date.today():%d/%m/%Y}", fnt(7.5, True), None, RIGHT, border=False)
+            ws.row_dimensions[r + 10 + k].height = 18
 
 
 # ── Vencimientos ───────────────────────────────────────────────────────────────
@@ -545,20 +580,41 @@ def _place_name(code: str, names: dict) -> str:
 
 
 def _concept(code: str) -> str:
-    return f"{code} {CONCEPTOS[code]}" if code in CONCEPTOS else (f"Concepto {code}" if code else "—")
+    """Solo el nombre del concepto («Distribución»), sin su número."""
+    return CONCEPTOS.get(code, f"Concepto {code}" if code else "—")
 
 
-def _document(move: Movement) -> str:
-    return DOCUMENTOS.get(move.doc_tipo, f"Documento {move.doc_tipo}" if move.doc_tipo else "—")
+# La referencia de la guía la escriben a mano en el almacén; normalmente dice de qué es.
+REFERENCE_GROUPS = ("SISMED", "INTERVENCIÓN", "TRANSFERENCIAS")
+OTHER_REFERENCES = "OTRAS REFERENCIAS"
 
 
-def _simple_table(ws, r, header, widths, data, formats):
-    for i, (h, w) in enumerate(zip(header, widths), 1):
-        ws.column_dimensions[L(i)].width = w
+def reference_group(reference: str) -> str:
+    """«SISMED», «INTERVENCIÓN», «TRANSFERENCIAS» u «OTRAS REFERENCIAS», según lo que escribieron."""
+    plain = unicodedata.normalize("NFKD", str(reference or "")).encode("ascii", "ignore").decode().upper()
+    if "SISMED" in plain:
+        return "SISMED"
+    if "INTERV" in plain:
+        return "INTERVENCIÓN"
+    if "TRANSF" in plain:
+        return "TRANSFERENCIAS"
+    return OTHER_REFERENCES
+
+
+def _guide_number(move: Movement) -> str:
+    return move.doc_numero or move.numero
+
+
+def _header_row(ws, r, header):
+    for i, h in enumerate(header, 1):
         box(ws, r, i, r, i, h, fnt(7.5, True, NAVY), SOFT, CENTER)
     ws.row_dimensions[r].height = 22
+
+
+def _data_rows(ws, r, data, formats):
+    """Escribe las filas desde r y devuelve la fila siguiente."""
     for k, values in enumerate(data):
-        rr = r + 1 + k
+        rr = r + k
         for i, v in enumerate(values, 1):
             c = ws.cell(rr, i, v)
             c.font, c.border = fnt(8), BOX
@@ -566,31 +622,72 @@ def _simple_table(ws, r, header, widths, data, formats):
             c.number_format = formats.get(i, "General") if formats.get(i) != "text" else "General"
             if k % 2:
                 c.fill = fill(ZEBRA)
-    return r + 1 + len(data)
+    return r + len(data)
 
 
 def guides_sheet(wb, report: IciReport):
     ws = wb.create_sheet("Guías de ingreso")
     ws.sheet_view.showGridLines = False
-    header = ["FECHA", "DOCUMENTO", "N° DE GUÍA", "PROCEDENCIA", "CONCEPTO", "FARMACIA", "ÍTEMS", "VALOR S/"]
-    widths = [10, 16, 14, 40, 26, 10, 7, 12]
-    nc = len(header)
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[L(i)].width = w
+    # En el consolidado también se dice a qué farmacia entró cada guía.
+    columns = [("FECHA", 10, "dd/mm/yyyy"), ("N° DE GUÍA", 14, None), ("PROCEDENCIA", 38, "text"),
+               ("CONCEPTO", 22, "text"), ("REFERENCIA", 26, "text")]
+    if report.consolidated:
+        columns.append(("FARMACIA", 9, None))
+    columns += [("ÍTEMS", 7, INT0), ("VALOR S/", 12, MONEY)]
+    header = [c[0] for c in columns]
+    formats = {i: c[2] for i, c in enumerate(columns, 1) if c[2]}
+    nc = len(columns)
+    for i, c in enumerate(columns, 1):
+        ws.column_dimensions[L(i)].width = c[1]
     total = sum(m.valor or 0 for m in report.guias)
     _title(ws, nc, "GUÍAS DE INGRESO", report,
            f"{report.title}  ·  {len(report.guias)} guías  ·  S/ {total:.2f}  ·  Del {report.desde:%d/%m/%Y} al {report.hasta:%d/%m/%Y}", split=2)
-    if not report.guias:
-        box(ws, 4, 1, 4, nc, "Sin guías de ingreso en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
-    else:
-        data = [[_as_datetime(m.fecha), _document(m), m.doc_numero or m.numero, _place_name(m.origen, report.names),
-                 _concept(m.concepto), m.destino[-3:], len(m.lines), m.valor] for m in report.guias]
-        end = _simple_table(ws, 4, header, widths, data,
-                            {1: "dd/mm/yyyy", 2: "text", 4: "text", 5: "text", 7: INT0, 8: MONEY})
-        box(ws, end, 1, end, nc - 1, "Total", fnt(7.5, True, WHITE), NAVY, RIGHT)
-        box(ws, end, nc, end, nc, f"=SUM(H5:H{end - 1})", fnt(7.5, True, WHITE), NAVY, CENTER, fmt=MONEY)
-        ws.freeze_panes = "A5"
-    ws.print_title_rows = "1:4"
+
+    groups = {name: [] for name in REFERENCE_GROUPS}
+    for move in report.guias:
+        groups.setdefault(reference_group(move.referencia), []).append(move)
+    if not groups.get(OTHER_REFERENCES):
+        groups.pop(OTHER_REFERENCES, None)
+
+    # Resumen por referencia
+    r = 4
+    box(ws, r, 1, r, nc - 2, "RESUMEN POR REFERENCIA", fnt(7.5, True, WHITE), NAVY, LEFT)
+    box(ws, r, nc - 1, r, nc - 1, "GUÍAS", fnt(7.5, True, WHITE), NAVY, CENTER)
+    box(ws, r, nc, r, nc, "VALOR S/", fnt(7.5, True, WHITE), NAVY, CENTER)
+    for name, moves in groups.items():
+        r += 1
+        box(ws, r, 1, r, nc - 2, name.capitalize(), fnt(8, True), SOFT, LEFT)
+        box(ws, r, nc - 1, r, nc - 1, len(moves), fnt(8.5, True), None, CENTER, fmt=INT0)
+        box(ws, r, nc, r, nc, sum(m.valor or 0 for m in moves), fnt(8.5, True), None, CENTER, fmt=MONEY)
+    r += 1
+    box(ws, r, 1, r, nc - 2, "Total", fnt(8, True, WHITE), NAVY, RIGHT)
+    box(ws, r, nc - 1, r, nc - 1, len(report.guias), fnt(8.5, True, WHITE), NAVY, CENTER, fmt=INT0)
+    box(ws, r, nc, r, nc, total, fnt(8.5, True, WHITE), NAVY, CENTER, fmt=MONEY)
+    r += 2
+
+    value_col = L(nc)
+    for name, moves in groups.items():
+        box(ws, r, 1, r, nc, f"{name}  ·  {len(moves)} guías", fnt(8, True, WHITE), NAVY, LEFT)
+        r += 1
+        if not moves:
+            box(ws, r, 1, r, nc, "Sin guías con esta referencia.", fnt(7.5, False, MUTED, True), None, LEFT)
+            r += 2
+            continue
+        _header_row(ws, r, header)
+        r += 1
+        start = r
+        data = []
+        for m in moves:
+            row = [_as_datetime(m.fecha), _guide_number(m), _place_name(m.origen, report.names), _concept(m.concepto),
+                   m.referencia or "—"]
+            if report.consolidated:
+                row.append(m.destino[-3:])
+            data.append(row + [len(m.lines), m.valor])
+        r = _data_rows(ws, r, data, formats)
+        box(ws, r, 1, r, nc - 1, "Subtotal", fnt(7.5, True, NAVY), SOFT, RIGHT)
+        box(ws, r, nc, r, nc, f"=SUM({value_col}{start}:{value_col}{r - 1})", fnt(7.5, True, NAVY), SOFT, CENTER, fmt=MONEY)
+        r += 2
+    ws.print_title_rows = "1:2"
     _landscape(ws)
     _footer(ws, "Guías de ingreso", report)
 
@@ -598,22 +695,25 @@ def guides_sheet(wb, report: IciReport):
 def corrections_sheet(wb, report: IciReport, products: dict):
     ws = wb.create_sheet("Correcciones de lote")
     ws.sheet_view.showGridLines = False
-    header = ["FECHA", "DOCUMENTO", "N°", "FARMACIA", "MOVIMIENTO", "CÓDIGO", "DESCRIPCIÓN", "LOTE", "CANTIDAD"]
-    widths = [10, 16, 13, 9, 11, 8, 44, 14, 9]
-    nc = len(header)
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[L(i)].width = w
+    columns = [("FECHA", 10, "dd/mm/yyyy"), ("N° DE GUÍA", 13, None), ("FARMACIA", 9, None), ("MOVIMIENTO", 11, None),
+               ("CONCEPTO", 20, "text"), ("REFERENCIA", 22, "text"), ("CÓDIGO", 8, None), ("DESCRIPCIÓN", 40, "text"),
+               ("LOTE", 14, None), ("CANTIDAD", 9, INT0)]
+    nc = len(columns)
+    for i, c in enumerate(columns, 1):
+        ws.column_dimensions[L(i)].width = c[1]
     _title(ws, nc, "CORRECCIONES DE LOTE", report,
-           f"{report.title}  ·  Salió y volvió a entrar en la misma farmacia: en el ICI queda en Devolución y Reingreso", split=2)
+           f"{report.title}  ·  Guías con las que un producto salió y volvió a entrar en la misma farmacia (para cambiarle "
+           "el lote o el código). En el ICI quedan en Devolución y Reingreso.", split=2)
     if not report.corrections:
         box(ws, 4, 1, 4, nc, "Sin correcciones de lote en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
     else:
+        _header_row(ws, 4, [c[0] for c in columns])
         data = []
         for m in sorted(report.corrections, key=lambda m: (m.fecha or dt.date.min, m.doc_numero, m.tipo != "S")):
             for line in m.lines:
-                data.append([_as_datetime(m.fecha), _document(m), m.doc_numero or m.numero, m.origen[-3:],
-                             "Salida" if m.tipo == "S" else "Entrada", line.code, products.get(line.code, ""), line.lote, line.qty])
-        _simple_table(ws, 4, header, widths, data, {1: "dd/mm/yyyy", 2: "text", 7: "text", 9: INT0})
+                data.append([_as_datetime(m.fecha), _guide_number(m), m.origen[-3:], "Salida" if m.tipo == "S" else "Entrada",
+                             _concept(m.concepto), m.referencia or "—", line.code, products.get(line.code, ""), line.lote, line.qty])
+        _data_rows(ws, 5, data, {i: c[2] for i, c in enumerate(columns, 1) if c[2]})
         ws.freeze_panes = "A5"
     ws.print_title_rows = "1:4"
     _landscape(ws)

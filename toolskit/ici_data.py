@@ -63,7 +63,6 @@ CONCEPTOS = {
     "21": "Ajuste de inventario", "22": "Devolución por paciente", "32": "Transferencia",
     "33": "Consumo institucional", "35": "Devolución de vencido", "36": "R.S. cancelado o vencido",
 }
-DOCUMENTOS = {"03": "Guía de remisión", "04": "Guía de devolución"}
 
 MESES = ("ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO",
          "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE")

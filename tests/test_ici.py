@@ -11,7 +11,7 @@ if str(TOOLKIT_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLKIT_DIR))
 
 import ici_data
-from ici_excel import build_workbook, write_reports
+from ici_excel import COLS, build_workbook, column_span, signature_blocks, date_in_words, reference_group, write_reports
 
 MONTH = "202608"
 
@@ -27,10 +27,10 @@ def tformdet(farmacia, code, lote, precio=1.0, **values):
     return rec
 
 
-def head(tipo, numero, concepto, origen, destino, dia=10, doc=("04", "001-1"), situa="1"):
+def head(tipo, numero, concepto, origen, destino, dia=10, doc=("04", "001-1"), situa="1", refe=""):
     return {"MOVCODITIP": tipo, "MOVNUMERO": numero, "CCTCODIGO": concepto, "ALMORGVIR": origen,
             "ALMDSTVIR": destino, "MOVTIPODCO": doc[0], "MOVNUMEDCO": doc[1], "MOVSITUA": situa,
-            "MOVFECHREG": date(2026, 8, dia)}
+            "MOVFECHREG": date(2026, 8, dia), "MOVREFE": refe}
 
 
 def detail(tipo, numero, code, lote, qty, total=None):
@@ -176,8 +176,9 @@ class IciExcelTests(unittest.TestCase):
     def _report(self, **extra):
         rows = [tformdet("06502F01", "001", "L1", SALDO=100, SIS=10, DEVOL=5, **extra),
                 tformdet("06502F01", "002", "L9", SALDO=8, FEC_EXP=date(2026, 7, 1))]
-        m = month(rows, heads=[head("E", "1", "04", "030A0001", "06502F0101", doc=("03", "G-1"))],
-                  details=[detail("E", "1", "001", "L1", 0, 0)])
+        m = month(rows, heads=[head("E", "1", "04", "030A0001", "06502F0101", doc=("03", "G-1"), refe="Intervención sanitaria"),
+                               head("E", "2", "04", "030A0001", "06502F0101", doc=("03", "G-2"), refe="SISMED SET")],
+                  details=[detail("E", "1", "001", "L1", 0, 0), detail("E", "2", "001", "L1", 0, 12.5)])
         est = m.establishments[0]
         return ici_data.pharmacy_report(m, est, est.pharmacies[0])
 
@@ -194,7 +195,33 @@ class IciExcelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "ici.xlsx"
             wb.save(path)
-            self.assertEqual(openpyxl.load_workbook(path)["Guías de ingreso"]["C5"].value, "G-1")
+            guides = openpyxl.load_workbook(path)["Guías de ingreso"]
+            cells = [c.value for row in guides.iter_rows() for c in row if c.value is not None]
+        # Una sección por referencia, en el orden SISMED, intervención, transferencias.
+        self.assertLess(cells.index("SISMED  ·  1 guías"), cells.index("INTERVENCIÓN  ·  1 guías"))
+        self.assertLess(cells.index("INTERVENCIÓN  ·  1 guías"), cells.index("TRANSFERENCIAS  ·  0 guías"))
+        self.assertIn("Distribución", cells)
+        self.assertNotIn("04 Distribución", cells)
+        self.assertIn("Intervención sanitaria", cells)
+
+    def test_reference_groups_and_date_in_words(self):
+        self.assertEqual(reference_group("sismed"), "SISMED")
+        self.assertEqual(reference_group("INTERVENCION SANITARIA"), "INTERVENCIÓN")
+        self.assertEqual(reference_group("Transf. Hosp. Tarapoto"), "TRANSFERENCIAS")
+        self.assertEqual(reference_group(""), "OTRAS REFERENCIAS")
+        self.assertEqual(date_in_words(date(2026, 10, 18)), "18 de octubre de 2026")
+
+    def test_signatures_are_centered_on_the_width(self):
+        widths = [10] * 20
+        self.assertEqual(column_span(widths, 0.10, 0.40), (3, 8))
+        self.assertEqual(signature_blocks(widths), ((3, 8), (13, 18)))
+        # En el ICI la descripción es ancha: la firma de la derecha es el espejo de la izquierda.
+        widths = [c[1] for c in COLS]
+        (l1, l2), (r1, r2) = signature_blocks(widths)
+        total = sum(widths)
+        left_margin = sum(widths[: l1 - 1]) / total
+        right_margin = sum(widths[r2:]) / total
+        self.assertLess(abs(left_margin - right_margin), 0.02)
 
     def test_adjustment_column_only_when_used(self):
         wb, _ = build_workbook(self._report(ING_REGULA=4))
