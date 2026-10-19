@@ -146,7 +146,8 @@ class IciDataTests(unittest.TestCase):
         self.assertEqual([g.doc_numero for g in report.guias], ["G-100"])
         # En la farmacia que recibe, la entrega de la F01 sí es una guía de ingreso.
         f02 = ici_data.pharmacy_report(m, est, est.pharmacies[1])
-        self.assertEqual([g.numero for g in f02.guias], ["11"])
+        # Lo que F01 le entrega con devolución por sobrestock no es una guía de ingreso (regla del usuario).
+        self.assertEqual([g.numero for g in f02.guias], [])
         self.assertEqual(f02.rows[0]["REINGRE"], 30)
 
     def test_without_tmovim_the_internal_delivery_is_estimated(self):
@@ -207,11 +208,10 @@ class IciDataTests(unittest.TestCase):
         est = m.establishments[0]
         report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
         self.assertEqual(report.corrections, [])
-        self.assertEqual([g.doc_numero for g in report.guias], ["260322"])
-        self.assertEqual(ici_data.entry_kind(report.guias[0]), "reingreso")
-        cells = [c.value for row in build_workbook(report)[0]["Guías de ingreso"].iter_rows() for c in row if c.value]
-        self.assertIn("GUÍA N° 260322  ·  09/08/2026", cells)
-        self.assertIn("PARACETAMOL 500 mg", cells)
+        # Lo ingresó el propio usuario de farmacia (devolución por sobrestock): no va en guías de ingreso.
+        self.assertEqual(report.guias, [])
+        cells = [str(c.value) for row in build_workbook(report)[0]["Guías de ingreso"].iter_rows() for c in row if c.value]
+        self.assertFalse(any("260322" in v for v in cells))
 
     def test_correction_sent_but_not_back_is_pending(self):
         rows = [tformdet("06502F01", "001", "L1", SALDO=30, DEVOL=10)]
@@ -406,21 +406,20 @@ class IciExcelTests(unittest.TestCase):
         self.assertEqual(row_height("PARACETAMOL 500 mg", 46, 7.2), 13.8)
 
     def test_guides_by_concept_not_by_origin(self):
-        # Distribución viene del almacén o subalmacén de la UNGET; devolución por sobrestock la ingresó la
-        # propia farmacia (corrección o productos recuperados), aunque la guía diga 030A00.
+        # Solo van las de distribución (del almacén o subalmacén de la UNGET); las de devolución por
+        # sobrestock las ingresó el propio usuario de farmacia, aunque la guía diga 030A00, y no van.
         rows = [tformdet("06502F01", "001", "L1", SALDO=10, INGRE=5, REINGRE=2)]
         heads = [head("E", "1", "04", "030S0501", "06502F0101", doc=("03", "030S050001694"), refe="ESTRAGIA : REGULARIZACION"),
                  head("E", "2", "07", "030A0001", "06502F0101", doc=("04", "20260340"), refe="PRODUCTO RECUPERADO")]
         m = month(rows, heads, [detail("E", "1", "001", "L1", 5), detail("E", "2", "001", "L1", 2)])
         est = m.establishments[0]
         report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
-        self.assertEqual([ici_data.entry_kind(g) for g in report.guias], ["almacen", "reingreso"])
+        self.assertEqual([g.doc_numero for g in report.guias], ["030S050001694"])
         ws = build_workbook(report)[0]["Guías de ingreso"]
         cells = [str(c.value) for row in ws.iter_rows() for c in row if c.value is not None]
         self.assertIn("DESDE EL ALMACÉN · ESTRATEGIA  ·  1 guías", cells)
         self.assertNotIn("DESDE EL ALMACÉN · OTRAS REFERENCIAS  ·  1 guías", cells)
-        self.assertIn("INGRESADOS POR LA FARMACIA (DEVOLUCIÓN POR SOBRESTOCK)  ·  1 guías  ·  con su detalle", cells)
-        self.assertIn("GUÍA N° 20260340  ·  10/08/2026", cells)
+        self.assertFalse(any("20260340" in v or "SOBRESTOCK" in v for v in cells))
 
     def test_correction_reference_goes_to_corrections_not_to_guides(self):
         rows = [tformdet("06502F01", "001", "L1", SALDO=10, REINGRE=5)]

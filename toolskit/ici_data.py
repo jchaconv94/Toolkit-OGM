@@ -623,17 +623,19 @@ def is_almacen(code: str) -> bool:
 REINGRESO_CONCEPTOS = {"05", "06", "07", "35", "36"}
 
 
+def is_guide(move: Movement) -> bool:
+    """Va al reporte de guías de ingreso: lo que llega por distribución (regla del usuario, 2026-10-19).
+    Las de devolución por sobrestock (los conceptos que el ICI cuenta como reingreso) las ingresa el
+    propio usuario de farmacia por diversas razones (corrección de lote, de vencimiento o de registro
+    sanitario, ajuste de inventario, productos recuperados…) y no van; tampoco el ajuste de inventario
+    (21) ni el inventario inicial (20)."""
+    return move.concepto not in REINGRESO_CONCEPTOS and move.concepto not in ("20", "21")
+
+
 def entry_kind(move: Movement) -> str:
-    """De dónde viene un ingreso, por su concepto (regla del usuario, 2026-10-19):
-    «interna» si lo entregó otra farmacia o puesto del mismo establecimiento; «reingreso» si el
-    concepto es de devolución (devolución por sobrestock…): lo ingresó la propia farmacia, para
-    corregir información o con productos recuperados, aunque la guía diga que viene del almacén;
-    «almacen» los demás (distribución desde el almacén o subalmacén de la UNGET)."""
-    if is_internal(move):
-        return "interna"
-    if move.concepto in REINGRESO_CONCEPTOS:
-        return "reingreso"
-    return "almacen"
+    """De dónde viene una guía de ingreso: «interna» si la entregó otra farmacia o puesto del mismo
+    establecimiento; «almacen» si llegó del almacén o subalmacén de la UNGET."""
+    return "interna" if is_internal(move) else "almacen"
 
 
 def _doc_key(value: str) -> str:
@@ -804,7 +806,7 @@ def pharmacy_report(month: IciMonth, est: Establishment, ph: Pharmacy) -> IciRep
     rows = _copy_rows(ph.rows)
     corrections = find_corrections(month, {ph.code})
     in_corrections = {m.numero for c in corrections for m in c.movements}
-    guias = [m for m in month.movements if m.tipo == "E" and m.destino == ph.code and m.concepto != "21"
+    guias = [m for m in month.movements if m.tipo == "E" and m.destino == ph.code and is_guide(m)
              and m.numero not in in_corrections]
     _mark_corrections(rows, corrections)
     ficha = {
@@ -943,7 +945,7 @@ def consolidated_report(month: IciMonth, est: Establishment) -> IciReport:
     corrections = find_corrections(month, codes)
     in_corrections = {m.numero for c in corrections for m in c.movements}
     _mark_corrections(rows, corrections)
-    guias = [m for m in moves if m.tipo == "E" and m.destino in codes and m.concepto != "21"
+    guias = [m for m in moves if m.tipo == "E" and m.destino in codes and is_guide(m)
              and m.numero not in in_corrections and not is_internal(m)]
     recetas = [sum(ph.recetas[i] for ph in est.pharmacies) for i in range(len(CONSUMO))]
     # Los valores del SISMED solo se usan si todas las farmacias tienen su ICI procesado.

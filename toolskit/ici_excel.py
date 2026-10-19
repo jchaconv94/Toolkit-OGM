@@ -946,23 +946,19 @@ def guides_sheet(wb, report: IciReport, products: dict, printable=False):
            f"{report.title}  ·  {len(report.guias)} guías  ·  S/ {total:.2f}  ·  Del {report.desde:%d/%m/%Y} al {report.hasta:%d/%m/%Y}", split=2)
 
     groups = {name: [] for name in REFERENCE_GROUPS}
-    internal, others = [], []
+    internal = []
     for move in report.guias:
-        kind = entry_kind(move)
-        if kind == "almacen":
+        if entry_kind(move) == "almacen":
             groups.setdefault(reference_group(move.referencia), []).append(move)
-        elif kind == "interna":
-            internal.append(move)
         else:
-            others.append(move)       # reingreso de la propia farmacia (devolución por sobrestock…)
+            internal.append(move)
     if not groups.get(OTHER_REFERENCES):
         groups.pop(OTHER_REFERENCES, None)
 
     # Resumen
     summary = [(f"Desde el almacén · {name.capitalize()}", moves) for name, moves in groups.items()]
-    if internal or not report.consolidated:
+    if internal:
         summary.append(("Desde otras farmacias del establecimiento", internal))
-    summary.append(("Ingresados por la farmacia (devolución por sobrestock)", others))
     r = 4
     box(ws, r, 1, r, nc - 2, "RESUMEN DE INGRESOS", fnt(7.5, True, WHITE), NAVY, LEFT)
     box(ws, r, nc - 1, r, nc - 1, "GUÍAS", fnt(7.5, True, WHITE), NAVY, CENTER)
@@ -1007,57 +1003,9 @@ def guides_sheet(wb, report: IciReport, products: dict, printable=False):
 
     for name, moves in groups.items():
         r = guide_table(r, f"DESDE EL ALMACÉN · {name}", moves, "Sin guías con esta referencia.")
-    if internal or not report.consolidated:
+    if internal:
         r = guide_table(r, "DESDE OTRAS FARMACIAS DEL ESTABLECIMIENTO", internal, "Sin entregas de otras farmacias.")
 
-    # Lo que ingresó la propia farmacia con concepto de devolución (devolución por sobrestock): una
-    # guía de salida para corregir información o productos recuperados. Guía por guía con sus
-    # productos, para revisarlos uno por uno (regla del usuario, 2026-10-19).
-    spans = [("CÓDIGO", 1, 1, None), ("DESCRIPCIÓN", 2, 3, "text"), ("LOTE", 4, 4, None),
-             ("VENCIMIENTO", 5, 5, "dd/mm/yyyy"), ("CANTIDAD", nc - 1, nc - 1, INT0), ("VALOR S/", nc, nc, MONEY)]
-    if report.consolidated:
-        spans.insert(4, ("PRECIO S/", 6, 6, PRICE))
-    r = page.keep(r, 15 + 22)
-    box(ws, r, 1, r, nc, f"INGRESADOS POR LA FARMACIA (DEVOLUCIÓN POR SOBRESTOCK)  ·  {len(others)} guías  ·  con su detalle",
-        fnt(8.5, True, WHITE), NAVY2, LEFT)
-    ws.row_dimensions[r].height = 18
-    box(ws, r + 1, 1, r + 1, nc, "Guías de ingreso hechas por la propia farmacia: para corregir información después de "
-        "una guía de salida, o con productos recuperados.", fnt(7, False, MUTED, True), None, LEFT, border=False)
-    r += 2
-    if not others:
-        box(ws, r, 1, r, nc, "Sin ingresos de este tipo en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
-    for m in others:
-        items = []
-        for line in m.lines:
-            desc = products.get(line.code, ("", ""))[0]
-            values = [line.code, desc, line.lote, _as_datetime(line.vence), line.qty, line.total]
-            if report.consolidated:
-                values.insert(4, (line.total / line.qty) if (line.total is not None and line.qty) else None)
-            items.append(values)
-        heights = [_span_height(spans, values, widths) for values in items]
-        title = f"GUÍA N° {_guide_number(m)}" + (f"  ·  {m.fecha:%d/%m/%Y}" if m.fecha else "")
-        fields = [("Concepto", _concept(m.concepto, report.concepts), "Referencia", m.referencia or "—"),
-                  ("Procedencia", _place_name(m.origen, report.names), "Farmacia / productos",
-                   f"{_place_name(m.destino, report.names)}  ·  {len(m.lines)} productos  ·  S/ {(m.valor or 0):.2f}")]
-
-        def repeat(rr, title=title):
-            box(ws, rr, 1, rr, nc, f"{title}  ·  continuación", fnt(8, True, WHITE), NAVY, LEFT)
-            ws.row_dimensions[rr].height = 15
-            return _span_header(ws, rr + 1, spans)
-
-        r = page.keep(r, _block_height(fields) + 22 + (heights[0] if heights else 15))
-        r = _block_header(ws, r, nc, title, fields)
-        r = _span_header(ws, r, spans)
-        start = r
-        for k, (values, height) in enumerate(zip(items, heights)):
-            r = page.keep(r, height, repeat)
-            _span_row(ws, r, spans, values, k % 2, bold_last=True)
-            ws.row_dimensions[r].height = height
-            r += 1
-        r = page.keep(r, 15, repeat)
-        box(ws, r, 1, r, nc - 1, "Total de la guía", fnt(7.5, True, NAVY), SOFT, RIGHT)
-        box(ws, r, nc, r, nc, f"=SUM({value_col}{start}:{value_col}{r - 1})", fnt(7.5, True, NAVY), SOFT, CENTER, fmt=MONEY)
-        r += 2
     page.setup("Guías de ingreso", report, titles="1:2")
 
 
