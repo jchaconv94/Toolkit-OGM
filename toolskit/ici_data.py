@@ -47,9 +47,11 @@ RECETAS_FIELDS = {
 # TFORMATO: el valor en soles de cada consumo, tal como lo calculó el SISMED (lo que muestra su
 # pantalla Formato ICI). Sale de cada venta a su precio del día; cantidad × precio del lote en
 # TFORMDET no siempre da lo mismo (venta de septiembre 2026: S/ 3 881,91 frente a 3 863,30).
+# Otros convenios (TFORMATO.CON) y factor de pérdida no los graba el SISMED (CON siempre está en 0):
+# esos dos se valorizan como cantidad × precio del lote, si no el consumo total los perdería.
 VALORES_FIELDS = {
     "VENTA": "VTAS", "SIS": "SIS", "INTERSAN": "INTS", "DEFNAC": "DN",
-    "EXO": "EXO", "SOAT": "SOAT", "CREDHOSP": "HOS", "OTR_CONV": "CON",
+    "EXO": "EXO", "SOAT": "SOAT", "CREDHOSP": "HOS",
 }
 
 CONCEPTO_VENCIDO = "35"

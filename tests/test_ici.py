@@ -245,8 +245,20 @@ class IciDataTests(unittest.TestCase):
         ws = build_workbook(report)[0]["ICI"]
         labels = {ws.cell(r, c).value: ws.cell(r, c + 3).value for r in range(5, 10) for c in (11, 17)}
         self.assertEqual(labels["Venta"], 5.85)
-        self.assertEqual(labels["Consumo total"], 9.85)
+        self.assertTrue(str(labels["Consumo total"]).startswith("=9.85+SUMPRODUCT"))
         self.assertTrue(str(labels["Saldo anterior"]).startswith("=SUMPRODUCT"))
+
+    def test_other_agreements_are_valued_by_lot(self):
+        # Otros convenios no los graba el SISMED (TFORMATO.CON en 0): el consumo total no los pierde.
+        m = month([tformdet("06502F01", "001", "L1", precio=2.0, SALDO=10, VENTA=3, OTR_CONV=2)],
+                  tformato=[{"ANNOMES": MONTH, "CODIGO_PRE": "06502F01", "TIPSUM": "S", "VTAS": 5.85, "CON": 0}])
+        est = m.establishments[0]
+        ws = build_workbook(ici_data.pharmacy_report(m, est, est.pharmacies[0]))[0]["ICI"]
+        labels = {ws.cell(r, c).value: ws.cell(r, c + 3).value for r in range(5, 10) for c in (11, 17)}
+        self.assertEqual(labels["Venta"], 5.85)
+        total = str(labels["Consumo total"])
+        self.assertTrue(total.startswith("=5.85+SUMPRODUCT"), total)
+        self.assertEqual(total.count("SUMPRODUCT"), 2)  # factor de pérdida y otros convenios
 
     def test_month_without_tformdet_is_empty(self):
         m = month([tformdet("06502F01", "001", "L1", ANNOMES="202607", SALDO=1)])

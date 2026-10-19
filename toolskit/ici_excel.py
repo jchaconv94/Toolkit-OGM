@@ -27,7 +27,7 @@ from openpyxl.utils import get_column_letter as L
 from openpyxl.worksheet.page import PageMargins
 from openpyxl.worksheet.pagebreak import Break
 
-from ici_data import CONSUMO, CONCEPTOS, MESES, IciReport, Movement, entry_kind, ipress_of, plain_text
+from ici_data import CONSUMO, CONCEPTOS, MESES, IciReport, Movement, VALORES_FIELDS, entry_kind, ipress_of, plain_text
 
 F = "Arial"
 NAVY, NAVY2, GRID, SOFT, ZEBRA, INK, MUTED, WHITE = (
@@ -343,8 +343,9 @@ def ici_sheet(wb, report: IciReport, printable=False):
     notes = ["Colores:  ingresos y reingresos en azul · consumos en verde · devoluciones y otras salidas en ámbar · "
              "vencidos en rojo · vencimiento en rojo si el lote ya venció con stock y en ámbar si vence en los próximos 6 meses."]
     if report.valores:
-        notes.append("Consumo total, venta, S.I.S. e intervención sanitaria en soles: los que calculó el SISMED (cada venta a "
-                     "su precio del día); los demás montos, cantidad × precio de cada lote.")
+        notes.append("Venta, S.I.S., intervención sanitaria y el consumo total en soles: los que calculó el SISMED (cada venta "
+                     "a su precio del día), más otros convenios y factor de pérdida, que el SISMED no guarda; esos y los "
+                     "demás montos, cantidad × precio de cada lote.")
     if report.corrections:
         notes.append("Lote en morado: tuvo una corrección en el mes (lote, vencimiento, registro sanitario, tipo de "
                      "suministro, financiamiento o código); el detalle está en la hoja «Correcciones de lote».")
@@ -412,10 +413,13 @@ def ici_sheet(wb, report: IciReport, printable=False):
     box(ws, 4, 11, 4, 22, "RESUMEN VALORIZADO DEL MES (S/)", fnt(7.5, True, WHITE), NAVY, LEFT)
     # Los consumos en soles son los del SISMED (TFORMATO), que valoriza cada venta a su precio del día:
     # así coinciden con su pantalla. Sin TFORMATO, cantidad × precio de cada lote.
+    # Otros convenios y factor de pérdida no los graba el SISMED: esos, cantidad × precio del lote.
     def consumed(*fields):
-        if report.valores:
-            return round(sum(report.valores[CONSUMO.index(f)] for f in fields), 2)
-        return "=" + SP(*fields)
+        if not report.valores:
+            return "=" + SP(*fields)
+        fixed = round(sum(report.valores[CONSUMO.index(f)] for f in fields if f in VALORES_FIELDS), 2)
+        rest = SP(*(f for f in fields if f not in VALORES_FIELDS))
+        return f"={fixed}+{rest}" if rest else fixed
 
     left = [("Saldo anterior", "=" + SP("SALDO")), ("Ingresos", "=" + SP("INGRE", "ING_REGULA")),
             ("Reingresos", "=" + SP("REINGRE")), ("Consumo total", consumed(*CONSUMO)),
