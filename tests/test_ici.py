@@ -322,9 +322,15 @@ class IciExcelTests(unittest.TestCase):
 
     def test_workbook_has_the_approved_sheets(self):
         wb, summary = build_workbook(self._report())
-        # Las guías van justo después del ICI (pedido del usuario).
-        self.assertEqual(wb.sheetnames, ["ICI", "Guías de ingreso", "Vencimientos", "Alertas de farmacia",
-                                         "Lotes sin movimiento", "Correcciones de lote", "Recetas diarias"])
+        # Orden del usuario; alertas y lotes sin movimiento al final y solo en el Excel.
+        self.assertEqual(wb.sheetnames, ["ICI", "Guías de ingreso", "Correcciones de lote", "Vencimientos",
+                                         "Recetas diarias", "Alertas de farmacia", "Lotes sin movimiento"])
+        printable = build_workbook(self._report(), printable="toolkit")[0]
+        self.assertEqual(printable.sheetnames, ["ICI", "Guías de ingreso", "Correcciones de lote", "Vencimientos",
+                                                "Recetas diarias"])
+        cells = [c.value for row in printable["ICI"].iter_rows() for c in row if isinstance(c.value, str)]
+        self.assertIn("RESPONSABLE DE FARMACIA", cells)
+        self.assertFalse(any(v in ("Nombre:", "DNI:") for v in cells))
         ws = wb["ICI"]
         headers = [ws.cell(12, c).value for c in range(1, ws.max_column + 1)]
         self.assertNotIn("AJUSTE DE INVENTARIO (+)", headers)
@@ -563,8 +569,8 @@ class IciFilesTests(unittest.TestCase):
             pdf = next(p for p in paths if p.endswith(".pdf"))
             data = Path(pdf).read_bytes()
         self.assertTrue(data.startswith(b"%PDF"))
-        # Una página por hoja como mínimo: ICI, Vencimientos, Alertas, Lotes sin movimiento, Guías, Correcciones.
-        self.assertGreaterEqual(len(re.findall(rb"/Type\s*/Page(?!s)", data)), 6)
+        # Una página por hoja como mínimo: ICI, Guías, Correcciones, Vencimientos y Recetas diarias.
+        self.assertGreaterEqual(len(re.findall(rb"/Type\s*/Page(?!s)", data)), 5)
 
     def test_a_single_pharmacy_has_no_consolidated(self):
         m = month([tformdet("06502F01", "001", "L1", SALDO=10)])

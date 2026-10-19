@@ -11,7 +11,7 @@ armaba el Excel de la PC no repetía los «títulos de impresión» (2026-10-19)
 Decisiones del usuario que no hay que deshacer (docs/ICI_SISMED.md del ToolKit SISMED Web):
 cifras sin separador de miles (con coma parecía decimal), precios completos, la misma letra en
 todas las descripciones (un nombre largo pasa a otra línea), «–» en lugar de cero, encabezado
-de columnas en cada página, firmas solo con nombre y DNI, fecha automática y sin lugar, y la
+de columnas en cada página, firmas solo con la línea y el cargo, fecha automática y sin lugar, y la
 columna de ajuste de inventario que entra solo si algún lote la tiene.
 """
 
@@ -540,7 +540,7 @@ def signature_blocks(widths) -> tuple[tuple[int, int], tuple[int, int]]:
 
 
 # Compactas, para que entren más seguido en la página de las últimas filas.
-SIGNATURE_HEIGHT = 15 + 2 * 12 + 14 + 6 + 28 + 12 + 2 * 14
+SIGNATURE_HEIGHT = 15 + 2 * 12 + 14 + 6 + 28 + 12   # solo la línea y el cargo (sin nombre ni DNI)
 NOTE_HEIGHT = 12
 
 
@@ -566,12 +566,6 @@ def _signature(ws, r, widths):
             ws.cell(r + 5, c).border = Border(bottom=side(INK))
         box(ws, r + 6, c1, r + 6, c2, title, fnt(7.5, True), None, CENTER, border=False)
         ws.row_dimensions[r + 6].height = 12
-        for k, label in enumerate(("Nombre:", "DNI:")):
-            box(ws, r + 7 + k, c1, r + 7 + k, c2, label, fnt(7, False, MUTED), None,
-                Alignment(horizontal="left", vertical="bottom"), border=False)
-            for c in range(c1, c2 + 1):
-                ws.cell(r + 7 + k, c).border = Border(bottom=side(GRID))
-            ws.row_dimensions[r + 7 + k].height = 14
 
 
 # ── Vencimientos ───────────────────────────────────────────────────────────────
@@ -1273,18 +1267,26 @@ def recetas_sheet(wb, report: IciReport, printable=False):
     page.setup("Recetas diarias", report, titles="1:2")
 
 
+EXCEL_ONLY = ("Alertas de farmacia", "Lotes sin movimiento")   # hojas que no van al PDF
+
+
 def build_workbook(report: IciReport, printable: bool | str = False) -> tuple[Workbook, dict]:
     """Arma el libro completo; `printable` es la versión que se pasa a PDF. Devuelve (libro,
-    cifras para la consola). Las guías van justo después del ICI (pedido del usuario)."""
+    cifras para la consola). Orden del usuario (2026-10-19): ICI, guías de ingreso, correcciones de
+    lote, vencimientos y recetas diarias; alertas y lotes sin movimiento van al final y solo en el
+    Excel, no en el PDF."""
     wb = Workbook()
     products = {**report.products, **{r["CODIGO_MED"]: (r["DESC"], r["MEDFF"]) for r in report.rows}}
     ici_sheet(wb, report, printable)
     guides_sheet(wb, report, products, printable)
+    corrections_sheet(wb, report, products, printable)
     expiry_sheet(wb, report, printable)
+    recetas_sheet(wb, report, printable)
     summary, still, still_value = alerts_sheet(wb, report, printable)
     still_sheet(wb, report, still, still_value, printable)
-    corrections_sheet(wb, report, products, printable)
-    recetas_sheet(wb, report, printable)
+    if printable:
+        for name in EXCEL_ONLY:
+            wb.remove(wb[name])
     wb.active = 0
     return wb, summary
 
