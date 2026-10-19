@@ -133,6 +133,7 @@ class MoveLine:
     lote: str
     qty: float
     total: float | None = None
+    vence: date | None = None
 
 
 @dataclass
@@ -345,7 +346,7 @@ def _load_movements(open_table, codes: set[str], desde: date, hasta: date) -> li
         total = rec.get("MOVTOTAL")
         move.lines.append(MoveLine(
             code=text(rec.get("MEDCOD")), lote=text(rec.get("MEDLOTE")), qty=num(rec.get("MOVCANTID")),
-            total=None if total is None else num(total),
+            total=None if total is None else num(total), vence=_as_date(rec.get("MEDFECHVTO")),
         ))
     return list(heads.values())
 

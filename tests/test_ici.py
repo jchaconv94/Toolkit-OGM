@@ -1,3 +1,4 @@
+import re
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ if str(TOOLKIT_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLKIT_DIR))
 
 import ici_data
+import ici_pdf
 from ici_excel import COLS, build_workbook, column_span, signature_blocks, date_in_words, reference_group, write_reports
 
 MONTH = "202608"
@@ -234,17 +236,64 @@ class IciFilesTests(unittest.TestCase):
     def test_one_book_per_pharmacy_and_the_consolidated(self):
         m = month([tformdet("06502F01", "001", "L1", SALDO=10, SIS=2), tformdet("06502F02", "001", "L1", SALDO=5)])
         with tempfile.TemporaryDirectory() as tmp:
-            paths = write_reports(m, tmp, log=lambda _m: None)
+            paths = write_reports(m, tmp, pdf=False, log=lambda _m: None)
             names = sorted(Path(p).name for p in paths)
             self.assertEqual(names, ["ICI AGOSTO 2026 - 06502F01 - FARMACIA.xlsx", "ICI AGOSTO 2026 - 06502F02 - EMERGENCIA.xlsx",
                                      "ICI CONSOLIDADO AGOSTO 2026 - 06502 - HOSPITAL.xlsx"])
-            only = write_reports(m, tmp, per_pharmacy=False, log=lambda _m: None)
+            only = write_reports(m, tmp, per_pharmacy=False, pdf=False, log=lambda _m: None)
             self.assertEqual([Path(p).name for p in only], ["ICI CONSOLIDADO AGOSTO 2026 - 06502 - HOSPITAL.xlsx"])
+
+    def test_each_book_also_goes_to_pdf(self):
+        m = month([tformdet("06502F01", "001", "L1", SALDO=10, SIS=2), tformdet("06502F02", "001", "L1", SALDO=5)])
+
+        class FakeExporter:
+            name = "Prueba"
+            closed = False
+            exported = []
+
+            def export(self, xlsx, pdf):
+                if "EMERGENCIA" in xlsx:
+                    raise RuntimeError("falló")
+                self.exported.append(Path(pdf).name)
+                Path(pdf).write_bytes(b"%PDF")
+
+            def close(self):
+                FakeExporter.closed = True
+
+        logs = []
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = write_reports(m, tmp, log=logs.append, open_exporter=lambda log: FakeExporter())
+            names = sorted(Path(p).name for p in paths)
+        self.assertIn("ICI CONSOLIDADO AGOSTO 2026 - 06502 - HOSPITAL.pdf", names)
+        self.assertIn("ICI AGOSTO 2026 - 06502F01 - FARMACIA.pdf", names)
+        # Si un PDF falla, el Excel queda y se sigue con los demás.
+        self.assertIn("ICI AGOSTO 2026 - 06502F02 - EMERGENCIA.xlsx", names)
+        self.assertNotIn("ICI AGOSTO 2026 - 06502F02 - EMERGENCIA.pdf", names)
+        self.assertTrue(any("No se pudo pasar a PDF" in line for line in logs))
+        self.assertTrue(FakeExporter.closed)
+
+    def test_without_a_spreadsheet_program_only_the_excel_is_made(self):
+        logs = []
+        exporter = ici_pdf.open_exporter(log=logs.append, com_programs=(), libreoffice=lambda: None)
+        self.assertIsNone(exporter)
+        self.assertIn("No se pudo generar el PDF", logs[0])
+
+    @unittest.skipUnless(ici_pdf.find_libreoffice(), "sin LibreOffice")
+    def test_libreoffice_prints_every_sheet(self):
+        m = month([tformdet("06502F01", "001", "L1", SALDO=10, SIS=2)])
+        with tempfile.TemporaryDirectory() as tmp:
+            paths = write_reports(m, tmp, log=lambda _m: None, open_exporter=lambda log: ici_pdf.open_exporter(
+                log=log, com_programs=()))
+            pdf = next(p for p in paths if p.endswith(".pdf"))
+            data = Path(pdf).read_bytes()
+        self.assertTrue(data.startswith(b"%PDF"))
+        # Una página por hoja como mínimo: ICI, Vencimientos, Alertas, Lotes sin movimiento, Guías, Correcciones.
+        self.assertGreaterEqual(len(re.findall(rb"/Type\s*/Page(?!s)", data)), 6)
 
     def test_a_single_pharmacy_has_no_consolidated(self):
         m = month([tformdet("06502F01", "001", "L1", SALDO=10)])
         with tempfile.TemporaryDirectory() as tmp:
-            paths = write_reports(m, tmp, per_pharmacy=False, log=lambda _m: None)
+            paths = write_reports(m, tmp, per_pharmacy=False, pdf=False, log=lambda _m: None)
             self.assertEqual([Path(p).name for p in paths], ["ICI AGOSTO 2026 - 06502F01 - FARMACIA.xlsx"])
 
 

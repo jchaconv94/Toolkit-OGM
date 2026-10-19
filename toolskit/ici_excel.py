@@ -696,8 +696,8 @@ def corrections_sheet(wb, report: IciReport, products: dict):
     ws = wb.create_sheet("Correcciones de lote")
     ws.sheet_view.showGridLines = False
     columns = [("FECHA", 10, "dd/mm/yyyy"), ("N° DE GUÍA", 13, None), ("FARMACIA", 9, None), ("MOVIMIENTO", 11, None),
-               ("CONCEPTO", 20, "text"), ("REFERENCIA", 22, "text"), ("CÓDIGO", 8, None), ("DESCRIPCIÓN", 40, "text"),
-               ("LOTE", 14, None), ("CANTIDAD", 9, INT0)]
+               ("CONCEPTO", 20, "text"), ("REFERENCIA", 22, "text"), ("CÓDIGO", 8, None), ("DESCRIPCIÓN", 38, "text"),
+               ("LOTE", 14, None), ("VENCIMIENTO", 11, "dd/mm/yyyy"), ("CANTIDAD", 9, INT0)]
     nc = len(columns)
     for i, c in enumerate(columns, 1):
         ws.column_dimensions[L(i)].width = c[1]
@@ -708,11 +708,14 @@ def corrections_sheet(wb, report: IciReport, products: dict):
         box(ws, 4, 1, 4, nc, "Sin correcciones de lote en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
     else:
         _header_row(ws, 4, [c[0] for c in columns])
+        # El vencimiento sale del detalle de la guía; si no lo trae, del lote en el ICI.
+        expiry = {(r["CODIGO_MED"], r["MEDLOTE"]): r["FEC_EXP"] for r in report.rows if r["FEC_EXP"]}
         data = []
         for m in sorted(report.corrections, key=lambda m: (m.fecha or dt.date.min, m.doc_numero, m.tipo != "S")):
             for line in m.lines:
                 data.append([_as_datetime(m.fecha), _guide_number(m), m.origen[-3:], "Salida" if m.tipo == "S" else "Entrada",
-                             _concept(m.concepto), m.referencia or "—", line.code, products.get(line.code, ""), line.lote, line.qty])
+                             _concept(m.concepto), m.referencia or "—", line.code, products.get(line.code, ""), line.lote,
+                             _as_datetime(line.vence or expiry.get((line.code, line.lote))), line.qty])
         _data_rows(ws, 5, data, {i: c[2] for i, c in enumerate(columns, 1) if c[2]})
         ws.freeze_panes = "A5"
     ws.print_title_rows = "1:4"
@@ -737,14 +740,23 @@ def _safe_name(value: str) -> str:
     return " ".join(cleaned.split()).strip(" .")[:90]
 
 
-def write_reports(month, out_dir: str, consolidated: bool = True, per_pharmacy: bool = True, log=print) -> list[str]:
-    """Escribe un libro por farmacia y el consolidado de cada establecimiento. Devuelve las rutas."""
+def write_reports(month, out_dir: str, consolidated: bool = True, per_pharmacy: bool = True, pdf: bool = True,
+                  log=print, open_exporter=None) -> list[str]:
+    """Escribe un libro por farmacia y el consolidado de cada establecimiento, cada uno en Excel y
+    en PDF (todas las hojas, para imprimir). Devuelve las rutas de todos los archivos."""
     import os
 
-    from ici_data import balance_errors, consolidated_report, month_label, pharmacy_report
+    from ici_data import balance_errors, month_label
 
     label = month_label(month.annomes)
     paths = []
+    exporter = None
+    if pdf:
+        if open_exporter is None:
+            from ici_pdf import open_exporter
+        exporter = open_exporter(log=log)
+        if exporter is not None:
+            log(f"📄 Los PDF se arman con {exporter.name}.")
 
     def save(report, file_name):
         bad = balance_errors(report.rows)
@@ -756,6 +768,25 @@ def write_reports(month, out_dir: str, consolidated: bool = True, per_pharmacy: 
         paths.append(path)
         log(f"✅ {os.path.basename(path)}  ·  {len(report.rows)} lotes · {summary['desabastecidos']} desabastecidos · "
             f"{summary['sin_movimiento']} lotes sin movimiento")
+        if exporter is not None:
+            pdf_path = path[:-len(".xlsx")] + ".pdf"
+            try:
+                exporter.export(path, pdf_path)
+                paths.append(pdf_path)
+                log(f"📄 {os.path.basename(pdf_path)}")
+            except Exception as exc:  # noqa: BLE001 - el Excel ya quedó; se avisa y se sigue
+                log(f"⚠️ No se pudo pasar a PDF {os.path.basename(path)}: {exc}")
+
+    try:
+        _write_all(month, consolidated, per_pharmacy, save, log, label)
+    finally:
+        if exporter is not None:
+            exporter.close()
+    return paths
+
+
+def _write_all(month, consolidated, per_pharmacy, save, log, label):
+    from ici_data import consolidated_report, pharmacy_report
 
     for est in month.establishments:
         if consolidated and len(est.pharmacies) > 1:
@@ -767,4 +798,3 @@ def write_reports(month, out_dir: str, consolidated: bool = True, per_pharmacy: 
         if per_pharmacy or len(est.pharmacies) == 1:
             for ph in est.pharmacies:
                 save(pharmacy_report(month, est, ph), f"ICI {label} - {ph.code} - {ph.name}")
-    return paths

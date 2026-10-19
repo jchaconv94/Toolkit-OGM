@@ -7,7 +7,8 @@ Categoría  : Farmacia
 Arma el Informe de Consumo Integrado de un mes, listo para imprimir y firmar, leyendo el
 SISMED directamente: el detalle por lote de TFORMDET, las recetas de TFORMATO y los movimientos
 de TMOVIM (vencidos, entregas entre farmacias, correcciones de lote y guías de ingreso).
-Saca un libro por farmacia y el consolidado del establecimiento.
+Saca un libro por farmacia y el consolidado del establecimiento, cada uno en Excel y en PDF
+(todas las hojas en un solo PDF, para imprimir; ici_pdf.py).
 
 Es aparte de «Consul. TFORMDET», que sigue igual. Depende de ici_data.py e ici_excel.py.
 El diseño de la pantalla es el de Consulta TFORMDET: campos rellenos con etiqueta chica arriba,
@@ -190,7 +191,8 @@ class GenerarIciTool(SismedTool):
             else:
                 texto_resumen.value = f"ICI de {month_label(annomes).title()}"
                 texto_detalle.value = (" y ".join(partes).capitalize() if partes else "Marque qué generar") + \
-                    ". Hojas: ICI, Vencimientos, Alertas de farmacia, Lotes sin movimiento, Guías de ingreso y Correcciones de lote."
+                    ", en Excel y en PDF (todas las hojas, para imprimir). Hojas: ICI, Vencimientos, Alertas de farmacia, " \
+                    "Lotes sin movimiento, Guías de ingreso y Correcciones de lote."
                 icono_resumen.name, icono_resumen.color = ft.icons.EVENT_NOTE_ROUNDED, ACCENT
             cfg_set("ici_consolidado", bool(check_consolidado.value))
             cfg_set("ici_por_farmacia", bool(check_farmacias.value))
