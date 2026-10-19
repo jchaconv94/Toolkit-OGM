@@ -539,8 +539,10 @@ def signature_blocks(widths) -> tuple[tuple[int, int], tuple[int, int]]:
     return left, column_span(widths, 1 - b, 1 - a)
 
 
+# Espacio para firmar sobre la línea (pedido del usuario: con 28 puntos quedaba pegada a la tabla).
+SIGN_SPACE = 64
 # Compactas, para que entren más seguido en la página de las últimas filas.
-SIGNATURE_HEIGHT = 15 + 2 * 12 + 14 + 6 + 28 + 12   # solo la línea y el cargo (sin nombre ni DNI)
+SIGNATURE_HEIGHT = 15 + 2 * 12 + 14 + 6 + SIGN_SPACE + 12   # solo la línea y el cargo (sin nombre ni DNI)
 NOTE_HEIGHT = 12
 
 
@@ -560,7 +562,7 @@ def _signature(ws, r, widths):
     box(ws, r + 3, 1, r + 3, ncol, f"Fecha: {date_in_words(dt.date.today())}", fnt(7.5, True), None, LEFT, border=False)
     ws.row_dimensions[r + 3].height = 14
     ws.row_dimensions[r + 4].height = 6
-    ws.row_dimensions[r + 5].height = 28          # espacio para firmar, sobre la línea
+    ws.row_dimensions[r + 5].height = SIGN_SPACE          # espacio para firmar, sobre la línea
     for (c1, c2), title in zip(signature_blocks(widths), ("RESPONSABLE DE FARMACIA", "JEFE DEL ESTABLECIMIENTO")):
         for c in range(c1, c2 + 1):
             ws.cell(r + 5, c).border = Border(bottom=side(INK))
