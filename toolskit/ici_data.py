@@ -44,6 +44,13 @@ RECETAS_FIELDS = {
     "VENTA": "REC_VTAS", "SIS": "REC_SIS", "INTERSAN": "REC_INTS", "DEFNAC": "REC_DN",
     "EXO": "REC_EXO", "SOAT": "REC_SOAT", "CREDHOSP": "REC_CREHOS", "OTR_CONV": "REC_OTRCON",
 }
+# TFORMATO: el valor en soles de cada consumo, tal como lo calculó el SISMED (lo que muestra su
+# pantalla Formato ICI). Sale de cada venta a su precio del día; cantidad × precio del lote en
+# TFORMDET no siempre da lo mismo (venta de septiembre 2026: S/ 3 881,91 frente a 3 863,30).
+VALORES_FIELDS = {
+    "VENTA": "VTAS", "SIS": "SIS", "INTERSAN": "INTS", "DEFNAC": "DN",
+    "EXO": "EXO", "SOAT": "SOAT", "CREDHOSP": "HOS", "OTR_CONV": "CON",
+}
 
 CONCEPTO_VENCIDO = "35"
 # Columna del ICI donde cae una salida según su concepto (procesar_ici del SISMED, con el 35
@@ -240,6 +247,7 @@ class Pharmacy:
     recetas: list[float]
     desde: date
     hasta: date
+    valores: list[float] | None = None     # consumo en soles según el SISMED (TFORMATO), o None
 
 
 @dataclass
@@ -285,6 +293,7 @@ class IciReport:
     concepts: dict = field(default_factory=dict)
     recetas_diarias: list = field(default_factory=list)     # (fecha, recetas en el orden de CONSUMO, valor)
     products: dict = field(default_factory=dict)            # código → (descripción, unidad)
+    valores: list | None = None                             # consumo en soles según el SISMED (TFORMATO)
 
 
 # ── Lectura del SISMED ─────────────────────────────────────────────────────────
@@ -374,21 +383,22 @@ def normalize_row(rec: dict, products: dict) -> dict:
 
 
 def _load_recetas(open_table, annomes: str) -> dict:
-    """CODIGO_PRE → (recetas en el orden de CONSUMO, desde, hasta)."""
+    """CODIGO_PRE → (recetas en el orden de CONSUMO, valores en soles en el mismo orden, desde, hasta)."""
     found = {}
     for rec in open_table("TFORMATO") or []:
         if text(rec.get("ANNOMES")) != annomes:
             continue
         code = text(rec.get("CODIGO_PRE"))
-        counts, desde, hasta = found.get(code, ([0.0] * len(CONSUMO), None, None))
+        counts, values, desde, hasta = found.get(code, ([0.0] * len(CONSUMO), [0.0] * len(CONSUMO), None, None))
         for i, column in enumerate(CONSUMO):
-            source = RECETAS_FIELDS.get(column)
-            if source:
-                counts[i] += num(rec.get(source))
+            if column in RECETAS_FIELDS:
+                counts[i] += num(rec.get(RECETAS_FIELDS[column]))
+            if column in VALORES_FIELDS:
+                values[i] += num(rec.get(VALORES_FIELDS[column]))
         d, h = _as_date(rec.get("FDESDE")), _as_date(rec.get("FHASTA"))
         desde = min(filter(None, (desde, d)), default=None)
         hasta = max(filter(None, (hasta, h)), default=None)
-        found[code] = (counts, desde, hasta)
+        found[code] = (counts, values, desde, hasta)
     return found
 
 
@@ -474,9 +484,9 @@ def load_month(open_table, annomes: str, log=print) -> IciMonth:
     first, last = month_bounds(annomes)
     pharmacies = {}
     for code, rows in by_pharmacy.items():
-        counts, desde, hasta = recetas.get(code, ([0.0] * len(CONSUMO), None, None))
+        counts, values, desde, hasta = recetas.get(code, ([0.0] * len(CONSUMO), None, None, None))
         rows.sort(key=lambda r: (r["DESC"], r["CODIGO_MED"], r["MEDLOTE"]))
-        pharmacies[code] = Pharmacy(code, names.get(code, code), rows, counts, desde or first, hasta or last)
+        pharmacies[code] = Pharmacy(code, names.get(code, code), rows, counts, desde or first, hasta or last, values)
 
     warnings = []
     desde = min(p.desde for p in pharmacies.values())
@@ -710,6 +720,7 @@ def pharmacy_report(month: IciMonth, est: Establishment, ph: Pharmacy) -> IciRep
         annomes=month.annomes, title=ph.name, ficha=ficha, rows=rows, recetas=list(ph.recetas),
         desde=ph.desde, hasta=ph.hasta, guias=sorted(guias, key=_move_order), corrections=corrections,
         names=month.names, codes={ph.code}, concepts=month.concepts, products=month.products,
+        valores=list(ph.valores) if ph.valores else None,
         recetas_diarias=daily_recetas(month, {ph.code}, ph.desde, ph.hasta) if month.has_movements else [],
     )
 
@@ -838,6 +849,9 @@ def consolidated_report(month: IciMonth, est: Establishment) -> IciReport:
     guias = [m for m in moves if m.tipo == "E" and m.destino in codes and m.concepto != "21"
              and m.numero not in in_corrections and not is_internal(m)]
     recetas = [sum(ph.recetas[i] for ph in est.pharmacies) for i in range(len(CONSUMO))]
+    # Los valores del SISMED solo se usan si todas las farmacias tienen su ICI procesado.
+    valores = ([sum(ph.valores[i] for ph in est.pharmacies) for i in range(len(CONSUMO))]
+               if all(ph.valores for ph in est.pharmacies) else None)
     suffixes = [pharmacy_suffix(ph.code) for ph in est.pharmacies]
     ficha = {
         **_place(est),
@@ -850,7 +864,7 @@ def consolidated_report(month: IciMonth, est: Establishment) -> IciReport:
         annomes=month.annomes, title=est.name, ficha=ficha, rows=rows, recetas=recetas, desde=desde, hasta=hasta,
         guias=sorted(guias, key=_move_order), corrections=corrections,
         names=month.names, consolidated=True, internal_value=internal, internal_estimated=estimated,
-        in_transit=transit, codes=codes, concepts=month.concepts, products=month.products,
+        in_transit=transit, codes=codes, concepts=month.concepts, products=month.products, valores=valores,
         recetas_diarias=daily_recetas(month, codes, desde, hasta) if month.has_movements else [],
     )
 

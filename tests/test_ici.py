@@ -234,6 +234,20 @@ class IciDataTests(unittest.TestCase):
         self.assertAlmostEqual(daily[4][1], 3.75)
         self.assertEqual(daily[5][0][ici_data.CONSUMO.index("VENTA")], 1)
 
+    def test_consumption_values_come_from_the_sismed(self):
+        # La venta valorizada es la del SISMED (TFORMATO.VTAS), no cantidad × precio del lote.
+        m = month([tformdet("06502F01", "001", "L1", precio=2.0, SALDO=10, VENTA=3, SIS=2)],
+                  tformato=[{"ANNOMES": MONTH, "CODIGO_PRE": "06502F01", "TIPSUM": "S", "REC_VTAS": 3,
+                             "VTAS": 5.85, "SIS": 4.0}])
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        self.assertEqual(report.valores[ici_data.CONSUMO.index("VENTA")], 5.85)
+        ws = build_workbook(report)[0]["ICI"]
+        labels = {ws.cell(r, c).value: ws.cell(r, c + 3).value for r in range(5, 10) for c in (11, 17)}
+        self.assertEqual(labels["Venta"], 5.85)
+        self.assertEqual(labels["Consumo total"], 9.85)
+        self.assertTrue(str(labels["Saldo anterior"]).startswith("=SUMPRODUCT"))
+
     def test_month_without_tformdet_is_empty(self):
         m = month([tformdet("06502F01", "001", "L1", ANNOMES="202607", SALDO=1)])
         self.assertEqual(m.establishments, [])

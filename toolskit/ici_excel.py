@@ -342,6 +342,9 @@ def ici_sheet(wb, report: IciReport, printable=False):
                                + f"-{L(IX['=TOTAL'])}{r}")
     notes = ["Colores:  ingresos y reingresos en azul · consumos en verde · devoluciones y otras salidas en ámbar · "
              "vencidos en rojo · vencimiento en rojo si el lote ya venció con stock y en ámbar si vence en los próximos 6 meses."]
+    if report.valores:
+        notes.append("Consumo total, venta, S.I.S. e intervención sanitaria en soles: los que calculó el SISMED (cada venta a "
+                     "su precio del día); los demás montos, cantidad × precio de cada lote.")
     if report.corrections:
         notes.append("Lote en morado: tuvo una corrección en el mes (lote, vencimiento, registro sanitario, tipo de "
                      "suministro, financiamiento o código); el detalle está en la hoja «Correcciones de lote».")
@@ -407,15 +410,23 @@ def ici_sheet(wb, report: IciReport, printable=False):
         box(ws, 5 + k, 3, 5 + k, 9, value, fnt(8, True), None, LEFT)
     # Bloque B: resumen valorizado
     box(ws, 4, 11, 4, 22, "RESUMEN VALORIZADO DEL MES (S/)", fnt(7.5, True, WHITE), NAVY, LEFT)
-    left = [("Saldo anterior", SP("SALDO")), ("Ingresos", SP("INGRE", "ING_REGULA")), ("Reingresos", SP("REINGRE")),
-            ("Consumo total", SP(*CONSUMO)), ("Stock final", f"SUMPRODUCT({P},{R('=STOCK')})")]
-    right = [("Venta", SP("VENTA")), ("S.I.S.", SP("SIS")), ("Interv. sanitaria", SP("INTERSAN")),
-             ("Devoluciones", SP("DEVOL")), ("Vencidos", SP("VENCIDO"))]
+    # Los consumos en soles son los del SISMED (TFORMATO), que valoriza cada venta a su precio del día:
+    # así coinciden con su pantalla. Sin TFORMATO, cantidad × precio de cada lote.
+    def consumed(*fields):
+        if report.valores:
+            return round(sum(report.valores[CONSUMO.index(f)] for f in fields), 2)
+        return "=" + SP(*fields)
+
+    left = [("Saldo anterior", "=" + SP("SALDO")), ("Ingresos", "=" + SP("INGRE", "ING_REGULA")),
+            ("Reingresos", "=" + SP("REINGRE")), ("Consumo total", consumed(*CONSUMO)),
+            ("Stock final", f"=SUMPRODUCT({P},{R('=STOCK')})")]
+    right = [("Venta", consumed("VENTA")), ("S.I.S.", consumed("SIS")), ("Interv. sanitaria", consumed("INTERSAN")),
+             ("Devoluciones", "=" + SP("DEVOL")), ("Vencidos", "=" + SP("VENCIDO"))]
     for k in range(5):
-        for (label, formula), (c1, c2, c3) in ((left[k], (11, 13, 16)), (right[k], (17, 19, 22))):
+        for (label, value), (c1, c2, c3) in ((left[k], (11, 13, 16)), (right[k], (17, 19, 22))):
             strong = label in ("Stock final", "Consumo total")
             box(ws, 5 + k, c1, 5 + k, c2, label, fnt(7.5, True, MUTED), SOFT, LEFT)
-            box(ws, 5 + k, c2 + 1, 5 + k, c3, f"={formula}",
+            box(ws, 5 + k, c2 + 1, 5 + k, c3, value,
                 fnt(8.5 if strong else 8, True, INKT["venc"] if label == "Vencidos" else INK), None, RIGHT, fmt=MONEY)
     # Bloque C: control del mes
     box(ws, 4, 24, 4, NCOL, "CONTROL DEL MES", fnt(7.5, True, WHITE), NAVY, LEFT)
