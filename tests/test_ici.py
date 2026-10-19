@@ -230,7 +230,7 @@ class IciDataTests(unittest.TestCase):
                    detail("S", "42", "001", "L1", 1, 1.25)]
         m = month(rows, heads, details)
         est = m.establishments[0]
-        daily = {d.day: (counts, value) for d, counts, value in ici_data.pharmacy_report(m, est, est.pharmacies[0]).recetas_diarias}
+        daily = {d.day: (counts, value) for d, counts, value, _ in ici_data.pharmacy_report(m, est, est.pharmacies[0]).recetas_diarias}
         self.assertEqual(len(daily), 31)
         self.assertEqual(daily[4][0][ici_data.CONSUMO.index("SIS")], 2)
         self.assertAlmostEqual(daily[4][1], 3.75)
@@ -276,7 +276,7 @@ class IciDataTests(unittest.TestCase):
         report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
         self.assertEqual([g.numero for g in report.guias], ["1"])
         self.assertEqual(report.guias[0].origen, "030S05")
-        sis = sum(counts[ici_data.CONSUMO.index("SIS")] for _, counts, _ in report.recetas_diarias)
+        sis = sum(counts[ici_data.CONSUMO.index("SIS")] for _, counts, _, _ in report.recetas_diarias)
         self.assertEqual(sis, 2)
         self.assertEqual(m.warnings, [])
 
@@ -292,7 +292,7 @@ class IciDataTests(unittest.TestCase):
                    "VTAFORMPAG": "03", "VTAFECHREG": date(2026, 7, 31), "VTATOTAL": 9.0}]     # otro mes
         m = month([tformdet("06513", "001", "L1", SALDO=10, SIS=2)], ventas=ventas)
         est = m.establishments[0]
-        daily = {d.day: (counts, value) for d, counts, value in ici_data.pharmacy_report(m, est, est.pharmacies[0]).recetas_diarias}
+        daily = {d.day: (counts, value) for d, counts, value, _ in ici_data.pharmacy_report(m, est, est.pharmacies[0]).recetas_diarias}
         self.assertEqual(daily[4][0][ici_data.CONSUMO.index("SIS")], 1)
         self.assertEqual(daily[4][0][ici_data.CONSUMO.index("VENTA")], 1)
         self.assertAlmostEqual(daily[4][1], 3.75)
@@ -394,26 +394,6 @@ class IciExcelTests(unittest.TestCase):
                 # La última página empieza con el encabezado de la tabla y filas, no con la declaración.
                 self.assertEqual(ws.cell(breaks[-1] + 1, 1).value, "PRODUCTO FARMACÉUTICO", count)
 
-    def test_pages_use_the_measures_of_the_program(self):
-        # Excel redondea filas y columnas a píxeles: con sus medidas, cada página corta donde de verdad
-        # se llena (antes quedaba un espacio en blanco abajo).
-        rows = [tformdet("06502F01", f"{k:03d}", f"L{k}", SALDO=10 + k, SIS=1) for k in range(150)]
-        m = month(rows)
-        est = m.establishments[0]
-        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
-        plain_w = {w: w * 7 * 0.75 for w in ici_pdf.PROBE_WIDTHS}
-        wide_w = {w: (int(w * 7 + 0.5) + 5) * 0.75 for w in ici_pdf.PROBE_WIDTHS}
-        plain_h = {h: h for h in ici_pdf.PROBE_HEIGHTS}
-        tall_h = {h: h + 1.5 for h in ici_pdf.PROBE_HEIGHTS}
-        first_break = lambda w, h: build_workbook(report, printable="excel", metrics=ici_pdf.Metrics(w, h))[0][
-            "ICI"].row_breaks.brk[0].id
-        same = first_break(plain_w, plain_h)
-        self.assertLess(first_break(plain_w, tall_h), same)       # filas más altas: entran menos
-        self.assertGreater(first_break(wide_w, plain_h), same)    # columnas más anchas: más chico, entran más
-        bigger = ici_pdf.Metrics(wide_w, tall_h)
-        # El libro de Excel (no el de imprimir) no cambia con las medidas.
-        self.assertEqual(build_workbook(report, metrics=bigger)[0]["ICI"].row_breaks.brk, [])
-
     def test_long_names_get_a_taller_row(self):
         long_name = "ACIDO FOLICO + FERROSO SULFATO (EQUIV. DE HIERRO ELEMENTAL) 400 UG + 60 MG FE TABLETA RECUBIERTA"
         self.assertGreaterEqual(row_height(long_name, 46, 7.2), 24)
@@ -502,49 +482,75 @@ class IciFilesTests(unittest.TestCase):
         self.assertTrue(any("No se pudo pasar a PDF" in line for line in logs))
         self.assertTrue(FakeExporter.closed)
 
-    def test_excel_measures_are_read_once_per_batch(self):
-        class Cell:
-            def __init__(self, value):
-                self.Width = self.Height = value
+    def test_the_toolkit_draws_the_pdf_filling_every_page(self):
+        import fitz
+        import ici_render
 
-        class Sheet:
-            def Columns(self, i):
-                return Cell(i * 2.0)
+        long_name = "ACIDO FOLICO + FERROSO SULFATO (Equiv. de Hierro elemental) 400 ug + 60 mg Fe"
+        rows = [tformdet("06502F01", f"{k:03d}", f"L{k}", SALDO=10 + k, SIS=k % 3,
+                         **({"DESCRIPCION MED": long_name} if k % 9 == 0 else {})) for k in range(260)]
+        m = month(rows)
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        wb, _ = build_workbook(report, printable="toolkit")
+        bottom = ici_render.A4_LANDSCAPE[1] - wb["ICI"].page_margins.bottom * 72
+        sheet = ici_render._Sheet(wb["ICI"])
+        pages = sheet.layout()
+        self.assertGreater(len(pages), 3)
+        for k, rows_on_page in enumerate(pages[:-2]):
+            r, y, h = rows_on_page[-1]
+            next_row = pages[k + 1][0][0]
+            # La página llega hasta abajo: la fila que sigue ya no entraba.
+            self.assertGreater(y + h + sheet.height(next_row) * sheet.scale, bottom - 60, k)
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = str(Path(tmp) / "ici.pdf")
+            total = ici_render.render_workbook(wb, pdf)
+            doc = fitz.open(pdf)
+            self.assertEqual(len(doc), total)
+            for page in doc:
+                for x0, y0, x1, y1, *_ in page.get_text("words"):
+                    # Nada se sale de la página: cada hoja entra a lo ancho.
+                    self.assertLessEqual(x1, ici_render.A4_LANDSCAPE[0] - 10)
+                    self.assertLessEqual(y1, ici_render.A4_LANDSCAPE[1])
+            text = doc[0].get_text()
+            self.assertIn("INFORME DE CONSUMO INTEGRADO", text)
+            self.assertIn(f"Página 1 de {total}", text)
+            last_ici = next(i for i in range(len(doc)) if "DECLARACIÓN JURADA" in doc[i].get_text())
+            self.assertIn("TOTAL", doc[last_ici].get_text())
+            self.assertIn("ACIDO FOLICO", "".join(doc[i].get_text() for i in range(last_ici + 1)))
+            doc.close()
 
-            def Rows(self, r):
-                return Cell(r + 0.5)
+    def test_formulas_and_formats_as_excel_shows_them(self):
+        import ici_render
+        import ici_values
+        from openpyxl import Workbook
 
-        class Book:
-            closed = 0
-
-            def Worksheets(self, _i):
-                return Sheet()
-
-            def Close(self, _save):
-                Book.closed += 1
-
-        class App:
-            opened = []
-
-            class Workbooks:
-                @staticmethod
-                def Open(path, *_args):
-                    App.opened.append(Path(path).name)
-                    return Book()
-
-        exporter = ici_pdf._ComExporter.__new__(ici_pdf._ComExporter)
-        exporter.app, exporter._metrics = App(), None
-        metrics = exporter.metrics()
-        self.assertIs(exporter.metrics(), metrics)
-        self.assertEqual(App.opened, ["medidas.xlsx"])
-        self.assertEqual(Book.closed, 1)
-        self.assertEqual(metrics.width(1.0), 2.0)
-        self.assertEqual(metrics.height(5.0), 1.5)
-        self.assertEqual(metrics.height(250), 250)      # fuera de lo medido, el alto del libro
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"], ws["A2"], ws["A3"] = 2, 3, "texto"
+        ws["B1"], ws["B2"], ws["B3"] = 1.5, 2, 4
+        ws["C1"] = date(2026, 9, 15)
+        ws["D1"] = "=SUMPRODUCT(A1:A3,B1:B3)"
+        ws["D2"] = "=SUM(A1:A3)+B2*2"
+        ws["D3"] = '=COUNTIF(A1:A3,">2")'
+        ws["D4"] = '=COUNTIFS(C1:C1,">"&DATE(2026,8,31),C1:C1,"<="&EDATE(DATE(2026,8,31),6))'
+        ev = ici_values.Evaluator(ws)
+        self.assertEqual(ev.value(1, 4), 9.0)
+        self.assertEqual(ev.value(2, 4), 9.0)
+        self.assertEqual(ev.value(3, 4), 1.0)
+        self.assertEqual(ev.value(4, 4), 1.0)
+        f = ici_render.format_value
+        self.assertEqual(f(0, '0;-0;"–"'), "–")
+        self.assertEqual(f(2.5, '0;-0;"–"'), "3")
+        self.assertEqual(f(0.14875, "0.00####"), "0.14875")
+        self.assertEqual(f(5, "0.00####"), "5.00")
+        self.assertEqual(f(290.92, '"S/ "0.00'), "S/ 290.92")
+        self.assertEqual(f(0.177, '0.0%;-0.0%;"–"'), "17.7%")
+        self.assertEqual(f(date(2026, 8, 31), "dd/mm/yyyy"), "31/08/2026")
 
     def test_without_a_spreadsheet_program_only_the_excel_is_made(self):
         logs = []
-        exporter = ici_pdf.open_exporter(log=logs.append, com_programs=(), libreoffice=lambda: None)
+        exporter = ici_pdf.open_exporter(log=logs.append, com_programs=(), libreoffice=lambda: None, toolkit=False)
         self.assertIsNone(exporter)
         self.assertIn("No se pudo generar el PDF", logs[0])
 
@@ -553,7 +559,7 @@ class IciFilesTests(unittest.TestCase):
         m = month([tformdet("06502F01", "001", "L1", SALDO=10, SIS=2)])
         with tempfile.TemporaryDirectory() as tmp:
             paths = write_reports(m, tmp, log=lambda _m: None, open_exporter=lambda log: ici_pdf.open_exporter(
-                log=log, com_programs=()))
+                log=log, com_programs=(), toolkit=False))
             pdf = next(p for p in paths if p.endswith(".pdf"))
             data = Path(pdf).read_bytes()
         self.assertTrue(data.startswith(b"%PDF"))

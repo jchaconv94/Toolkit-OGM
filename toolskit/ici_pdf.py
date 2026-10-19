@@ -1,16 +1,16 @@
 """Generar ICI: el mismo libro en PDF, con todas sus hojas, listo para imprimir.
 
 Si solo se entrega el Excel, se imprime la hoja que está abierta y las demás se quedan
-(pedido del usuario del 2026-10-19). El PDF lo arma el programa de hojas de cálculo que
-tenga la PC, que respeta lo que el libro ya trae para imprimir (horizontal, a una hoja de
-ancho, encabezado de columnas en cada página) y calcula las fórmulas:
+(pedido del usuario del 2026-10-19). El PDF lo dibuja el propio Toolkit (ici_render, con
+PyMuPDF): sale igual en todas las PC y cada página llega hasta abajo. Con Excel, WPS o
+LibreOffice la tabla salía de otro tamaño que el calculado (espacio en blanco al pie, una
+columna sola en otra página), así que esos programas quedan solo de respaldo, en este orden:
 
 1. Microsoft Excel (por COM, con pywin32).
 2. WPS Office (mismo COM que Excel).
 3. LibreOffice (soffice sin ventana).
 
-Se abre un solo programa para todos los libros de una tanda. Si no hay ninguno, el Excel se
-genera igual y la consola lo avisa.
+Si no hay con qué, el Excel se genera igual y la consola lo avisa.
 """
 
 from __future__ import annotations
@@ -23,9 +23,6 @@ import tempfile
 from pathlib import Path
 
 XL_TYPE_PDF = 0
-# Anchos de columna y altos de fila que se miden en el programa, con un decimal: cubren los del libro.
-PROBE_WIDTHS = tuple(round(1 + k / 10, 1) for k in range(591))     # 1,0 a 60,0
-PROBE_HEIGHTS = tuple(round(5 + k / 10, 1) for k in range(951))    # 5,0 a 100,0
 COM_PROGRAMS = (("Excel.Application", "Microsoft Excel"), ("KET.Application", "WPS Office"),
                 ("ET.Application", "WPS Office"))
 LIBREOFFICE_GLOBS = (
@@ -45,49 +42,21 @@ def find_libreoffice() -> str | None:
     return None
 
 
-class Metrics:
-    """Cuánto mide en puntos, en el programa de esta PC, una columna de ancho w y una fila de alto h del
-    libro. Excel redondea cada fila y cada columna a píxeles de la pantalla, así que la tabla impresa
-    sale más alta y más ancha de lo que dicen las cifras del libro, y la página se cortaba antes de
-    llenarse (pedido del usuario del 2026-10-19: «un tremendo espacio en blanco abajo»)."""
+class _ToolkitExporter:
+    """El PDF lo dibuja el propio Toolkit (ici_render, con PyMuPDF): igual en todas las PC, con o sin
+    Excel, y cada página llega hasta abajo."""
+    name = "el Toolkit"
+    engine = "toolkit"
 
-    def __init__(self, widths: dict, heights: dict):
-        self.widths, self.heights = widths, heights
+    def __init__(self):
+        import ici_render
+        self._render = ici_render.render_workbook
 
-    def width(self, w: float) -> float:
-        return self.widths.get(round(w, 1), w * 7 * 0.75)
+    def render(self, wb, pdf: str) -> None:
+        self._render(wb, pdf)
 
-    def height(self, h: float) -> float:
-        return self.heights.get(round(h, 1), h)
-
-
-def probe_workbook(path: str) -> None:
-    """Libro con una columna por cada ancho y una fila por cada alto que se mide."""
-    from openpyxl import Workbook
-    from openpyxl.utils import get_column_letter
-
-    wb = Workbook()
-    ws = wb.active
-    for i, w in enumerate(PROBE_WIDTHS, 1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-    for r, h in enumerate(PROBE_HEIGHTS, 1):
-        ws.row_dimensions[r].height = h
-    wb.save(path)
-
-
-def measure(app) -> Metrics:
-    """Abre el libro de prueba en el programa (Excel o WPS) y lee cuánto mide cada columna y fila."""
-    with tempfile.TemporaryDirectory(prefix="toolkit_ici_probe_") as tmp:
-        path = os.path.join(tmp, "medidas.xlsx")
-        probe_workbook(path)
-        book = app.Workbooks.Open(os.path.abspath(path), 0, True)
-        try:
-            ws = book.Worksheets(1)
-            widths = {w: float(ws.Columns(i).Width) for i, w in enumerate(PROBE_WIDTHS, 1)}
-            heights = {h: float(ws.Rows(r).Height) for r, h in enumerate(PROBE_HEIGHTS, 1)}
-        finally:
-            book.Close(False)
-    return Metrics(widths, heights)
+    def close(self) -> None:
+        pass
 
 
 class _ComExporter:
@@ -98,7 +67,6 @@ class _ComExporter:
         import win32com.client
 
         self.name = name
-        self._metrics = None
         self._pythoncom = pythoncom
         pythoncom.CoInitialize()
         try:
@@ -108,15 +76,6 @@ class _ComExporter:
         except Exception:
             pythoncom.CoUninitialize()
             raise
-
-    def metrics(self) -> Metrics | None:
-        """Las medidas de este programa, leídas una vez por tanda. None si no se pudieron leer."""
-        if self._metrics is None:
-            try:
-                self._metrics = measure(self.app)
-            except Exception:
-                self._metrics = False
-        return self._metrics or None
 
     def export(self, xlsx: str, pdf: str) -> None:
         book = self.app.Workbooks.Open(os.path.abspath(xlsx), 0, True)
@@ -163,8 +122,14 @@ class _LibreOfficeExporter:
         self._profile.cleanup()
 
 
-def open_exporter(log=print, com_programs=COM_PROGRAMS, libreoffice=find_libreoffice):
-    """El primer programa disponible para pasar a PDF, o None si la PC no tiene ninguno."""
+def open_exporter(log=print, com_programs=COM_PROGRAMS, libreoffice=find_libreoffice, toolkit=True):
+    """Quién arma el PDF: el propio Toolkit; si no pudiera (sin PyMuPDF), el primer programa de hojas de
+    cálculo de la PC. None si no hay ninguno."""
+    if toolkit:
+        try:
+            return _ToolkitExporter()
+        except Exception:  # noqa: BLE001 - se prueba con los programas de la PC
+            pass
     if os.name == "nt":
         for prog_id, name in com_programs:
             try:

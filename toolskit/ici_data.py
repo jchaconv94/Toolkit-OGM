@@ -711,29 +711,31 @@ RECETA_CONCEPTOS = {"10": "VENTA", "11": "VENTA", "12": "VENTA", "13": "SIS", "1
 
 
 def daily_recetas(month: IciMonth, codes: set[str], desde: date, hasta: date) -> list:
-    """Recetas (dispensaciones) por día y tipo de atención: (fecha, cuentas en el orden de CONSUMO, valor).
-    De TVENTA, como las cuenta el ICI del SISMED; sin TVENTA, de las salidas de TMOVIM."""
+    """Recetas (dispensaciones) por día y tipo de atención: (fecha, cuentas en el orden de CONSUMO, valor,
+    valor de cada tipo en el orden de CONSUMO). De TVENTA, como las cuenta el ICI del SISMED; sin TVENTA,
+    de las salidas de TMOVIM."""
     days = collections.OrderedDict()
     day = desde
     while day <= hasta:
-        days[day] = ([0] * len(CONSUMO), 0.0)
+        days[day] = ([0] * len(CONSUMO), [0.0] * len(CONSUMO))
         day = date.fromordinal(day.toordinal() + 1)
+
+    def add(fecha, column, total):
+        counts, values = days[fecha]
+        counts[CONSUMO.index(column)] += 1
+        values[CONSUMO.index(column)] += total
+
     sales = [sale for sale in month.sales or [] if sale[0] in codes]
     if sales:
         for _, fecha, column, total in sales:
             if fecha in days:
-                counts, value = days[fecha]
-                counts[CONSUMO.index(column)] += 1
-                days[fecha] = (counts, value + total)
-        return [(d, counts, value) for d, (counts, value) in days.items()]
-    for m in month.movements:
-        column = RECETA_CONCEPTOS.get(m.concepto)
-        if m.tipo != "S" or column is None or m.origen not in codes or m.fecha not in days:
-            continue
-        counts, value = days[m.fecha]
-        counts[CONSUMO.index(column)] += 1
-        days[m.fecha] = (counts, value + sum(line.total or 0 for line in m.lines))
-    return [(d, counts, value) for d, (counts, value) in days.items()]
+                add(fecha, column, total)
+    else:
+        for m in month.movements:
+            column = RECETA_CONCEPTOS.get(m.concepto)
+            if m.tipo == "S" and column is not None and m.origen in codes and m.fecha in days:
+                add(m.fecha, column, sum(line.total or 0 for line in m.lines))
+    return [(d, counts, sum(values), values) for d, (counts, values) in days.items()]
 
 
 def touches(move: Movement, code: str) -> bool:

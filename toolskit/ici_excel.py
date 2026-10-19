@@ -161,42 +161,35 @@ class Page:
     versión de imprimir, `keep` corta la página antes de una fila que ya no entra y repite el
     encabezado de su tabla.
 
-    Lo que entra por página depende del programa que arma el PDF, porque cada uno dibuja las
-    columnas distinto y con «ajustar al ancho» eso cambia la escala: `printable` es el nombre del
-    programa («excel», también para WPS, o «libreoffice»); True usa las medidas de Excel."""
+    Lo que entra por página depende de quién dibuja el PDF: `printable` es «toolkit» (lo dibuja
+    ici_render con estas mismas medidas, así cada página llega exacta hasta abajo), «libreoffice» o
+    «excel» (también WPS), que dibujan las columnas a su manera; True usa las medidas del Toolkit."""
 
-    COLUMN_PADDING = {"excel": 0, "libreoffice": 5}   # píxeles que se suman a 7 × ancho
+    COLUMN_PADDING = {"toolkit": 0, "excel": 5, "libreoffice": 5}   # píxeles que se suman a 7 × ancho
 
     def __init__(self, ws, widths, printable, margins=(0.3, 0.3, 0.4, 0.45), max_scale=150):
         self.ws, self.printable, self.margins = ws, bool(printable), margins
-        engine = printable if isinstance(printable, str) else "excel"
-        padding = self.COLUMN_PADDING.get(engine, 0)
-        # Con Excel o WPS, las medidas que se leyeron en el propio programa (ici_pdf.Metrics): así la
-        # escala y lo que entra por página son exactos. Sin ellas, una estimación: una columna de ancho w
-        # mide 7 × w píxeles en Excel (Calibri 11, la letra base del libro) y 5 píxeles más en LibreOffice.
-        self.metrics = getattr(ws.parent, "ici_metrics", None) if self.printable else None
-        if self.metrics:
-            width_pt = sum(self.metrics.width(w) for w in widths)
-        else:
-            width_pt = sum(w * 7 + padding for w in widths) * 0.75
+        engine = printable if isinstance(printable, str) else "toolkit"
+        self.exact = engine == "toolkit"
+        # Una columna de ancho w mide 7 × w píxeles (ici_render dibuja así); Excel y LibreOffice la
+        # imprimen unos 5 píxeles más ancha (medido en el PDF de Excel del usuario, 2026-10-19).
+        width_pt = sum(w * 7 + self.COLUMN_PADDING.get(engine, 0) for w in widths) * 0.75
         usable_width = A4_LANDSCAPE[0] - (margins[0] + margins[1]) * 72
         fit = usable_width / width_pt
         self.fit_width = fit < 1
-        # Agrandar: con un poco de margen si es estimado, porque LibreOffice dibuja las columnas algo más anchas.
-        grow = 0.99 if self.metrics else 0.94
-        self.scale = int(fit * 100) if self.fit_width else max(10, min(max_scale, int(fit * 100 * grow)))
-        usable_height = (A4_LANDSCAPE[1] - (margins[2] + margins[3]) * 72) * (0.985 if self.metrics else 0.97)
+        if self.exact:
+            # ici_render usa la escala exacta al ajustar al ancho; la fija, en enteros como Excel.
+            self.scale = fit * 100 if self.fit_width else max(10, min(max_scale, int(fit * 100)))
+        else:
+            self.scale = int(fit * 100) if self.fit_width else max(10, min(max_scale, int(fit * 94)))
+        usable_height = (A4_LANDSCAPE[1] - (margins[2] + margins[3]) * 72) * (0.999 if self.exact else 0.97)
         self.capacity = usable_height * 100 / max(self.scale, 1)
         self.used = 0.0
         self.counted = 0
 
-    def pt(self, height: float) -> float:
-        """Lo que mide impresa (al 100 %) una fila de ese alto."""
-        return self.metrics.height(height) if self.metrics else height
-
     def _height(self, r):
         height = self.ws.row_dimensions[r].height
-        return self.pt(15.0 if height is None else height)
+        return 15.0 if height is None else height
 
     def _count_until(self, r):
         for k in range(self.counted + 1, r):
@@ -210,7 +203,6 @@ class Page:
         if not self.printable:
             return r
         self._count_until(r)
-        height = self.pt(height)
         if self.used > 0 and self.used + height > self.capacity:
             self.ws.row_breaks.append(Break(id=r - 1))
             self.used = 0.0
@@ -238,10 +230,6 @@ class Page:
         Devuelve el índice de la fila antes de la cual cortar, o None si no hace falta."""
         if not self.printable or not heights:
             return None
-        heights = [self.pt(h) for h in heights]
-        # El encabezado y el pie son varias filas: cada una crece al redondearse, como una de 15 puntos.
-        grow = self.pt(15.0) / 15.0
-        header_height, tail_height = header_height * grow, tail_height * grow * 1.02
         self._count_until(r)
         used = self.used
         for h in heights:
@@ -267,7 +255,7 @@ class Page:
             ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
         else:
             ws.sheet_properties.pageSetUpPr.fitToPage = False
-            ws.page_setup.scale = self.scale
+            ws.page_setup.scale = int(self.scale)
         left, right, top, bottom = self.margins
         ws.page_margins = PageMargins(left=left, right=right, top=top, bottom=bottom, footer=0.2)
         ws.print_options.horizontalCentered = True
@@ -383,7 +371,7 @@ def ici_sheet(wb, report: IciReport, printable=False):
 
     heights = [row_height(row["DESC"], C.cols[IX["DESC"] - 1][1], 7.2) for row in rows]
     # La declaración jurada y las firmas van con las últimas filas, nunca solas en una página.
-    tail = 16 + 15 * len(notes) + 15 + SIGNATURE_HEIGHT
+    tail = 16 + NOTE_HEIGHT * len(notes) + 4 + SIGNATURE_HEIGHT
     cut = page.tail_break(first, heights, 15 + 72, tail)
     r = first
     for k, (row, height) in enumerate(zip(rows, heights)):
@@ -506,7 +494,9 @@ def ici_sheet(wb, report: IciReport, printable=False):
     r = tr + 1
     for note in notes:
         box(ws, r, 1, r, NCOL, note, fnt(6.5, False, MUTED, True), None, LEFT, border=False)
+        ws.row_dimensions[r].height = NOTE_HEIGHT
         r += 1
+    ws.row_dimensions[r].height = 4
     # La declaración jurada y las firmas no se parten entre dos páginas.
     r = page.keep(r + 1, SIGNATURE_HEIGHT)
     _signature(ws, r, widths)
@@ -549,7 +539,9 @@ def signature_blocks(widths) -> tuple[tuple[int, int], tuple[int, int]]:
     return left, column_span(widths, 1 - b, 1 - a)
 
 
-SIGNATURE_HEIGHT = 15 + 2 * 15 + 18 + 14 + 34 + 14 + 2 * 16
+# Compactas, para que entren más seguido en la página de las últimas filas.
+SIGNATURE_HEIGHT = 15 + 2 * 12 + 14 + 6 + 28 + 12 + 2 * 14
+NOTE_HEIGHT = 12
 
 
 def _signature(ws, r, widths):
@@ -564,22 +556,22 @@ def _signature(ws, r, widths):
                  "con las existencias físicas al cierre del mes.")
     box(ws, r + 1, 1, r + 2, ncol, statement, fnt(7.5), None,
         Alignment(horizontal="justify", vertical="center", wrap_text=True, indent=1))
-    ws.row_dimensions[r + 1].height = ws.row_dimensions[r + 2].height = 15
+    ws.row_dimensions[r + 1].height = ws.row_dimensions[r + 2].height = 12
     box(ws, r + 3, 1, r + 3, ncol, f"Fecha: {date_in_words(dt.date.today())}", fnt(7.5, True), None, LEFT, border=False)
-    ws.row_dimensions[r + 3].height = 18
-    ws.row_dimensions[r + 4].height = 14
-    ws.row_dimensions[r + 5].height = 34          # espacio para firmar, sobre la línea
+    ws.row_dimensions[r + 3].height = 14
+    ws.row_dimensions[r + 4].height = 6
+    ws.row_dimensions[r + 5].height = 28          # espacio para firmar, sobre la línea
     for (c1, c2), title in zip(signature_blocks(widths), ("RESPONSABLE DE FARMACIA", "JEFE DEL ESTABLECIMIENTO")):
         for c in range(c1, c2 + 1):
             ws.cell(r + 5, c).border = Border(bottom=side(INK))
         box(ws, r + 6, c1, r + 6, c2, title, fnt(7.5, True), None, CENTER, border=False)
-        ws.row_dimensions[r + 6].height = 14
+        ws.row_dimensions[r + 6].height = 12
         for k, label in enumerate(("Nombre:", "DNI:")):
             box(ws, r + 7 + k, c1, r + 7 + k, c2, label, fnt(7, False, MUTED), None,
                 Alignment(horizontal="left", vertical="bottom"), border=False)
             for c in range(c1, c2 + 1):
                 ws.cell(r + 7 + k, c).border = Border(bottom=side(GRID))
-            ws.row_dimensions[r + 7 + k].height = 16
+            ws.row_dimensions[r + 7 + k].height = 14
 
 
 # ── Vencimientos ───────────────────────────────────────────────────────────────
@@ -1147,24 +1139,32 @@ def corrections_sheet(wb, report: IciReport, products: dict, printable=False):
 
 RECETA_COLUMNS = (("VENTA", "VENTA"), ("SIS", "S.I.S."), ("INTERSAN", "INTERV. SANITARIA"), ("EXO", "EXONERACIÓN"),
                   ("SOAT", "SOAT"), ("CREDHOSP", "CRÉDITO HOSP."), ("OTR_CONV", "OTROS CONVENIOS"))
+RECETA_LABELS = {"VENTA": "Venta", "S.I.S.": "S.I.S.", "INTERV. SANITARIA": "Intervención sanitaria",
+                 "EXONERACIÓN": "Exoneración", "SOAT": "SOAT", "CRÉDITO HOSP.": "Crédito hospitalario",
+                 "OTROS CONVENIOS": "Otros convenios"}
 DIAS = ("Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo")
 
 
 def recetas_sheet(wb, report: IciReport, printable=False):
     """Recetas (dispensaciones) por día y tipo de atención, con su valor, contadas como el SISMED: una
-    venta o ticket es una receta. Al pie, el total que guardó el ICI (TFORMATO) para comparar."""
+    venta o ticket es una receta. Al pie, el total que guardó el ICI (TFORMATO) para comparar. A la
+    derecha, el resumen del mes: cuántas, cuánto valen, días con atención y promedio, el día con más
+    recetas, cada tipo de atención con su parte y cada día de la semana con su promedio (pedido del
+    usuario del 2026-10-19: la hoja era «muy simple»)."""
     ws = wb.create_sheet("Recetas diarias")
     ws.sheet_view.showGridLines = False
     header = ["FECHA", "DÍA", *[h for _, h in RECETA_COLUMNS], "TOTAL", "VALOR S/"]
-    widths = [11, 11, *[13] * len(RECETA_COLUMNS), 11, 13]
-    nc = len(header)
+    nt = len(header)                       # columnas de la tabla por día
+    side = nt + 2                          # primera columna del resumen (con una angosta de separación)
+    widths = [10.5, 10, *[10] * len(RECETA_COLUMNS), 8.5, 11, 2, 22, 9.5, 9.5, 11]
+    nc = len(widths)
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[L(i)].width = w
-    # Escala tope para que los 31 días del mes entren en una sola hoja.
     page = Page(ws, widths, printable, max_scale=95)
     _title(ws, nc, "RECETAS DIARIAS", report,
            f"{report.title}  ·  Recetas atendidas por día y tipo de atención (cada venta o ticket del SISMED es una receta)",
            split=3)
+    ws.row_dimensions[3].height = 6
     if not report.recetas_diarias:
         box(ws, 4, 1, 4, nc, "Sin datos: el SISMED no tiene las ventas ni los movimientos del mes (TVENTA, TMOVIM).",
             fnt(7.5, False, MUTED, True), None, LEFT)
@@ -1172,22 +1172,25 @@ def recetas_sheet(wb, report: IciReport, printable=False):
         return
 
     def header_row(rr):
-        _cells_header(ws, rr, header)
+        for i, h in enumerate(header, 1):
+            box(ws, rr, i, rr, i, h, fnt(7, True, NAVY), SOFT, CENTER)
+        ws.row_dimensions[rr].height = 22
         return rr + 1
 
     first = header_row(4)
     r = first
     idx = [CONSUMO.index(key) for key, _ in RECETA_COLUMNS]
-    for k, (day, counts, value) in enumerate(report.recetas_diarias):
+    days = report.recetas_diarias
+    for k, (day, counts, value, _) in enumerate(days):
         r = page.keep(r, 12.4, header_row)
         values = [_as_datetime(day), DIAS[day.weekday()], *[counts[i] for i in idx],
                   f"=SUM(C{r}:{L(2 + len(idx))}{r})", value]
         for i, v in enumerate(values, 1):
             cell = ws.cell(r, i, v)
-            cell.font = fnt(8, bold=i in (nc - 1, nc), color=MUTED if day.weekday() >= 5 and i <= 2 else INK)
+            cell.font = fnt(8, bold=i in (nt - 1, nt), color=MUTED if day.weekday() >= 5 and i <= 2 else INK)
             cell.border = BOX
             cell.alignment = MID if i <= 2 else NUM
-            cell.number_format = {1: "dd/mm/yyyy", nc: MONEY}.get(i, INT0)
+            cell.number_format = {1: "dd/mm/yyyy", nt: MONEY}.get(i, INT0)
             if day.weekday() >= 5:
                 cell.fill = fill(SOFT)
             elif k % 2:
@@ -1195,33 +1198,85 @@ def recetas_sheet(wb, report: IciReport, printable=False):
         ws.row_dimensions[r].height = 12.4
         r += 1
     last = r - 1
-    r = page.keep(r, 34, header_row)
+    r = page.keep(r, 48, header_row)
     box(ws, r, 1, r, 2, "Total del mes", fnt(8, True, WHITE), NAVY, RIGHT)
-    for i in range(3, nc + 1):
+    for i in range(3, nt + 1):
         box(ws, r, i, r, i, f"=SUM({L(i)}{first}:{L(i)}{last})", fnt(8, True, WHITE), NAVY, CENTER,
-            fmt=MONEY if i == nc else INT0)
+            fmt=MONEY if i == nt else INT0)
+    by_type = [sum(c[i] for _, c, _, _ in days) for i in idx]
+    value_by_type = [sum(v[i] for _, _, _, v in days) for i in idx]
+    total = sum(by_type)
+    total_value = sum(value for _, _, value, _ in days)
+    box(ws, r + 1, 1, r + 1, 2, "% del total", fnt(7.5, True, MUTED), SOFT, RIGHT)
+    for j, n in enumerate(by_type):
+        box(ws, r + 1, 3 + j, r + 1, 3 + j, n / total if total else 0, fnt(7.5, True, INKT["cons"]), SOFT, CENTER,
+            fmt='0.0%;-0.0%;"–"')
+    box(ws, r + 1, 3 + len(idx), r + 1, nt, None, None, SOFT)
     official = [report.recetas[i] for i in idx]
-    box(ws, r + 1, 1, r + 1, 2, "Según el ICI (TFORMATO)", fnt(7.5, True, MUTED), SOFT, RIGHT)
+    box(ws, r + 2, 1, r + 2, 2, "Según el ICI (TFORMATO)", fnt(7.5, True, MUTED), SOFT, RIGHT)
     for j, v in enumerate(official):
-        box(ws, r + 1, 3 + j, r + 1, 3 + j, v, fnt(8, True), SOFT, CENTER, fmt=INT0)
-    box(ws, r + 1, 3 + len(official), r + 1, 3 + len(official), sum(official), fnt(8, True), SOFT, CENTER, fmt=INT0)
-    box(ws, r + 1, nc, r + 1, nc, None, None, SOFT)
-    daily = [sum(counts[i] for _, counts, _ in report.recetas_diarias) for i in idx]
-    if not any(daily) and any(official):
-        box(ws, r + 2, 1, r + 2, nc, "No se encontraron las dispensaciones del mes en el SISMED (TVENTA ni TMOVIM); "
+        box(ws, r + 2, 3 + j, r + 2, 3 + j, v, fnt(8, True), SOFT, CENTER, fmt=INT0)
+    box(ws, r + 2, 3 + len(official), r + 2, 3 + len(official), sum(official), fnt(8, True), SOFT, CENTER, fmt=INT0)
+    box(ws, r + 2, nt, r + 2, nt, None, None, SOFT)
+    for k in (1, 2):
+        ws.row_dimensions[r + k].height = 14
+    if not total and any(official):
+        box(ws, r + 3, 1, r + 3, nt, "No se encontraron las dispensaciones del mes en el SISMED (TVENTA ni TMOVIM); "
             "la consola del Toolkit dice qué almacenes trae, para revisarlo.", fnt(7, False, INKT["dev"], True), None, LEFT,
             border=False)
-    elif daily != [int(v) for v in official]:
-        box(ws, r + 2, 1, r + 2, nc, "El total por día no coincide con el ICI: el ICI se procesó antes de que se registraran "
+    elif by_type != [int(v) for v in official]:
+        box(ws, r + 3, 1, r + 3, nt, "El total por día no coincide con el ICI: el ICI se procesó antes de que se registraran "
             "o anularan algunas dispensaciones del mes.", fnt(7, False, INKT["dev"], True), None, LEFT, border=False)
+
+    # ── Resumen a la derecha, en las mismas filas de la tabla ──
+    def section(rr, title, cols=None):
+        box(ws, rr, side, rr, nc, title, fnt(7.5, True, WHITE), NAVY, LEFT)
+        if cols:
+            for j, h in enumerate(cols):
+                box(ws, rr + 1, side + j, rr + 1, side + j, h, fnt(7, True, NAVY), SOFT, CENTER if j else LEFT)
+        return rr + (2 if cols else 1)
+
+    attended = [d for d in days if sum(d[1][i] for i in idx)]
+    busiest = max(days, key=lambda d: sum(d[1][i] for i in idx)) if attended else None
+    rr = section(first - 1, "RESUMEN DEL MES")
+    kpis = [
+        ("Recetas atendidas", total, INT0),
+        ("Valor de lo dispensado", total_value, '"S/ "0.00'),
+        ("Valor promedio por receta", total_value / total if total else 0, '"S/ "0.00;-0.00;"–"'),
+        ("Días con atención", f"{len(attended)} de {len(days)}", None),
+        ("Promedio por día de atención", total / len(attended) if attended else 0, '0.0;-0.0;"–"'),
+        ("Día con más recetas", (f"{busiest[0]:%d/%m} ({DIAS[busiest[0].weekday()].lower()}) · "
+                                 f"{sum(busiest[1][i] for i in idx)}") if busiest else "–", None),
+    ]
+    for label, value, fmt in kpis:
+        box(ws, rr, side, rr, side, label, fnt(7.5, True, MUTED), SOFT, LEFT)
+        box(ws, rr, side + 1, rr, nc, value, fnt(8.5, True), None, RIGHT, fmt=fmt)
+        rr += 1
+    rr = section(rr + 1, "POR TIPO DE ATENCIÓN", ["TIPO", "RECETAS", "%", "VALOR S/"])
+    for (_, name), n, v in zip(RECETA_COLUMNS, by_type, value_by_type):
+        box(ws, rr, side, rr, side, RECETA_LABELS.get(name, name), fnt(7.5), None, LEFT)
+        box(ws, rr, side + 1, rr, side + 1, n, fnt(8, True), None, CENTER, fmt=INT0)
+        box(ws, rr, side + 2, rr, side + 2, n / total if total else 0, fnt(7.5), None, CENTER, fmt='0.0%;-0.0%;"–"')
+        box(ws, rr, side + 3, rr, side + 3, v, fnt(7.5), None, CENTER, fmt=MONEY)
+        rr += 1
+    rr = section(rr + 1, "POR DÍA DE LA SEMANA", ["DÍA", "DÍAS", "RECETAS", "PROMEDIO"])
+    for wd, name in enumerate(DIAS):
+        same = [d for d in days if d[0].weekday() == wd]
+        n = sum(sum(d[1][i] for i in idx) for d in same)
+        weekend = wd >= 5
+        box(ws, rr, side, rr, side, name, fnt(7.5, color=MUTED if weekend else INK), SOFT if weekend else None, LEFT)
+        box(ws, rr, side + 1, rr, side + 1, len(same), fnt(7.5), SOFT if weekend else None, CENTER, fmt=INT0)
+        box(ws, rr, side + 2, rr, side + 2, n, fnt(8, True), SOFT if weekend else None, CENTER, fmt=INT0)
+        box(ws, rr, side + 3, rr, side + 3, n / len(same) if same else 0, fnt(7.5), SOFT if weekend else None, CENTER,
+            fmt='0.0;-0.0;"–"')
+        rr += 1
     page.setup("Recetas diarias", report, titles="1:2")
 
 
-def build_workbook(report: IciReport, printable: bool | str = False, metrics=None) -> tuple[Workbook, dict]:
+def build_workbook(report: IciReport, printable: bool | str = False) -> tuple[Workbook, dict]:
     """Arma el libro completo; `printable` es la versión que se pasa a PDF. Devuelve (libro,
     cifras para la consola). Las guías van justo después del ICI (pedido del usuario)."""
     wb = Workbook()
-    wb.ici_metrics = metrics if printable else None   # medidas del programa que arma el PDF (Page)
     products = {**report.products, **{r["CODIGO_MED"]: (r["DESC"], r["MEDFF"]) for r in report.rows}}
     ici_sheet(wb, report, printable)
     guides_sheet(wb, report, products, printable)
@@ -1289,11 +1344,14 @@ def write_reports(month, out_dir: str, consolidated: bool = True, per_pharmacy: 
             pdf_path = path[:-len(".xlsx")] + ".pdf"
             try:
                 # El PDF sale de la versión para imprimir: páginas cortadas y encabezados repetidos.
-                with tempfile.TemporaryDirectory(prefix="toolkit_ici_print_") as tmp:
-                    printable = os.path.join(tmp, f"{name}.xlsx")
-                    metrics = exporter.metrics() if hasattr(exporter, "metrics") else None
-                    build_workbook(report, printable=getattr(exporter, "engine", True), metrics=metrics)[0].save(printable)
-                    exporter.export(printable, pdf_path)
+                engine = getattr(exporter, "engine", True)
+                if hasattr(exporter, "render"):
+                    exporter.render(build_workbook(report, printable=engine)[0], pdf_path)
+                else:
+                    with tempfile.TemporaryDirectory(prefix="toolkit_ici_print_") as tmp:
+                        printable = os.path.join(tmp, f"{name}.xlsx")
+                        build_workbook(report, printable=engine)[0].save(printable)
+                        exporter.export(printable, pdf_path)
                 paths.append(pdf_path)
                 log(f"📄 {os.path.basename(pdf_path)}")
             except Exception as exc:  # noqa: BLE001 - el Excel ya quedó; se avisa y se sigue
