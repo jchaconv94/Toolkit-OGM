@@ -248,6 +248,12 @@ class IciExcelTests(unittest.TestCase):
         self.assertEqual(report.guias, [])
         self.assertEqual([c.doc_numero for c in report.corrections], ["G-9"])
         self.assertIn("correccion", report.rows[0]["flags"])
+        # Cada guía de corrección sale completa: cabecera con su referencia y debajo sus productos.
+        wb, _ = build_workbook(report)
+        cells = [c.value for row in wb["Correcciones de lote"].iter_rows() for c in row if c.value is not None]
+        self.assertIn("GUÍA N° G-9  ·  ENTRADA  ·  10/08/2026", cells)
+        self.assertIn("Corrección de lote", cells)
+        self.assertIn("PARACETAMOL 500 mg", cells)
 
     def test_reference_groups_and_date_in_words(self):
         self.assertEqual(reference_group("sismed"), "SISMED")

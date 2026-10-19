@@ -838,48 +838,83 @@ def guides_sheet(wb, report: IciReport, printable=False):
 
 
 def corrections_sheet(wb, report: IciReport, products: dict, printable=False):
+    """Cada guía de corrección completa: su cabecera (número, fecha, movimiento, concepto, referencia,
+    de dónde viene o adónde va) y debajo los productos que llevó, como para revisarla una por una
+    (pedido del usuario: «prácticamente toda la guía se imprimiría»)."""
     ws = wb.create_sheet("Correcciones de lote")
     ws.sheet_view.showGridLines = False
-    columns = [("FECHA", 10, "dd/mm/yyyy"), ("N° DE GUÍA", 13, None), ("FARMACIA", 9, None), ("MOVIMIENTO", 11, None),
-               ("CONCEPTO", 20, "text"), ("REFERENCIA", 22, "text"), ("CÓDIGO", 8, None), ("DESCRIPCIÓN", 38, "text"),
-               ("LOTE", 14, None), ("VENCIMIENTO", 11, "dd/mm/yyyy"), ("CANTIDAD", 9, INT0)]
+    columns = [("CÓDIGO", 12, None), ("DESCRIPCIÓN", 48, "text"), ("UNIDAD", 9, None), ("LOTE", 15, None),
+               ("VENCIMIENTO", 12, "dd/mm/yyyy"), ("CANTIDAD", 10, INT0), ("PRECIO S/", 10, PRICE), ("VALOR S/", 12, MONEY)]
     widths = [c[1] for c in columns]
     nc = len(columns)
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[L(i)].width = w
     page = Page(ws, widths, printable)
+    total = sum(m.valor or 0 for m in report.corrections)
     _title(ws, nc, "CORRECCIONES DE LOTE", report,
-           f"{report.title}  ·  Guías de corrección de lote o de código (referencia «corrección…») y lo que salió y volvió "
-           "a entrar en la misma farmacia. En el ICI quedan en Devolución y Reingreso.", split=2)
+           f"{report.title}  ·  {len(report.corrections)} guías  ·  S/ {total:.2f}  ·  Guías con que se corrige un lote o un código: salen "
+           "(devolución) y vuelven a entrar (reingreso). En el ICI quedan en Devolución y Reingreso.", split=2)
     if not report.corrections:
         box(ws, 4, 1, 4, nc, "Sin correcciones de lote en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
-    else:
-        header = [c[0] for c in columns]
+        page.setup("Correcciones de lote", report, titles="1:2")
+        return
+    # El vencimiento sale del detalle de la guía; si no lo trae, del lote en el ICI.
+    expiry = {(row["CODIGO_MED"], row["MEDLOTE"]): row["FEC_EXP"] for row in report.rows if row["FEC_EXP"]}
+    formats = {i: c[2] for i, c in enumerate(columns, 1) if c[2]}
+    header = [c[0] for c in columns]
 
-        def header_row(rr):
+    r = 4
+    for m in sorted(report.corrections, key=lambda m: (m.fecha or dt.date.min, m.doc_numero, m.tipo != "S", m.numero)):
+        salida = m.tipo == "S"
+        farmacia = m.origen if salida else m.destino
+        otro = m.destino if salida else m.origen
+        lines_data = []
+        for line in m.lines:
+            desc, unit = products.get(line.code, ("", ""))
+            price = (line.total / line.qty) if (line.total is not None and line.qty) else None
+            lines_data.append([line.code, desc, unit, line.lote, _as_datetime(line.vence or expiry.get((line.code, line.lote))),
+                               line.qty, price, line.total])
+        heights = [_text_height(values, columns) for values in lines_data]
+        title = f"GUÍA N° {_guide_number(m)}  ·  {'SALIDA' if salida else 'ENTRADA'}  ·  {m.fecha:%d/%m/%Y}" if m.fecha \
+            else f"GUÍA N° {_guide_number(m)}  ·  {'SALIDA' if salida else 'ENTRADA'}"
+
+        def items_header(rr):
             _cells_header(ws, rr, header)
             return rr + 1
 
-        r = header_row(4)
-        # El vencimiento sale del detalle de la guía; si no lo trae, del lote en el ICI.
-        expiry = {(row["CODIGO_MED"], row["MEDLOTE"]): row["FEC_EXP"] for row in report.rows if row["FEC_EXP"]}
-        formats = {i: c[2] for i, c in enumerate(columns, 1) if c[2]}
-        k = 0
-        for m in sorted(report.corrections, key=lambda m: (m.fecha or dt.date.min, m.doc_numero, m.tipo != "S")):
-            farmacia = (m.origen if m.tipo == "S" else m.destino)[-3:]
-            for line in m.lines:
-                values = [_as_datetime(m.fecha), _guide_number(m), farmacia, "Salida" if m.tipo == "S" else "Entrada",
-                          _concept(m.concepto), m.referencia or "—", line.code, products.get(line.code, ""), line.lote,
-                          _as_datetime(line.vence or expiry.get((line.code, line.lote))), line.qty]
-                height = _text_height(values, columns)
-                r = page.keep(r, height, header_row)
-                _data_row(ws, r, values, formats, k % 2)
-                ws.row_dimensions[r].height = height
-                r += 1
-                k += 1
-        if not printable:
-            ws.freeze_panes = "A5"
-    page.setup("Correcciones de lote", report, titles="1:4")
+        def repeat(rr, title=title):
+            box(ws, rr, 1, rr, nc, f"{title}  ·  continuación", fnt(8, True, WHITE), NAVY, LEFT)
+            ws.row_dimensions[rr].height = 15
+            return items_header(rr + 1)
+
+        # Cabecera de la guía (no se separa de su primer producto)
+        r = page.keep(r, 15 + 3 * 15 + 22 + (heights[0] if heights else 15))
+        box(ws, r, 1, r, nc, title, fnt(8.5, True, WHITE), NAVY, LEFT)
+        ws.row_dimensions[r].height = 16
+        fields = [
+            ("Farmacia", _place_name(farmacia, report.names), "Movimiento", "Salida" if salida else "Entrada (reingreso)"),
+            ("Concepto", _concept(m.concepto), "Referencia", m.referencia or "—"),
+            ("Destino" if salida else "Procedencia", _place_name(otro, report.names) if otro else "—",
+             "Productos / valor", f"{len(m.lines)}  ·  S/ {(m.valor or 0):.2f}"),
+        ]
+        for k, (l1, v1, l2, v2) in enumerate(fields, 1):
+            box(ws, r + k, 1, r + k, 1, l1, fnt(7.5, True, MUTED), SOFT, LEFT)
+            box(ws, r + k, 2, r + k, 3, v1, fnt(8, True), None, LEFT)
+            box(ws, r + k, 4, r + k, 5, l2, fnt(7.5, True, MUTED), SOFT, LEFT)
+            box(ws, r + k, 6, r + k, nc, v2, fnt(8, True), None, LEFT)
+            ws.row_dimensions[r + k].height = 15
+        r = items_header(r + 4)
+        start = r
+        for k, (values, height) in enumerate(zip(lines_data, heights)):
+            r = page.keep(r, height, repeat)
+            _data_row(ws, r, values, formats, k % 2)
+            ws.row_dimensions[r].height = height
+            r += 1
+        r = page.keep(r, 15, repeat)
+        box(ws, r, 1, r, nc - 1, "Total de la guía", fnt(7.5, True, NAVY), SOFT, RIGHT)
+        box(ws, r, nc, r, nc, f"=SUM({L(nc)}{start}:{L(nc)}{r - 1})", fnt(7.5, True, NAVY), SOFT, CENTER, fmt=MONEY)
+        r += 2
+    page.setup("Correcciones de lote", report, titles="1:2")
 
 
 def build_workbook(report: IciReport, printable: bool = False) -> tuple[Workbook, dict]:
@@ -891,7 +926,7 @@ def build_workbook(report: IciReport, printable: bool = False) -> tuple[Workbook
     expiry_sheet(wb, report, printable)
     summary, still, still_value = alerts_sheet(wb, report, printable)
     still_sheet(wb, report, still, still_value, printable)
-    corrections_sheet(wb, report, {r["CODIGO_MED"]: r["DESC"] for r in report.rows}, printable)
+    corrections_sheet(wb, report, {r["CODIGO_MED"]: (r["DESC"], r["MEDFF"]) for r in report.rows}, printable)
     wb.active = 0
     return wb, summary
 
