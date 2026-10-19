@@ -196,6 +196,22 @@ class IciDataTests(unittest.TestCase):
         self.assertIn("Devolución por sobrestock", cells)
         self.assertIn("PRODUCTO RECUPERADO", cells)
 
+    def test_return_exits_are_the_devolucion_column(self):
+        # Salidas por devolución: lo que cae en DEVOLUCIÓN (sobrestock, RS cancelado…); el vencido (35) no.
+        rows = [tformdet("06502F01", "001", "L1", SALDO=30, DEVOL=7, VENCIDO=3)]
+        heads = [head("S", "40", "07", "06502F0101", "030A0001", doc=("04", "G-40"), refe="SOBRESTOCK"),
+                 head("S", "41", "22", "06502F0101", "030A0001", doc=("04", "G-41"), refe="RS CANCELADO"),
+                 head("S", "42", "35", "06502F0101", "030A0001", doc=("04", "G-42"), refe="PRODUCTO EXPIRADO")]
+        details = [detail("S", "40", "001", "L1", 5), detail("S", "41", "001", "L1", 2), detail("S", "42", "001", "L1", 3)]
+        m = month(rows, heads, details)
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        self.assertEqual([g.doc_numero for g in report.devoluciones], ["G-40", "G-41"])
+        cells = [str(c.value) for row in build_workbook(report)[0]["Salidas por devolución"].iter_rows()
+                 for c in row if c.value is not None]
+        self.assertIn("RS CANCELADO", cells)
+        self.assertFalse(any("G-42" in v for v in cells))
+
     def test_an_exit_alone_is_not_an_internal_entry(self):
         rows = [tformdet("06502F01", "001", "L1", SALDO=30, DEVOL=10)]
         m = month(rows, [head("S", "30", "07", "06502F0101", "030A0001", refe="CORRECCION DE LOTE")],
@@ -304,10 +320,10 @@ class IciExcelTests(unittest.TestCase):
     def test_workbook_has_the_approved_sheets(self):
         wb, summary = build_workbook(self._report())
         # Orden del usuario; alertas y lotes sin movimiento al final y solo en el Excel.
-        self.assertEqual(wb.sheetnames, ["ICI", "Guías de ingreso", "Ingresos internos", "Vencimientos",
+        self.assertEqual(wb.sheetnames, ["ICI", "Guías de ingreso", "Ingresos internos", "Salidas por devolución", "Vencimientos",
                                          "Recetas diarias", "Alertas de farmacia", "Lotes sin movimiento"])
         printable = build_workbook(self._report(), printable="toolkit")[0]
-        self.assertEqual(printable.sheetnames, ["ICI", "Guías de ingreso", "Ingresos internos", "Vencimientos",
+        self.assertEqual(printable.sheetnames, ["ICI", "Guías de ingreso", "Ingresos internos", "Salidas por devolución", "Vencimientos",
                                                 "Recetas diarias"])
         cells = [c.value for row in printable["ICI"].iter_rows() for c in row if isinstance(c.value, str)]
         self.assertIn("RESPONSABLE DE FARMACIA", cells)

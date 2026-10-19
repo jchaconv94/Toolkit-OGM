@@ -1000,9 +1000,27 @@ GAP = 6   # alto de la fila vacía entre los datos de una guía y la tabla de su
 def internal_sheet(wb, report: IciReport, products: dict, printable=False):
     """Ingresos internos (antes «Correcciones de lote»; regla del usuario, 2026-10-19): todo lo que entró
     a la columna REINGRESO —la devolución por sobrestock y demás que ingresó el responsable de farmacia
-    para hacer algún cambio— y lo que entregó otra farmacia del establecimiento. Guía por guía: de dónde
-    ingresó, concepto, referencia (ahí escriben el cambio, va resaltada) y el detalle de sus productos."""
-    ws = wb.create_sheet("Ingresos internos")
+    para hacer algún cambio— y lo que entregó otra farmacia del establecimiento."""
+    _guide_detail_sheet(
+        wb, report, products, printable, "Ingresos internos", report.internos,
+        "Reingresos (devolución por sobrestock y demás) que ingresó la farmacia y lo que entregó otra farmacia del "
+        "establecimiento. La referencia dice qué se cambió.", "Sin ingresos internos en el mes.")
+
+
+def returns_sheet(wb, report: IciReport, products: dict, printable=False):
+    """Salidas por devolución (pedido del usuario, 2026-10-19): lo que cae en la columna DEVOLUCIÓN del ICI
+    —devolución por sobrestock, por RS cancelado y demás—; las de vencido (concepto 35) van a Vencidos y
+    no entran."""
+    _guide_detail_sheet(
+        wb, report, products, printable, "Salidas por devolución", report.devoluciones,
+        "Lo que salió por devolución (columna DEVOLUCIÓN del ICI): devolución por sobrestock, por RS cancelado y demás. "
+        "La referencia dice por qué.", "Sin salidas por devolución en el mes.")
+
+
+def _guide_detail_sheet(wb, report: IciReport, products: dict, printable, name: str, moves, subtitle: str, empty: str):
+    """Guía por guía: origen y destino, concepto y referencia (ahí escriben el motivo o el cambio, va
+    resaltada) y el detalle de sus productos."""
+    ws = wb.create_sheet(name)
     ws.sheet_view.showGridLines = False
     columns = [("CÓDIGO", 10), ("DESCRIPCIÓN", 52), ("LOTE", 14), ("VENCIMIENTO", 12), ("REG. SANITARIO", 13),
                ("CANTIDAD", 10), ("VALOR S/", 12)]
@@ -1011,24 +1029,21 @@ def internal_sheet(wb, report: IciReport, products: dict, printable=False):
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[L(i)].width = w
     page = Page(ws, widths, printable)
-    entries = report.internos
-    total = sum(m.valor or 0 for m in entries)
-    _title(ws, nc, "INGRESOS INTERNOS", report,
-           f"{report.title}  ·  {len(entries)} guías  ·  S/ {total:.2f}  ·  Reingresos (devolución por sobrestock y demás) que "
-           "ingresó la farmacia y lo que entregó otra farmacia del establecimiento. La referencia dice qué se cambió.", split=2)
-    if not entries:
-        box(ws, 4, 1, 4, nc, "Sin ingresos internos en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
-        page.setup("Ingresos internos", report, titles="1:2")
+    total = sum(m.valor or 0 for m in moves)
+    _title(ws, nc, name.upper(), report, f"{report.title}  ·  {len(moves)} guías  ·  S/ {total:.2f}  ·  {subtitle}", split=2)
+    if not moves:
+        box(ws, 4, 1, 4, nc, empty, fnt(7.5, False, MUTED, True), None, LEFT)
+        page.setup(name, report, titles="1:2")
         return
     spans = [(h, i, i, fmt) for i, (h, fmt) in enumerate(
         [("CÓDIGO", None), ("DESCRIPCIÓN", "text"), ("LOTE", None), ("VENCIMIENTO", "dd/mm/yyyy"),
          ("REG. SANITARIO", None), ("CANTIDAD", INT0), ("VALOR S/", MONEY)], 1)]
     value_col = L(nc)
     r = 4
-    for m in entries:
+    for m in moves:
         title = f"GUÍA N° {_guide_number(m)}" + (f"  ·  {m.fecha:%d/%m/%Y}" if m.fecha else "")
         fields = [("Origen", _place_name(m.origen, report.names) if m.origen else "—",
-                   "Destino", _place_name(m.destino, report.names)),
+                   "Destino", _place_name(m.destino, report.names) if m.destino else "—"),
                   ("Concepto", _concept(m.concepto, report.concepts), "Referencia", m.referencia or "—")]
         items = [[line.code, products.get(line.code, ("", ""))[0], line.lote, _as_datetime(line.vence), line.regsan,
                   line.qty, line.total] for line in m.lines]
@@ -1054,7 +1069,7 @@ def internal_sheet(wb, report: IciReport, products: dict, printable=False):
         box(ws, r, 1, r, nc - 1, "Total de la guía", fnt(7.5, True, NAVY), SOFT, RIGHT)
         box(ws, r, nc, r, nc, f"=SUM({value_col}{start}:{value_col}{r - 1})", fnt(7.5, True, NAVY), SOFT, CENTER, fmt=MONEY)
         r += 2
-    page.setup("Ingresos internos", report, titles="1:2")
+    page.setup(name, report, titles="1:2")
 
 
 RECETA_COLUMNS = (("VENTA", "VENTA"), ("SIS", "S.I.S."), ("INTERSAN", "INTERV. SANITARIA"), ("EXO", "EXONERACIÓN"),
@@ -1199,13 +1214,14 @@ EXCEL_ONLY = ("Alertas de farmacia", "Lotes sin movimiento")   # hojas que no va
 def build_workbook(report: IciReport, printable: bool | str = False) -> tuple[Workbook, dict]:
     """Arma el libro completo; `printable` es la versión que se pasa a PDF. Devuelve (libro,
     cifras para la consola). Orden del usuario (2026-10-19): ICI, guías de ingreso, ingresos internos,
-    vencimientos y recetas diarias; alertas y lotes sin movimiento van al final y solo en el
+    salidas por devolución, vencimientos y recetas diarias; alertas y lotes sin movimiento van al final y solo en el
     Excel, no en el PDF."""
     wb = Workbook()
     products = {**report.products, **{r["CODIGO_MED"]: (r["DESC"], r["MEDFF"]) for r in report.rows}}
     ici_sheet(wb, report, printable)
     guides_sheet(wb, report, products, printable)
     internal_sheet(wb, report, products, printable)
+    returns_sheet(wb, report, products, printable)
     expiry_sheet(wb, report, printable)
     recetas_sheet(wb, report, printable)
     summary, still, still_value = alerts_sheet(wb, report, printable)

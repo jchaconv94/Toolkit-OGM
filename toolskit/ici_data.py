@@ -236,6 +236,7 @@ class IciReport:
     recetas_diarias: list = field(default_factory=list)     # (fecha, recetas en el orden de CONSUMO, valor)
     products: dict = field(default_factory=dict)            # código → (descripción, unidad)
     valores: list | None = None                             # consumo en soles según el SISMED (TFORMATO)
+    devoluciones: list = field(default_factory=list)        # salidas que el ICI pone en DEVOLUCIÓN
 
 
 # ── Lectura del SISMED ─────────────────────────────────────────────────────────
@@ -572,6 +573,18 @@ def internal_entries(month: IciMonth, codes: set[str]) -> list[Movement]:
     return sorted((m for m in month.movements if m.destino in codes and is_internal_entry(m)), key=_move_order)
 
 
+# Salidas que el ICI pone en DEVOLUCIÓN (informe_sismed.md); el 35 va a Vencidos (decisión del usuario).
+DEVOLUCION_CONCEPTOS = {"05", "07", "22", "36"}
+
+
+def return_exits(month: IciMonth, codes: set[str], consolidated: bool = False) -> list[Movement]:
+    """Salidas por devolución del mes (devolución por sobrestock, por RS cancelado y demás que caen en la
+    columna DEVOLUCIÓN), guía por guía. En el consolidado no van las entregas entre sus farmacias, que
+    ahí se descuentan."""
+    return sorted((m for m in month.movements if m.tipo == "S" and m.origen in codes
+                   and m.concepto in DEVOLUCION_CONCEPTOS and not (consolidated and is_internal(m))), key=_move_order)
+
+
 # Conceptos de dispensación que cuenta el SISMED como recetas (procesar_ici), en las columnas del ICI.
 RECETA_CONCEPTOS = {"10": "VENTA", "11": "VENTA", "12": "VENTA", "13": "SIS", "16": "INTERSAN", "15": "EXO",
                     "14": "SOAT", "17": "CREDHOSP", "19": "CREDHOSP", "25": "OTR_CONV"}
@@ -662,6 +675,7 @@ def pharmacy_report(month: IciMonth, est: Establishment, ph: Pharmacy) -> IciRep
     return IciReport(
         annomes=month.annomes, title=ph.name, ficha=ficha, rows=rows, recetas=list(ph.recetas),
         desde=ph.desde, hasta=ph.hasta, guias=sorted(guias, key=_move_order), internos=internos,
+        devoluciones=return_exits(month, {ph.code}),
         names=month.names, codes={ph.code}, concepts=month.concepts, products=month.products,
         valores=list(ph.valores) if ph.valores else None,
         recetas_diarias=daily_recetas(month, {ph.code}, ph.desde, ph.hasta) if month.has_dispensations else [],
@@ -803,7 +817,7 @@ def consolidated_report(month: IciMonth, est: Establishment) -> IciReport:
     desde, hasta = min(ph.desde for ph in est.pharmacies), max(ph.hasta for ph in est.pharmacies)
     return IciReport(
         annomes=month.annomes, title=est.name, ficha=ficha, rows=rows, recetas=recetas, desde=desde, hasta=hasta,
-        guias=sorted(guias, key=_move_order), internos=internos,
+        guias=sorted(guias, key=_move_order), internos=internos, devoluciones=return_exits(month, codes, True),
         names=month.names, consolidated=True, internal_value=internal, internal_estimated=estimated,
         in_transit=transit, codes=codes, concepts=month.concepts, products=month.products, valores=valores,
         recetas_diarias=daily_recetas(month, codes, desde, hasta) if month.has_dispensations else [],
