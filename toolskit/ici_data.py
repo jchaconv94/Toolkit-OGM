@@ -6,7 +6,7 @@ cuadra con el ICI de pantalla). Lo demás sale de otras tablas:
 - TFORMATO: el número de recetas (dispensaciones) por tipo de atención. El Excel que exporta
   el SISMED pierde el SIS e intercambia otros convenios y crédito; aquí se lee directo.
 - TMOVIM / TMOVIMDET: las devoluciones de vencido (concepto 35), las entregas entre farmacias
-  del mismo establecimiento, las correcciones de lote y las guías de ingreso.
+  del mismo establecimiento, las guías de ingreso y los ingresos internos.
 
 Reglas acordadas con el usuario (docs/ICI_SISMED.md del ToolKit SISMED Web):
 
@@ -142,11 +142,6 @@ def _split_virtual(value: str) -> tuple[str, str]:
 # ── Datos ──────────────────────────────────────────────────────────────────────
 
 
-# Datos de un lote que se corrigen con una guía (el precio no: lo pone el SISMED).
-CORRECTABLE = (("lote", "Lote"), ("vence", "Vencimiento"), ("regsan", "Reg. sanitario"),
-               ("tipsum", "Tipo de suministro"), ("ffinan", "Financiamiento"))
-
-
 @dataclass
 class MoveLine:
     code: str
@@ -157,29 +152,6 @@ class MoveLine:
     regsan: str = ""
     tipsum: str = ""
     ffinan: str = ""
-
-    def differences(self, other: "MoveLine") -> list[str]:
-        """Qué datos del lote cambian de esta línea a la otra («Lote», «Vencimiento»…)."""
-        changed = []
-        for attr, label in CORRECTABLE:
-            a, b = getattr(self, attr), getattr(other, attr)
-            if isinstance(a, str) or isinstance(b, str):
-                a, b = plain_text(a).strip(), plain_text(b).strip()
-            if a != b:
-                changed.append(label)
-        return changed
-
-    def describe(self, labels) -> str:
-        """Los datos pedidos de esta línea: «Lote 2087743 · Vencimiento 31/08/2026»."""
-        parts = []
-        for attr, label in CORRECTABLE:
-            if label in labels:
-                value = getattr(self, attr)
-                value = value.strftime("%d/%m/%Y") if isinstance(value, date) else (value or "—")
-                parts.append(f"{label} {value}")
-        if "Código" in labels:
-            parts.insert(0, f"Código {self.code}")
-        return " · ".join(parts)
 
 
 @dataclass
@@ -203,42 +175,6 @@ class Movement:
         if not totals or any(t is None for t in totals):
             return None
         return sum(totals)
-
-
-@dataclass
-class Change:
-    """Una línea de una guía de corrección: cómo estaba el lote al salir y cómo volvió a entrar."""
-    before: MoveLine | None
-    after: MoveLine | None
-    fields: list[str]          # lo que cambió; vacío si la línea volvió igual
-
-
-@dataclass
-class Correction:
-    """Corrección de lote, vencimiento, registro sanitario, tipo de suministro, financiamiento o
-    código: la salida (devolución) y el reingreso que la corrigió, enlazados por el SISMED."""
-    salida: Movement | None
-    entrada: Movement | None
-    changes: list[Change]
-
-    @property
-    def fecha(self):
-        moves = [m for m in (self.salida, self.entrada) if m and m.fecha]
-        return min((m.fecha for m in moves), default=None)
-
-    @property
-    def farmacia(self) -> str:
-        if self.entrada:
-            return self.entrada.destino
-        return self.salida.origen if self.salida else ""
-
-    @property
-    def changed(self) -> bool:
-        return any(c.fields for c in self.changes)
-
-    @property
-    def movements(self) -> list[Movement]:
-        return [m for m in (self.salida, self.entrada) if m]
 
 
 @dataclass
@@ -269,7 +205,6 @@ class IciMonth:
     names: dict[str, str]
     has_movements: bool
     warnings: list[str] = field(default_factory=list)
-    links: dict[str, str] = field(default_factory=dict)      # n.° de ingreso → n.° de su salida (TMOVIMTRF)
     concepts: dict[str, str] = field(default_factory=dict)   # CCTCODIGO → nombre (MTIPOCONP)
     products: dict = field(default_factory=dict)             # código → (descripción, unidad)
     sales: list | None = None    # TVENTA: (código del ICI, fecha, columna de consumo, valor); None sin TVENTA
@@ -289,8 +224,8 @@ class IciReport:
     recetas: list[float]
     desde: date
     hasta: date
-    guias: list[Movement]              # ingresos del mes que no son correcciones
-    internos: list[Correction]        # ingresos internos (reingresos y entregas de otra farmacia)
+    guias: list[Movement]              # lo que llegó del almacén por distribución
+    internos: list[Movement]          # ingresos internos (reingresos y entregas de otra farmacia)
     names: dict[str, str]
     consolidated: bool = False
     internal_value: float = 0.0
@@ -512,16 +447,6 @@ def _load_sales(open_table, codes: set[str], desde: date, hasta: date) -> list |
     return sales
 
 
-def _load_links(open_table) -> dict:
-    """TMOVIMTRF: n.° del ingreso → n.° de la salida con que se enlazó (devoluciones y transferencias)."""
-    links = {}
-    for rec in open_table("TMOVIMTRF") or []:
-        sal, ing = text(rec.get("MOVNUMESAL")), text(rec.get("MOVNUMEING"))
-        if sal and ing:
-            links[ing] = sal
-    return links
-
-
 def _load_concepts(open_table) -> dict:
     """MTIPOCONP: nombre de cada concepto de movimiento («DEVOLUCION X SOBRESTOCK»)."""
     concepts = {}
@@ -590,7 +515,7 @@ def load_month(open_table, annomes: str, log=print) -> IciMonth:
     log("🔎 Leyendo las ventas y dispensaciones del mes (TVENTA)…")
     sales = _load_sales(open_table, set(pharmacies), desde, hasta)
     month = IciMonth(annomes, establishments, movements, names, has_movements, warnings,
-                     links=_load_links(open_table) if has_movements else {}, concepts=_load_concepts(open_table),
+                     concepts=_load_concepts(open_table),
                      products=products, sales=sales)
     apply_vencidos(month)
     return month
@@ -606,11 +531,6 @@ def _same_group(a: str, b: str) -> bool:
 def is_internal(move: Movement) -> bool:
     """Entrega entre dos farmacias o puestos distintos del mismo establecimiento."""
     return move.origen != move.destino and _same_group(move.origen, move.destino)
-
-
-def mentions_correction(move: Movement) -> bool:
-    """La referencia de la guía dice «corrección…» (corrección de lote, de código…)."""
-    return "CORREC" in plain_text(move.referencia)
 
 
 def is_almacen(code: str) -> bool:
@@ -638,41 +558,6 @@ def entry_kind(move: Movement) -> str:
     return "interna" if is_internal(move) else "almacen"
 
 
-def _doc_key(value: str) -> str:
-    """«001-0000632» y «1-632» son la misma guía."""
-    groups = re.findall(r"[0-9A-Z]+", plain_text(value))
-    return "-".join((g.lstrip("0") or "0") if g.isdigit() else g for g in groups)
-
-
-def compare_lines(salida: Movement | None, entrada: Movement | None) -> list[Change]:
-    """Empareja las líneas que salieron con las que volvieron a entrar y dice qué cambió en cada una.
-
-    Primero busca el mismo producto con la misma cantidad; si no, el mismo producto; si no, la
-    misma cantidad con otro código (corrección de código)."""
-    pool = list(salida.lines) if salida else []
-    changes = []
-    for after in (entrada.lines if entrada else []):
-        same = next((b for b in pool if b.code == after.code and abs(b.qty - after.qty) < 1e-6
-                     and not b.differences(after)), None)
-        if same:
-            pool.remove(same)
-            changes.append(Change(same, after, []))
-            continue
-        before = next((b for b in pool if b.code == after.code and abs(b.qty - after.qty) < 1e-6), None) \
-            or next((b for b in pool if b.code == after.code), None)
-        fields = []
-        if before is None:
-            before = next((b for b in pool if abs(b.qty - after.qty) < 1e-6), None)
-            if before is not None:
-                fields.append("Código")
-        if before is not None:
-            pool.remove(before)
-            fields += before.differences(after)
-        changes.append(Change(before, after, fields))
-    changes += [Change(b, None, []) for b in pool]
-    return changes
-
-
 def is_internal_entry(move: Movement) -> bool:
     """Ingreso interno (regla del usuario, 2026-10-19): lo que entra a la columna REINGRESO —la
     devolución por sobrestock y demás que ingresó el responsable de farmacia para hacer algún cambio
@@ -681,30 +566,10 @@ def is_internal_entry(move: Movement) -> bool:
     return move.tipo == "E" and (move.concepto in REINGRESO_CONCEPTOS or is_internal(move))
 
 
-def internal_entries(month: IciMonth, codes: set[str]) -> list[Correction]:
-    """Los ingresos internos del mes en esas farmacias, cada uno con su salida si el SISMED la enlazó
-    (TMOVIMTRF, o la de la misma guía) y, producto por producto, qué cambió entre lo que salió y lo que
-    volvió a entrar: lote, vencimiento, registro sanitario, tipo de suministro, financiamiento o código.
-    Lo que se revisa es la referencia, porque ahí escriben el cambio."""
-    ipress = {ipress_of(code) for code in codes}
-    group = {ph.code for est in month.establishments if est.code in ipress for ph in est.pharmacies} | set(codes)
-    salidas = [m for m in month.movements if m.tipo == "S" and m.origen in group]
-    by_number = {m.numero: m for m in salidas}
-    by_doc = collections.defaultdict(list)
-    for m in salidas:
-        if m.doc_numero:
-            by_doc[(m.doc_tipo, _doc_key(m.doc_numero))].append(m)
-    entradas = sorted((m for m in month.movements if m.destino in codes and is_internal_entry(m)), key=_move_order)
-    used, found = set(), []
-    for entrada in entradas:
-        salida = by_number.get(month.links.get(entrada.numero))
-        if salida is None and entrada.doc_numero:
-            salida = next((m for m in by_doc.get((entrada.doc_tipo, _doc_key(entrada.doc_numero)), [])
-                           if m.numero not in used), None)
-        if salida is not None:
-            used.add(salida.numero)
-        found.append(Correction(salida, entrada, compare_lines(salida, entrada)))
-    return found
+def internal_entries(month: IciMonth, codes: set[str]) -> list[Movement]:
+    """Los ingresos internos del mes en esas farmacias, guía por guía: de dónde ingresó, concepto,
+    referencia (ahí escriben el cambio) y sus productos."""
+    return sorted((m for m in month.movements if m.destino in codes and is_internal_entry(m)), key=_move_order)
 
 
 # Conceptos de dispensación que cuenta el SISMED como recetas (procesar_ici), en las columnas del ICI.
@@ -775,18 +640,6 @@ def apply_vencidos(month: IciMonth) -> None:
                 pending -= moved
 
 
-def _mark_corrections(rows: list[dict], internos: list[Correction]) -> None:
-    """Marca los lotes que cambiaron en un ingreso interno (los de antes y los de después)."""
-    keys = set()
-    for entry in internos:
-        for change in entry.changes:
-            if change.fields:
-                keys |= {(line.code, line.lote) for line in (change.before, change.after) if line}
-    for row in rows:
-        if (row["CODIGO_MED"], row["MEDLOTE"]) in keys:
-            row["flags"].add("correccion")
-
-
 def _copy_rows(rows):
     return [{**row, "flags": set(row["flags"])} for row in rows]
 
@@ -800,7 +653,6 @@ def pharmacy_report(month: IciMonth, est: Establishment, ph: Pharmacy) -> IciRep
     internos = internal_entries(month, {ph.code})
     guias = [m for m in month.movements if m.tipo == "E" and m.destino == ph.code and is_guide(m)
              and not is_internal_entry(m)]
-    _mark_corrections(rows, internos)
     ficha = {
         **_place(est),
         "Establecimiento": est.name,
@@ -935,7 +787,6 @@ def consolidated_report(month: IciMonth, est: Establishment) -> IciReport:
     else:
         internal, transit = net_internal(rows, moves)
     internos = internal_entries(month, codes)
-    _mark_corrections(rows, internos)
     guias = [m for m in moves if m.tipo == "E" and m.destino in codes and is_guide(m)
              and not is_internal_entry(m)]
     recetas = [sum(ph.recetas[i] for ph in est.pharmacies) for i in range(len(CONSUMO))]

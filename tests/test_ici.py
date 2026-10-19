@@ -159,10 +159,13 @@ class IciDataTests(unittest.TestCase):
         self.assertEqual(ici_data.balance_errors(report.rows), 0)
         self.assertTrue(m.warnings)
 
-    def test_lot_correction_stays_and_is_marked(self):
+    def test_internal_entries_keep_the_ici_columns(self):
+        # Un reingreso que hizo la propia farmacia (otro lote) queda en Devolución y Reingreso del ICI y
+        # va a Ingresos internos, no a Guías de ingreso.
         rows = [tformdet("06502F01", "001", "L1", SALDO=20, DEVOL=20),
                 tformdet("06502F01", "001", "L2", REINGRE=20)]
-        heads = [head("S", "1", "07", "06502F0101", "06502F0101"), head("E", "2", "07", "06502F0101", "06502F0101")]
+        heads = [head("S", "1", "07", "06502F0101", "06502F0101"),
+                 head("E", "2", "07", "030A0001", "06502F0101", doc=("04", "G-2"), refe="CORRECCION DE LOTE")]
         details = [detail("S", "1", "001", "L1", 20), detail("E", "2", "001", "L2", 20)]
         m = month(rows, heads, details)
         est = m.establishments[0]
@@ -170,33 +173,8 @@ class IciDataTests(unittest.TestCase):
             by_lot = {r["MEDLOTE"]: r for r in report.rows}
             self.assertEqual(by_lot["L1"]["DEVOL"], 20)
             self.assertEqual(by_lot["L2"]["REINGRE"], 20)
-            self.assertIn("correccion", by_lot["L1"]["flags"])
-            self.assertIn("correccion", by_lot["L2"]["flags"])
-            # Una sola corrección: la salida y su reingreso juntos, con lo que cambió.
-            self.assertEqual(len(report.internos), 1)
-            change = report.internos[0].changes[0]
-            self.assertEqual(change.fields, ["Lote"])
-            self.assertEqual((change.before.lote, change.after.lote), ("L1", "L2"))
+            self.assertEqual([g.doc_numero for g in report.internos], ["G-2"])
             self.assertEqual(report.guias, [])
-
-    def test_correction_detected_by_what_changed(self):
-        rows = [tformdet("06502F01", "001", "L1", SALDO=30, DEVOL=10, REINGRE=10),
-                tformdet("06502F01", "002", "L5", SALDO=8, DEVOL=8),
-                tformdet("06502F01", "009", "L5", REINGRE=8)]
-        heads = [head("S", "10", "07", "06502F0101", "030A0001", doc=("04", "001-0000700")),
-                 head("E", "11", "07", "030A0001", "06502F0101", doc=("04", "001-0000901")),
-                 head("S", "12", "07", "06502F0101", "030A0001", doc=("04", "001-0000702")),
-                 head("E", "13", "07", "030A0001", "06502F0101", doc=("04", "1-702"))]
-        details = [detail("S", "10", "001", "L1", 10, vence=date(2026, 9, 30)),
-                   detail("E", "11", "001", "L1", 10, vence=date(2027, 9, 30)),
-                   detail("S", "12", "002", "L5", 8), detail("E", "13", "009", "L5", 8)]
-        # La primera se enlaza por TMOVIMTRF; la segunda, por el mismo número de guía.
-        m = month(rows, heads, details, links=[("10", "11")])
-        est = m.establishments[0]
-        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
-        self.assertEqual([[ch.fields for ch in c.changes] for c in report.internos], [[["Vencimiento"]], [["Código"]]])
-        self.assertEqual(report.internos[0].changes[0].after.describe(["Vencimiento"]), "Vencimiento 30/09/2027")
-        self.assertEqual(report.guias, [])
 
     def test_recovered_products_are_internal_entries(self):
         # Producto recuperado: lo ingresó el responsable de farmacia con devolución por sobrestock.
@@ -208,14 +186,14 @@ class IciDataTests(unittest.TestCase):
         est = m.establishments[0]
         report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
         # Va a Ingresos internos (con su referencia), no a Guías de ingreso.
-        self.assertEqual([c.entrada.doc_numero for c in report.internos], ["260322"])
-        self.assertFalse(report.internos[0].changed)
+        self.assertEqual([g.doc_numero for g in report.internos], ["260322"])
         self.assertEqual(report.guias, [])
         wb = build_workbook(report)[0]
         cells = [str(c.value) for row in wb["Guías de ingreso"].iter_rows() for c in row if c.value]
         self.assertFalse(any("260322" in v for v in cells))
         cells = [str(c.value) for row in wb["Ingresos internos"].iter_rows() for c in row if c.value]
-        self.assertIn("GUÍA N° 260322  ·  09/08/2026  ·  Devolución por sobrestock", cells)
+        self.assertIn("GUÍA N° 260322  ·  09/08/2026", cells)
+        self.assertIn("Devolución por sobrestock", cells)
         self.assertIn("PRODUCTO RECUPERADO", cells)
 
     def test_an_exit_alone_is_not_an_internal_entry(self):
@@ -430,7 +408,7 @@ class IciExcelTests(unittest.TestCase):
         est = m.establishments[0]
         f01 = ici_data.pharmacy_report(m, est, est.pharmacies[0])
         self.assertEqual(f01.guias, [])
-        self.assertEqual([c.entrada.doc_numero for c in f01.internos], ["G-77"])
+        self.assertEqual([g.doc_numero for g in f01.internos], ["G-77"])
 
     def test_correction_reference_goes_to_corrections_not_to_guides(self):
         rows = [tformdet("06502F01", "001", "L1", SALDO=10, REINGRE=5)]
@@ -439,13 +417,12 @@ class IciExcelTests(unittest.TestCase):
         est = m.establishments[0]
         report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
         self.assertEqual(report.guias, [])
-        self.assertEqual([c.entrada.doc_numero for c in report.internos], ["G-9"])
+        self.assertEqual([g.doc_numero for g in report.internos], ["G-9"])
         # Cada guía sale completa: cabecera con su referencia y debajo sus productos.
         wb, _ = build_workbook(report)
         cells = [str(c.value) for row in wb["Ingresos internos"].iter_rows() for c in row if c.value is not None]
         self.assertTrue(any(v.startswith("GUÍA N° G-9") for v in cells))
         self.assertIn("Corrección de lote", cells)
-        self.assertIn("Sin salida enlazada en el SISMED", cells)
         self.assertIn("PARACETAMOL 500 mg", cells)
 
     def test_reference_groups_and_date_in_words(self):

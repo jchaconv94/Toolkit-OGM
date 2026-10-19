@@ -358,9 +358,6 @@ def ici_sheet(wb, report: IciReport, printable=False):
         notes.append("Venta, S.I.S., intervención sanitaria y el consumo total en soles: los que calculó el SISMED (cada venta "
                      "a su precio del día), más otros convenios y factor de pérdida, que el SISMED no guarda; esos y los "
                      "demás montos, cantidad × precio de cada lote.")
-    if any(entry.changed for entry in report.internos):
-        notes.append("Lote en morado: cambió en un ingreso interno del mes (lote, vencimiento, registro sanitario, tipo de "
-                     "suministro, financiamiento o código); el detalle está en la hoja «Ingresos internos».")
     if report.consolidated:
         if report.internal_estimated:
             notes.append(f"Consolidado: se descontaron, estimadas por lote, las entregas entre farmacias del establecimiento "
@@ -378,7 +375,6 @@ def ici_sheet(wb, report: IciReport, printable=False):
     r = first
     for k, (row, height) in enumerate(zip(rows, heights)):
         r = page.force(r, header) if k == cut else page.keep(r, height, header)
-        fixed = "correccion" in row["flags"]
         for i, (_, _, _, fld, _) in enumerate(C.cols, 1):
             cell = ws.cell(r, i)
             if fld == "=TOTAL":
@@ -399,10 +395,7 @@ def ici_sheet(wb, report: IciReport, printable=False):
                 cell.number_format = PRICE
             elif fld not in TEXT_FIELDS:
                 cell.number_format = INT0
-            if fixed and fld == "MEDLOTE":
-                cell.fill = fill(TINT["fix"])
-                cell.font = fnt(7.2, True, INKT["fix"])
-            elif k % 2:
+            if k % 2:
                 cell.fill = fill(ZEBRA)
         ws.row_dimensions[r].height = height
         r += 1
@@ -806,7 +799,7 @@ def still_sheet(wb, report: IciReport, still, still_value, printable=False):
     page.setup("Lotes sin movimiento", report, titles="1:2")
 
 
-# ── Guías de ingreso y correcciones de lote ────────────────────────────────────
+# ── Guías de ingreso e ingresos internos ───────────────────────────────────────
 
 
 def _place_name(code: str, names: dict) -> str:
@@ -1004,63 +997,39 @@ def guides_sheet(wb, report: IciReport, products: dict, printable=False):
 def internal_sheet(wb, report: IciReport, products: dict, printable=False):
     """Ingresos internos (antes «Correcciones de lote»; regla del usuario, 2026-10-19): todo lo que entró
     a la columna REINGRESO —la devolución por sobrestock y demás que ingresó el responsable de farmacia
-    para hacer algún cambio— y lo que entregó otra farmacia del establecimiento. Guía por guía, con la
-    referencia a la vista (ahí escriben el cambio), sus productos y, si el SISMED enlazó la salida, qué
-    cambió en cada uno: lote, vencimiento, registro sanitario, tipo de suministro, financiamiento o código."""
+    para hacer algún cambio— y lo que entregó otra farmacia del establecimiento. Guía por guía: de dónde
+    ingresó, concepto, referencia (ahí escriben el cambio, va resaltada) y el detalle de sus productos."""
     ws = wb.create_sheet("Ingresos internos")
     ws.sheet_view.showGridLines = False
-    columns = [("CÓDIGO", 9.5), ("DESCRIPCIÓN", 34), ("LOTE", 12), ("VENCIMIENTO", 10.5), ("CANTIDAD", 8.5),
-               ("QUÉ CAMBIÓ", 15), ("ANTES (LO QUE SALIÓ)", 21), ("DESPUÉS (LO QUE ENTRÓ)", 21), ("VALOR S/", 10.5)]
+    columns = [("CÓDIGO", 10), ("DESCRIPCIÓN", 52), ("LOTE", 14), ("VENCIMIENTO", 12), ("REG. SANITARIO", 13),
+               ("CANTIDAD", 10), ("VALOR S/", 12)]
     widths = [w for _, w in columns]
     nc = len(columns)
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[L(i)].width = w
     page = Page(ws, widths, printable)
     entries = report.internos
-    total = sum(e.entrada.valor or 0 for e in entries if e.entrada)
+    total = sum(m.valor or 0 for m in entries)
     _title(ws, nc, "INGRESOS INTERNOS", report,
            f"{report.title}  ·  {len(entries)} guías  ·  S/ {total:.2f}  ·  Reingresos (devolución por sobrestock y demás) que "
-           "ingresó la farmacia para hacer algún cambio, y lo que entregó otra farmacia del establecimiento. La referencia "
-           "dice qué se cambió.", split=2)
-    ws.row_dimensions[2].height = 26
-    ws.cell(2, 1).alignment = WRAP_LEFT
+           "ingresó la farmacia y lo que entregó otra farmacia del establecimiento. La referencia dice qué se cambió.", split=2)
     if not entries:
         box(ws, 4, 1, 4, nc, "Sin ingresos internos en el mes.", fnt(7.5, False, MUTED, True), None, LEFT)
         page.setup("Ingresos internos", report, titles="1:2")
         return
     spans = [(h, i, i, fmt) for i, (h, fmt) in enumerate(
-        [("CÓDIGO", None), ("DESCRIPCIÓN", "text"), ("LOTE", None), ("VENCIMIENTO", "dd/mm/yyyy"), ("CANTIDAD", INT0),
-         ("QUÉ CAMBIÓ", "text"), ("ANTES (LO QUE SALIÓ)", "text"), ("DESPUÉS (LO QUE ENTRÓ)", "text"), ("VALOR S/", MONEY)], 1)]
+        [("CÓDIGO", None), ("DESCRIPCIÓN", "text"), ("LOTE", None), ("VENCIMIENTO", "dd/mm/yyyy"),
+         ("REG. SANITARIO", None), ("CANTIDAD", INT0), ("VALOR S/", MONEY)], 1)]
+    value_col = L(nc)
     r = 4
-    for entry in entries:
-        s, e = entry.salida, entry.entrada
-        title = (f"GUÍA N° {_guide_number(e)}" + (f"  ·  {e.fecha:%d/%m/%Y}" if e.fecha else "")
-                 + f"  ·  {_concept(e.concepto, report.concepts)}")
-        if s is None:
-            estado = "Sin salida enlazada en el SISMED"
-        elif entry.changed:
-            estado = "Cambió: " + ", ".join(sorted({f for ch in entry.changes for f in ch.fields}))
-        else:
-            estado = "Volvió igual que salió"
-        fields = [("Referencia", e.referencia or "—", "Procedencia", _place_name(e.origen, report.names) if e.origen else "—"),
-                  ("Farmacia", f"{_place_name(e.destino, report.names)}  ·  {len(e.lines)} productos  ·  S/ {(e.valor or 0):.2f}",
-                   "Salida", (_move_line(s, report) + f"  ·  {estado}") if s else estado)]
-        items, tints = [], []
-        for ch in entry.changes:
-            line = ch.after or ch.before
-            desc = products.get(line.code, ("", ""))[0]
-            if ch.fields:
-                what = ", ".join(ch.fields)
-                before = ch.before.describe(ch.fields) if ch.before else "—"
-                after = ch.after.describe(ch.fields) if ch.after else "—"
-            elif ch.after is None:
-                what, before, after = "Salió, no volvió", ch.before.describe(["Lote", "Vencimiento"]), "—"
-            elif ch.before is None:
-                what, before, after = "—", "—", "—"
-            else:
-                what, before, after = "Sin cambio", "—", "—"
-            items.append([line.code, desc, line.lote, _as_datetime(line.vence), line.qty, what, before, after, line.total])
-            tints.append({5: TINT["fix"]} if ch.fields else None)
+    for m in entries:
+        title = f"GUÍA N° {_guide_number(m)}" + (f"  ·  {m.fecha:%d/%m/%Y}" if m.fecha else "")
+        fields = [("Procedencia", _place_name(m.origen, report.names) if m.origen else "—",
+                   "Concepto", _concept(m.concepto, report.concepts)),
+                  ("Referencia", m.referencia or "—", "Farmacia",
+                   f"{_place_name(m.destino, report.names)}  ·  {len(m.lines)} productos")]
+        items = [[line.code, products.get(line.code, ("", ""))[0], line.lote, _as_datetime(line.vence), line.regsan,
+                  line.qty, line.total] for line in m.lines]
         heights = [_span_height(spans, values, widths) for values in items]
 
         def repeat(rr, title=title):
@@ -1070,15 +1039,18 @@ def internal_sheet(wb, report: IciReport, products: dict, printable=False):
 
         r = page.keep(r, _block_height(fields) + 22 + (heights[0] if heights else 15))
         r = _block_header(ws, r, nc, title, fields)
-        # La referencia, que es lo que se revisa, resaltada.
-        ws.cell(r - len(fields), 2).font = fnt(8.5, True, INKT["fix"])
+        ws.cell(r - 1, 2).font = fnt(8.5, True, INKT["fix"])      # la referencia, que es lo que se revisa
         r = _span_header(ws, r, spans)
-        for k, (values, height, tint) in enumerate(zip(items, heights, tints)):
+        start = r
+        for k, (values, height) in enumerate(zip(items, heights)):
             r = page.keep(r, height, repeat)
-            _span_row(ws, r, spans, values, k % 2, tints=tint)
+            _span_row(ws, r, spans, values, k % 2, bold_last=True)
             ws.row_dimensions[r].height = height
             r += 1
-        r += 1
+        r = page.keep(r, 15, repeat)
+        box(ws, r, 1, r, nc - 1, "Total de la guía", fnt(7.5, True, NAVY), SOFT, RIGHT)
+        box(ws, r, nc, r, nc, f"=SUM({value_col}{start}:{value_col}{r - 1})", fnt(7.5, True, NAVY), SOFT, CENTER, fmt=MONEY)
+        r += 2
     page.setup("Ingresos internos", report, titles="1:2")
 
 
