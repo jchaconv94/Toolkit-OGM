@@ -62,31 +62,32 @@ def fnt(size=8, bold=False, color=INK, italic=False):
 
 
 # (encabezado, ancho, grupo, campo, tinte)
-# Anchos ajustados para que la tabla entre a mayor escala en A4 horizontal (pedido del usuario: la
-# letra del PDF salía muy chica): la descripción pasa a dos líneas antes que achicar todo.
+# Anchos para que en el Excel cada dato se lea entero (código, unidad, lote, registro sanitario,
+# vencimiento y precio sin cortarse ni achicarse; pedido del usuario del 2026-10-19). El PDF ajusta
+# la hoja al ancho de la página.
 COLS = [
-    ("CÓDIGO", 5.4, "P", "CODIGO_MED", None), ("DESCRIPCIÓN", 33, "P", "DESC", None),
-    ("UNIDAD", 6.0, "P", "MEDFF", None), ("LOTE", 10, "P", "MEDLOTE", None),
-    ("REG. SANITARIO", 9.6, "P", "MEDREGSAN", None), ("VENCIMIENTO", 7.8, "P", "FEC_EXP", None),
-    ("TIP. SUM.", 3.2, "P", "TIPSUM2", None), ("F. FINAN.", 3.8, "P", "FFINAN", None),
-    ("PRECIO S/", 8.4, "P", "PRECIO", None),
-    ("SALDO MES ANTERIOR", 5.6, "S", "SALDO", None),
-    ("INGRESOS", 5.6, "E", "INGRE", "in"), ("REINGRESOS", 5.6, "E", "REINGRE", "in"),
-    ("VENTA", 4.6, "C", "VENTA", "cons"), ("S.I.S.", 5.0, "C", "SIS", "cons"),
-    ("INTERV. SANITARIA", 4.6, "C", "INTERSAN", "cons"), ("F. PÉRDIDA (ZOONOSIS)", 3.8, "C", "FAC_PERD", "cons"),
-    ("DEFENSA NACIONAL", 3.8, "C", "DEFNAC", "cons"), ("EXONERACIÓN", 3.8, "C", "EXO", "cons"),
-    ("SOAT", 3.8, "C", "SOAT", "cons"), ("CRÉDITO HOSP.", 3.8, "C", "CREDHOSP", "cons"),
-    ("OTROS CONVENIOS", 3.8, "C", "OTR_CONV", "cons"),
-    ("DEVOLUCIÓN", 5.4, "O", "DEVOL", "dev"), ("VENCIDOS", 4.4, "O", "VENCIDO", "venc"),
-    ("MERMA", 3.8, "O", "MERMA", "dev"), ("OTRAS SALIDAS", 3.8, "O", "OTRAS", "dev"),
-    ("REGULA.", 3.8, "O", "SAL_REGULA", "dev"), ("CONS. INSTITUC.", 3.8, "O", "SAL_CONINS", "dev"),
-    ("TOTAL SALIDAS", 5.6, "T", "=TOTAL", None), ("STOCK FINAL", 6.0, "T", "=STOCK", None),
+    ("CÓDIGO", 6.6, "P", "CODIGO_MED", None), ("DESCRIPCIÓN", 46, "P", "DESC", None),
+    ("UNIDAD", 7.4, "P", "MEDFF", None), ("LOTE", 12.5, "P", "MEDLOTE", None),
+    ("REG. SANITARIO", 12, "P", "MEDREGSAN", None), ("VENCIMIENTO", 8.8, "P", "FEC_EXP", None),
+    ("TIP. SUM.", 3.8, "P", "TIPSUM2", None), ("F. FINAN.", 4.4, "P", "FFINAN", None),
+    ("PRECIO S/", 8.8, "P", "PRECIO", None),
+    ("SALDO MES ANTERIOR", 6.8, "S", "SALDO", None),
+    ("INGRESOS", 6.4, "E", "INGRE", "in"), ("REINGRESOS", 6.4, "E", "REINGRE", "in"),
+    ("VENTA", 5.8, "C", "VENTA", "cons"), ("S.I.S.", 6.2, "C", "SIS", "cons"),
+    ("INTERV. SANITARIA", 5.8, "C", "INTERSAN", "cons"), ("F. PÉRDIDA (ZOONOSIS)", 5.0, "C", "FAC_PERD", "cons"),
+    ("DEFENSA NACIONAL", 5.0, "C", "DEFNAC", "cons"), ("EXONERACIÓN", 5.0, "C", "EXO", "cons"),
+    ("SOAT", 5.0, "C", "SOAT", "cons"), ("CRÉDITO HOSP.", 5.0, "C", "CREDHOSP", "cons"),
+    ("OTROS CONVENIOS", 5.0, "C", "OTR_CONV", "cons"),
+    ("DEVOLUCIÓN", 6.4, "O", "DEVOL", "dev"), ("VENCIDOS", 5.4, "O", "VENCIDO", "venc"),
+    ("MERMA", 5.0, "O", "MERMA", "dev"), ("OTRAS SALIDAS", 5.0, "O", "OTRAS", "dev"),
+    ("REGULA.", 5.0, "O", "SAL_REGULA", "dev"), ("CONS. INSTITUC.", 5.0, "O", "SAL_CONINS", "dev"),
+    ("TOTAL SALIDAS", 6.8, "T", "=TOTAL", None), ("STOCK FINAL", 7.2, "T", "=STOCK", None),
 ]
 GROUPS = {"P": "PRODUCTO FARMACÉUTICO", "S": "SALDO", "E": "ENTRADAS", "C": "CONSUMOS",
           "O": "OTRAS SALIDAS", "T": "SALDO FINAL"}
 # Ajuste de inventario que entra (concepto 21): en toda la región estuvo siempre en cero, así que
 # la columna solo aparece si algún lote del mes lo tiene (si no, el stock no cuadraría a la vista).
-ADJUST_COL = ("AJUSTE DE INVENTARIO (+)", 3.8, "E", "ING_REGULA", "in")
+ADJUST_COL = ("AJUSTE DE INVENTARIO (+)", 5.0, "E", "ING_REGULA", "in")
 TEXT_FIELDS = ("CODIGO_MED", "DESC", "MEDFF", "MEDLOTE", "MEDREGSAN", "TIPSUM2", "FFINAN")
 
 
@@ -170,22 +171,32 @@ class Page:
         self.ws, self.printable, self.margins = ws, bool(printable), margins
         engine = printable if isinstance(printable, str) else "excel"
         padding = self.COLUMN_PADDING.get(engine, 0)
-        # Una columna de ancho w mide 7 × w píxeles en Excel (Calibri 11, la letra base del libro) y
-        # 5 píxeles más en LibreOffice.
-        width_pt = sum(w * 7 + padding for w in widths) * 0.75
+        # Con Excel o WPS, las medidas que se leyeron en el propio programa (ici_pdf.Metrics): así la
+        # escala y lo que entra por página son exactos. Sin ellas, una estimación: una columna de ancho w
+        # mide 7 × w píxeles en Excel (Calibri 11, la letra base del libro) y 5 píxeles más en LibreOffice.
+        self.metrics = getattr(ws.parent, "ici_metrics", None) if self.printable else None
+        if self.metrics:
+            width_pt = sum(self.metrics.width(w) for w in widths)
+        else:
+            width_pt = sum(w * 7 + padding for w in widths) * 0.75
         usable_width = A4_LANDSCAPE[0] - (margins[0] + margins[1]) * 72
         fit = usable_width / width_pt
         self.fit_width = fit < 1
-        # Agrandar: con un poco de margen, porque LibreOffice dibuja las columnas algo más anchas.
-        self.scale = int(fit * 100) if self.fit_width else max(10, min(max_scale, int(fit * 94)))
-        usable_height = (A4_LANDSCAPE[1] - (margins[2] + margins[3]) * 72) * 0.97
+        # Agrandar: con un poco de margen si es estimado, porque LibreOffice dibuja las columnas algo más anchas.
+        grow = 0.99 if self.metrics else 0.94
+        self.scale = int(fit * 100) if self.fit_width else max(10, min(max_scale, int(fit * 100 * grow)))
+        usable_height = (A4_LANDSCAPE[1] - (margins[2] + margins[3]) * 72) * (0.985 if self.metrics else 0.97)
         self.capacity = usable_height * 100 / max(self.scale, 1)
         self.used = 0.0
         self.counted = 0
 
+    def pt(self, height: float) -> float:
+        """Lo que mide impresa (al 100 %) una fila de ese alto."""
+        return self.metrics.height(height) if self.metrics else height
+
     def _height(self, r):
         height = self.ws.row_dimensions[r].height
-        return 15.0 if height is None else height
+        return self.pt(15.0 if height is None else height)
 
     def _count_until(self, r):
         for k in range(self.counted + 1, r):
@@ -199,6 +210,7 @@ class Page:
         if not self.printable:
             return r
         self._count_until(r)
+        height = self.pt(height)
         if self.used > 0 and self.used + height > self.capacity:
             self.ws.row_breaks.append(Break(id=r - 1))
             self.used = 0.0
@@ -226,6 +238,10 @@ class Page:
         Devuelve el índice de la fila antes de la cual cortar, o None si no hace falta."""
         if not self.printable or not heights:
             return None
+        heights = [self.pt(h) for h in heights]
+        # El encabezado y el pie son varias filas: cada una crece al redondearse, como una de 15 puntos.
+        grow = self.pt(15.0) / 15.0
+        header_height, tail_height = header_height * grow, tail_height * grow * 1.02
         self._count_until(r)
         used = self.used
         for h in heights:
@@ -280,6 +296,12 @@ def _footer(ws, label: str, report: IciReport):
 
 
 def _title(ws, nc, title, report: IciReport, subtitle: str, size=14, split=4):
+    # El mes va en las últimas columnas: tantas como hagan falta para que entre entero («AGOSTO 2026»
+    # salía como «GOSTO 2026» en las Guías de ingreso, que terminan en dos columnas angostas).
+    room = lambda k: sum(ws.column_dimensions[L(c)].width or 8.43 for c in range(nc - k + 1, nc + 1))
+    need = len(month_title(report)) * size * 0.65 / 5.25 + 3     # una unidad de ancho mide 5,25 puntos
+    while split < nc - 1 and room(split) < need:
+        split += 1
     box(ws, 1, 1, 1, nc - split, title, fnt(size, True, WHITE), NAVY, LEFT, border=False)
     box(ws, 1, nc - split + 1, 1, nc, month_title(report), fnt(size, True, WHITE), NAVY, RIGHT, border=False)
     ws.row_dimensions[1].height = 28
@@ -1134,7 +1156,7 @@ def recetas_sheet(wb, report: IciReport, printable=False):
     ws = wb.create_sheet("Recetas diarias")
     ws.sheet_view.showGridLines = False
     header = ["FECHA", "DÍA", *[h for _, h in RECETA_COLUMNS], "TOTAL", "VALOR S/"]
-    widths = [11, 11, *[11] * len(RECETA_COLUMNS), 11, 13]
+    widths = [11, 11, *[13] * len(RECETA_COLUMNS), 11, 13]
     nc = len(header)
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[L(i)].width = w
@@ -1144,7 +1166,7 @@ def recetas_sheet(wb, report: IciReport, printable=False):
            f"{report.title}  ·  Recetas atendidas por día y tipo de atención (cada venta o ticket del SISMED es una receta)",
            split=3)
     if not report.recetas_diarias:
-        box(ws, 4, 1, 4, nc, "Sin datos: el SISMED no tiene los movimientos del mes (TMOVIM).",
+        box(ws, 4, 1, 4, nc, "Sin datos: el SISMED no tiene las ventas ni los movimientos del mes (TVENTA, TMOVIM).",
             fnt(7.5, False, MUTED, True), None, LEFT)
         page.setup("Recetas diarias", report, titles="1:2")
         return
@@ -1185,16 +1207,21 @@ def recetas_sheet(wb, report: IciReport, printable=False):
     box(ws, r + 1, 3 + len(official), r + 1, 3 + len(official), sum(official), fnt(8, True), SOFT, CENTER, fmt=INT0)
     box(ws, r + 1, nc, r + 1, nc, None, None, SOFT)
     daily = [sum(counts[i] for _, counts, _ in report.recetas_diarias) for i in idx]
-    if daily != [int(v) for v in official]:
+    if not any(daily) and any(official):
+        box(ws, r + 2, 1, r + 2, nc, "No se encontraron las dispensaciones del mes en el SISMED (TVENTA ni TMOVIM); "
+            "la consola del Toolkit dice qué almacenes trae, para revisarlo.", fnt(7, False, INKT["dev"], True), None, LEFT,
+            border=False)
+    elif daily != [int(v) for v in official]:
         box(ws, r + 2, 1, r + 2, nc, "El total por día no coincide con el ICI: el ICI se procesó antes de que se registraran "
             "o anularan algunas dispensaciones del mes.", fnt(7, False, INKT["dev"], True), None, LEFT, border=False)
     page.setup("Recetas diarias", report, titles="1:2")
 
 
-def build_workbook(report: IciReport, printable: bool | str = False) -> tuple[Workbook, dict]:
+def build_workbook(report: IciReport, printable: bool | str = False, metrics=None) -> tuple[Workbook, dict]:
     """Arma el libro completo; `printable` es la versión que se pasa a PDF. Devuelve (libro,
     cifras para la consola). Las guías van justo después del ICI (pedido del usuario)."""
     wb = Workbook()
+    wb.ici_metrics = metrics if printable else None   # medidas del programa que arma el PDF (Page)
     products = {**report.products, **{r["CODIGO_MED"]: (r["DESC"], r["MEDFF"]) for r in report.rows}}
     ici_sheet(wb, report, printable)
     guides_sheet(wb, report, products, printable)
@@ -1264,7 +1291,8 @@ def write_reports(month, out_dir: str, consolidated: bool = True, per_pharmacy: 
                 # El PDF sale de la versión para imprimir: páginas cortadas y encabezados repetidos.
                 with tempfile.TemporaryDirectory(prefix="toolkit_ici_print_") as tmp:
                     printable = os.path.join(tmp, f"{name}.xlsx")
-                    build_workbook(report, printable=getattr(exporter, "engine", True))[0].save(printable)
+                    metrics = exporter.metrics() if hasattr(exporter, "metrics") else None
+                    build_workbook(report, printable=getattr(exporter, "engine", True), metrics=metrics)[0].save(printable)
                     exporter.export(printable, pdf_path)
                 paths.append(pdf_path)
                 log(f"📄 {os.path.basename(pdf_path)}")

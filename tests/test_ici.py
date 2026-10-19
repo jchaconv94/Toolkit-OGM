@@ -41,7 +41,7 @@ def detail(tipo, numero, code, lote, qty, total=None, vence=date(2027, 12, 31), 
             "TIPSUM": tipsum, "FFINAN": ffinan}
 
 
-def month(tformdet_rows, heads=None, details=None, tformato=None, links=None):
+def month(tformdet_rows, heads=None, details=None, tformato=None, links=None, ventas=None):
     tables = {
         "TFORMDET": tformdet_rows,
         "TFORMATO": tformato or [],
@@ -54,6 +54,8 @@ def month(tformdet_rows, heads=None, details=None, tformato=None, links=None):
         tables["TMOVIM"] = heads
         tables["TMOVIMDET"] = details or []
         tables["TMOVIMTRF"] = [{"MOVNUMESAL": s, "MOVNUMEING": e} for s, e in (links or [])]
+    if ventas is not None:
+        tables["TVENTA"] = ventas
     return ici_data.load_month(lambda name: tables.get(name), MONTH, log=lambda _m: None)
 
 
@@ -260,6 +262,49 @@ class IciDataTests(unittest.TestCase):
         self.assertTrue(total.startswith("=5.85+SUMPRODUCT"), total)
         self.assertEqual(total.count("SUMPRODUCT"), 2)  # factor de pérdida y otros convenios
 
+    def test_single_pharmacy_establishment_finds_its_movements(self):
+        # Puesto con una sola farmacia: el ICI va con el código del establecimiento (06513) y el SISMED
+        # escribe el almacén como el de su farmacia principal (06513F0101) o como 0651301.
+        heads = [head("E", "1", "04", "030S0501", "06513F0101", doc=("03", "260322"), refe="SISMED"),
+                 head("S", "2", "13", "06513F0101", "", dia=4),
+                 head("S", "3", "13", "0651301", "", dia=5),
+                 head("S", "4", "13", "06513F0102", "", dia=5)]          # donaciones: no entra
+        details = [detail("E", "1", "001", "L1", 20), detail("S", "2", "001", "L1", 1),
+                   detail("S", "3", "001", "L1", 1), detail("S", "4", "001", "L1", 1)]
+        m = month([tformdet("06513", "001", "L1", SALDO=10, INGRE=20, SIS=2)], heads, details)
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        self.assertEqual([g.numero for g in report.guias], ["1"])
+        self.assertEqual(report.guias[0].origen, "030S05")
+        sis = sum(counts[ici_data.CONSUMO.index("SIS")] for _, counts, _ in report.recetas_diarias)
+        self.assertEqual(sis, 2)
+        self.assertEqual(m.warnings, [])
+
+    def test_daily_recetas_come_from_tventa(self):
+        # Como las cuenta el ICI: cada venta vigente de la farmacia es una receta, con su forma de pago.
+        ventas = [{"ALMCOD": "06513", "ALMCODSUB": "0651301", "VTASIT": "1", "VTATIP": "M", "VTATIPODOC": "26",
+                   "VTAFORMPAG": "03", "VTAFECHREG": date(2026, 8, 4), "VTATOTAL": 2.5},
+                  {"ALMCOD": "06513", "ALMCODSUB": "0651301", "VTASIT": "1", "VTATIP": "M", "VTATIPODOC": "08",
+                   "VTAFORMPAG": "01", "VTAFECHREG": date(2026, 8, 4), "VTATOTAL": 1.25},
+                  {"ALMCOD": "06513", "ALMCODSUB": "0651301", "VTASIT": "0", "VTATIP": "M", "VTATIPODOC": "26",
+                   "VTAFORMPAG": "03", "VTAFECHREG": date(2026, 8, 4), "VTATOTAL": 9.0},       # anulada
+                  {"ALMCOD": "06513", "ALMCODSUB": "0651301", "VTASIT": "1", "VTATIP": "M", "VTATIPODOC": "26",
+                   "VTAFORMPAG": "03", "VTAFECHREG": date(2026, 7, 31), "VTATOTAL": 9.0}]     # otro mes
+        m = month([tformdet("06513", "001", "L1", SALDO=10, SIS=2)], ventas=ventas)
+        est = m.establishments[0]
+        daily = {d.day: (counts, value) for d, counts, value in ici_data.pharmacy_report(m, est, est.pharmacies[0]).recetas_diarias}
+        self.assertEqual(daily[4][0][ici_data.CONSUMO.index("SIS")], 1)
+        self.assertEqual(daily[4][0][ici_data.CONSUMO.index("VENTA")], 1)
+        self.assertAlmostEqual(daily[4][1], 3.75)
+        self.assertEqual(sum(sum(c) for c, _ in daily.values()), 2)
+
+    def test_warns_when_no_movement_is_found(self):
+        m = month([tformdet("06513", "001", "L1", SALDO=10, INGRE=20)],
+                  [head("E", "1", "04", "030S0501", "99999XX01")], [detail("E", "1", "001", "L1", 20)])
+        self.assertEqual(len(m.warnings), 1)
+        self.assertIn("06513", m.warnings[0])
+        self.assertIn("99999XX01", m.warnings[0])
+
     def test_month_without_tformdet_is_empty(self):
         m = month([tformdet("06502F01", "001", "L1", ANNOMES="202607", SALDO=1)])
         self.assertEqual(m.establishments, [])
@@ -349,6 +394,26 @@ class IciExcelTests(unittest.TestCase):
                 # La última página empieza con el encabezado de la tabla y filas, no con la declaración.
                 self.assertEqual(ws.cell(breaks[-1] + 1, 1).value, "PRODUCTO FARMACÉUTICO", count)
 
+    def test_pages_use_the_measures_of_the_program(self):
+        # Excel redondea filas y columnas a píxeles: con sus medidas, cada página corta donde de verdad
+        # se llena (antes quedaba un espacio en blanco abajo).
+        rows = [tformdet("06502F01", f"{k:03d}", f"L{k}", SALDO=10 + k, SIS=1) for k in range(150)]
+        m = month(rows)
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        plain_w = {w: w * 7 * 0.75 for w in ici_pdf.PROBE_WIDTHS}
+        wide_w = {w: (int(w * 7 + 0.5) + 5) * 0.75 for w in ici_pdf.PROBE_WIDTHS}
+        plain_h = {h: h for h in ici_pdf.PROBE_HEIGHTS}
+        tall_h = {h: h + 1.5 for h in ici_pdf.PROBE_HEIGHTS}
+        first_break = lambda w, h: build_workbook(report, printable="excel", metrics=ici_pdf.Metrics(w, h))[0][
+            "ICI"].row_breaks.brk[0].id
+        same = first_break(plain_w, plain_h)
+        self.assertLess(first_break(plain_w, tall_h), same)       # filas más altas: entran menos
+        self.assertGreater(first_break(wide_w, plain_h), same)    # columnas más anchas: más chico, entran más
+        bigger = ici_pdf.Metrics(wide_w, tall_h)
+        # El libro de Excel (no el de imprimir) no cambia con las medidas.
+        self.assertEqual(build_workbook(report, metrics=bigger)[0]["ICI"].row_breaks.brk, [])
+
     def test_long_names_get_a_taller_row(self):
         long_name = "ACIDO FOLICO + FERROSO SULFATO (EQUIV. DE HIERRO ELEMENTAL) 400 UG + 60 MG FE TABLETA RECUBIERTA"
         self.assertGreaterEqual(row_height(long_name, 46, 7.2), 24)
@@ -436,6 +501,46 @@ class IciFilesTests(unittest.TestCase):
         self.assertNotIn("ICI AGOSTO 2026 - 06502F02 - EMERGENCIA.pdf", names)
         self.assertTrue(any("No se pudo pasar a PDF" in line for line in logs))
         self.assertTrue(FakeExporter.closed)
+
+    def test_excel_measures_are_read_once_per_batch(self):
+        class Cell:
+            def __init__(self, value):
+                self.Width = self.Height = value
+
+        class Sheet:
+            def Columns(self, i):
+                return Cell(i * 2.0)
+
+            def Rows(self, r):
+                return Cell(r + 0.5)
+
+        class Book:
+            closed = 0
+
+            def Worksheets(self, _i):
+                return Sheet()
+
+            def Close(self, _save):
+                Book.closed += 1
+
+        class App:
+            opened = []
+
+            class Workbooks:
+                @staticmethod
+                def Open(path, *_args):
+                    App.opened.append(Path(path).name)
+                    return Book()
+
+        exporter = ici_pdf._ComExporter.__new__(ici_pdf._ComExporter)
+        exporter.app, exporter._metrics = App(), None
+        metrics = exporter.metrics()
+        self.assertIs(exporter.metrics(), metrics)
+        self.assertEqual(App.opened, ["medidas.xlsx"])
+        self.assertEqual(Book.closed, 1)
+        self.assertEqual(metrics.width(1.0), 2.0)
+        self.assertEqual(metrics.height(5.0), 1.5)
+        self.assertEqual(metrics.height(250), 250)      # fuera de lo medido, el alto del libro
 
     def test_without_a_spreadsheet_program_only_the_excel_is_made(self):
         logs = []

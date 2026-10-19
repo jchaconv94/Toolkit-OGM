@@ -272,6 +272,11 @@ class IciMonth:
     links: dict[str, str] = field(default_factory=dict)      # n.° de ingreso → n.° de su salida (TMOVIMTRF)
     concepts: dict[str, str] = field(default_factory=dict)   # CCTCODIGO → nombre (MTIPOCONP)
     products: dict = field(default_factory=dict)             # código → (descripción, unidad)
+    sales: list | None = None    # TVENTA: (código del ICI, fecha, columna de consumo, valor); None sin TVENTA
+
+    @property
+    def has_dispensations(self) -> bool:
+        return self.has_movements or bool(self.sales)
 
 
 @dataclass
@@ -404,8 +409,41 @@ def _load_recetas(open_table, annomes: str) -> dict:
     return found
 
 
-def _load_movements(open_table, codes: set[str], desde: date, hasta: date) -> list[Movement]:
-    """Movimientos vigentes del periodo en que sale o entra una de las farmacias."""
+# Lo que puede seguir al código del ICI en el almacén de un movimiento o una venta. En un hospital, el
+# subalmacén SISMED de la farmacia: «06502F01» + «01». En un establecimiento con una sola farmacia el ICI
+# va con el código del establecimiento («06513») y el almacén puede ser «0651301», el de su farmacia
+# principal («06513F0101») o el código solo (el SISMED compara por el comienzo del código). Otro
+# subalmacén («…02», donaciones) no entra en el ICI.
+SISMED_SUBS = ("", "01", "F01", "F0101")
+
+
+def _owner(value, codes) -> str | None:
+    """El código del ICI (de `codes`) al que pertenece un almacén de TMOVIM o TVENTA, o None."""
+    value = text(value)
+    if not value:
+        return None
+    for code in sorted(codes, key=len, reverse=True):
+        if value.startswith(code) and value[len(code):] in SISMED_SUBS:
+            return code
+    return None
+
+
+def _side(rec, virtual: str, real: str, codes) -> tuple[str | None, str, str]:
+    """(código del ICI si es una de las farmacias, código, subalmacén) de un lado del movimiento.
+    Se mira el almacén virtual y, si no dice de quién es, el almacén real."""
+    values = [text(rec.get(virtual)), text(rec.get(real))]
+    for value in values:
+        owner = _owner(value, codes)
+        if owner:
+            return owner, owner, "01"
+    shown = next((v for v in values if v), "")
+    code, sub = _split_virtual(shown) if shown == values[0] else (shown, "")
+    return None, code, sub
+
+
+def _load_movements(open_table, codes: set[str], desde: date, hasta: date, seen=None) -> list[Movement]:
+    """Movimientos vigentes del periodo en que sale o entra una de las farmacias. En `seen` (un Counter)
+    quedan los almacenes de todos los movimientos del periodo, para avisar si no se encontró ninguno."""
     heads = {}
     for rec in open_table("TMOVIM") or []:
         if text(rec.get("MOVSITUA")) != "1":
@@ -414,12 +452,12 @@ def _load_movements(open_table, codes: set[str], desde: date, hasta: date) -> li
         if not fecha or not (desde <= fecha <= hasta):
             continue
         tipo = text(rec.get("MOVCODITIP")).upper()
-        origen, origen_sub = _split_virtual(rec.get("ALMORGVIR"))
-        destino, destino_sub = _split_virtual(rec.get("ALMDSTVIR"))
-        if not destino:
-            destino, destino_sub = text(rec.get("ALMCODIDST")), ""
-        mine = (tipo == "S" and origen in codes and origen_sub in ("01", "")) or \
-               (tipo == "E" and destino in codes and destino_sub in ("01", ""))
+        own_origen, origen, origen_sub = _side(rec, "ALMORGVIR", "ALMCODIORG", codes)
+        own_destino, destino, destino_sub = _side(rec, "ALMDSTVIR", "ALMCODIDST", codes)
+        mine = (tipo == "S" and own_origen) or (tipo == "E" and own_destino)
+        if seen is not None:
+            seen[(tipo, text(rec.get("ALMORGVIR" if tipo == "S" else "ALMDSTVIR"))
+                  or text(rec.get("ALMCODIORG" if tipo == "S" else "ALMCODIDST")))] += 1
         if not mine:
             continue
         numero = text(rec.get("MOVNUMERO"))
@@ -442,6 +480,36 @@ def _load_movements(open_table, codes: set[str], desde: date, hasta: date) -> li
             regsan=text(rec.get("MEDREGSAN")), tipsum=text(rec.get("TIPSUM")), ffinan=text(rec.get("FFINAN")),
         ))
     return list(heads.values())
+
+
+# TVENTA, como la lee procesar_ici para las recetas y los valores de TFORMATO (informe_valorizado.md).
+VENTA_FORMAS = {"01": "VENTA", "02": "CREDHOSP", "03": "SIS", "04": "SOAT", "05": "EXO", "06": "OTR_CONV",
+                "08": "DEFNAC", "20": "INTERSAN"}
+VENTA_DOCS = ("08", "09", "26", "27", "15")
+
+
+def _load_sales(open_table, codes: set[str], desde: date, hasta: date) -> list | None:
+    """Ventas y dispensaciones vigentes del periodo: (código del ICI, fecha, columna de consumo, valor).
+    Cada una es una receta del ICI. None si el SISMED no tiene TVENTA."""
+    table = open_table("TVENTA")
+    if table is None:
+        return None
+    sales = []
+    for rec in table:
+        if text(rec.get("VTASIT")) != "1":
+            continue
+        tip, doc = text(rec.get("VTATIP")).upper(), text(rec.get("VTATIPODOC"))
+        if (tip and tip != "M") or (doc and doc not in VENTA_DOCS):
+            continue
+        column = VENTA_FORMAS.get(text(rec.get("VTAFORMPAG")))
+        fecha = _as_date(rec.get("VTAFECHREG"))
+        if column is None or not fecha or not (desde <= fecha <= hasta):
+            continue
+        sub = text(rec.get("ALMCODSUB"))
+        owner = _owner(sub, codes) if sub else _owner(rec.get("ALMCOD"), codes)
+        if owner:
+            sales.append((owner, fecha, column, num(rec.get("VTATOTAL"))))
+    return sales
 
 
 def _load_links(open_table) -> dict:
@@ -497,7 +565,14 @@ def load_month(open_table, annomes: str, log=print) -> IciMonth:
     movements = []
     if has_movements:
         log("🔎 Leyendo los movimientos del mes (TMOVIM)…")
-        movements = _load_movements(open_table, set(pharmacies), desde, hasta)
+        seen = collections.Counter()
+        movements = _load_movements(open_table, set(pharmacies), desde, hasta, seen)
+        with_moves = {m.origen for m in movements} | {m.destino for m in movements}
+        for code in sorted(set(pharmacies) - with_moves):
+            # Para corregirlo hay que saber cómo escribe ese SISMED el almacén de sus movimientos.
+            top = ", ".join(f"{t} {c or '(vacío)'}: {n}" for (t, c), n in seen.most_common(6))
+            warnings.append(f"No se encontraron en TMOVIM las guías ni las dispensaciones de {code} del mes "
+                            f"(almacenes con más movimientos: {top or 'ninguno'}).")
     else:
         warnings.append("No se encontró TMOVIM.DBF o TMOVIMDET.DBF: los vencidos quedan como los dejó el "
                         "SISMED y lo entregado entre farmacias se estima por lote.")
@@ -512,9 +587,11 @@ def load_month(open_table, annomes: str, log=print) -> IciMonth:
         name = names.get(code) or (items[0].name if len(items) == 1 else code)
         establishments.append(Establishment(code, name, red, microred, items))
 
+    log("🔎 Leyendo las ventas y dispensaciones del mes (TVENTA)…")
+    sales = _load_sales(open_table, set(pharmacies), desde, hasta)
     month = IciMonth(annomes, establishments, movements, names, has_movements, warnings,
                      links=_load_links(open_table) if has_movements else {}, concepts=_load_concepts(open_table),
-                     products=products)
+                     products=products, sales=sales)
     apply_vencidos(month)
     return month
 
@@ -634,12 +711,21 @@ RECETA_CONCEPTOS = {"10": "VENTA", "11": "VENTA", "12": "VENTA", "13": "SIS", "1
 
 
 def daily_recetas(month: IciMonth, codes: set[str], desde: date, hasta: date) -> list:
-    """Recetas (dispensaciones) por día y tipo de atención: (fecha, cuentas en el orden de CONSUMO, valor)."""
+    """Recetas (dispensaciones) por día y tipo de atención: (fecha, cuentas en el orden de CONSUMO, valor).
+    De TVENTA, como las cuenta el ICI del SISMED; sin TVENTA, de las salidas de TMOVIM."""
     days = collections.OrderedDict()
     day = desde
     while day <= hasta:
         days[day] = ([0] * len(CONSUMO), 0.0)
         day = date.fromordinal(day.toordinal() + 1)
+    sales = [sale for sale in month.sales or [] if sale[0] in codes]
+    if sales:
+        for _, fecha, column, total in sales:
+            if fecha in days:
+                counts, value = days[fecha]
+                counts[CONSUMO.index(column)] += 1
+                days[fecha] = (counts, value + total)
+        return [(d, counts, value) for d, (counts, value) in days.items()]
     for m in month.movements:
         column = RECETA_CONCEPTOS.get(m.concepto)
         if m.tipo != "S" or column is None or m.origen not in codes or m.fecha not in days:
@@ -723,7 +809,7 @@ def pharmacy_report(month: IciMonth, est: Establishment, ph: Pharmacy) -> IciRep
         desde=ph.desde, hasta=ph.hasta, guias=sorted(guias, key=_move_order), corrections=corrections,
         names=month.names, codes={ph.code}, concepts=month.concepts, products=month.products,
         valores=list(ph.valores) if ph.valores else None,
-        recetas_diarias=daily_recetas(month, {ph.code}, ph.desde, ph.hasta) if month.has_movements else [],
+        recetas_diarias=daily_recetas(month, {ph.code}, ph.desde, ph.hasta) if month.has_dispensations else [],
     )
 
 
@@ -867,7 +953,7 @@ def consolidated_report(month: IciMonth, est: Establishment) -> IciReport:
         guias=sorted(guias, key=_move_order), corrections=corrections,
         names=month.names, consolidated=True, internal_value=internal, internal_estimated=estimated,
         in_transit=transit, codes=codes, concepts=month.concepts, products=month.products, valores=valores,
-        recetas_diarias=daily_recetas(month, codes, desde, hasta) if month.has_movements else [],
+        recetas_diarias=daily_recetas(month, codes, desde, hasta) if month.has_dispensations else [],
     )
 
 
