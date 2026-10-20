@@ -331,7 +331,8 @@ class IciDataTests(unittest.TestCase):
         cells = [str(c.value) for row in build_workbook(report)[0]["Control de recetas"].iter_rows()
                  for c in row if c.value is not None]
         self.assertIn("DUPLICADO", cells)
-        self.assertIn("028 · MARIA RAMOS", cells)
+        self.assertIn("MARIA RAMOS", cells)          # solo el nombre, sin el código
+        self.assertIn("ANULADAS POR TIPO DE ATENCIÓN", cells)
         self.assertFalse(any(v == "x" for v in cells))
         self.assertIn("07/08/2026 11:20", cells)
         self.assertIn("09:15", cells)
