@@ -171,10 +171,12 @@ class Movement:
 
     @property
     def valor(self) -> float | None:
+        """Importe de la guía, redondeado a céntimos como lo muestra el SISMED: así la suma de varias guías
+        da lo mismo que en el SISMED (sin redondear, 16 guías SISMED de setiembre 2026 sumaban 0,01 menos)."""
         totals = [line.total for line in self.lines]
         if not totals or any(t is None for t in totals):
             return None
-        return sum(totals)
+        return round(sum(totals) + 1e-9, 2)
 
 
 @dataclass
@@ -890,6 +892,40 @@ def balance_errors(rows: list[dict]) -> int:
         if abs(salidas - row["TOTAL"]) > 1e-6 or abs(stock - row["STOCK_FIN"]) > 1e-6:
             bad += 1
     return bad
+
+
+def sismed_establishment(sismed_dir: str) -> tuple[str, bool]:
+    """(nombre del establecimiento de este SISMED, si tiene varias farmacias), para proponer el nombre del
+    archivo antes de leer el mes. Sale de la dependencia por omisión (MCONFIG, fila SIS / DD) y de MALMACEN.
+    Vacío si no se puede leer."""
+    from dbf_utils import open_dbf
+
+    def find(name):
+        for variant in (name, name.lower(), name.capitalize()):
+            path = os.path.join(sismed_dir, "DATOS", f"{variant}.DBF" if variant.isupper() else f"{variant}.dbf")
+            if os.path.exists(path):
+                return path
+        return ""
+
+    try:
+        code = ""
+        for rec in open_dbf(find("MCONFIG")):
+            if text(rec.get("CFGCODMOD")).upper() == "SIS" and text(rec.get("CFGCODIGO")).upper() == "DD":
+                code = text(rec.get("CFGVALACT"))
+                break
+        ipress = ipress_of(code[:8] if len(code) > 8 else code)
+        if not ipress:
+            return "", False
+        name, pharmacies = ipress, 0
+        for rec in open_dbf(find("MALMACEN")):
+            cod = text(rec.get("ALMCOD"))
+            if cod == ipress:
+                name = text(rec.get("ALMDES")) or ipress
+            elif re.fullmatch(re.escape(ipress) + r"F\d{2}", cod):
+                pharmacies += 1
+        return name, pharmacies > 1
+    except Exception:  # noqa: BLE001 - solo sirve para proponer un nombre
+        return "", False
 
 
 def read_month(sismed_dir: str, annomes: str, log=print) -> IciMonth:
