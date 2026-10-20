@@ -494,7 +494,7 @@ def ici_sheet(wb, report: IciReport, printable=False):
     ws.row_dimensions[r].height = 4
     # La declaración jurada y las firmas no se parten entre dos páginas.
     r = page.keep(r + 1, SIGNATURE_HEIGHT)
-    _signature(ws, r, widths)
+    _signature(ws, r, widths, page)
 
     if not printable:
         ws.freeze_panes = ws.cell(first, 3)
@@ -541,9 +541,10 @@ SIGNATURE_HEIGHT = 15 + 2 * 12 + 14 + 6 + SIGN_SPACE + 12   # solo la línea y e
 NOTE_HEIGHT = 12
 
 
-def _signature(ws, r, widths):
+def _signature(ws, r, widths, page=None):
     """Declaración jurada, fecha y las dos firmas centradas en el ancho de la hoja, en poco alto para
-    que entren en la misma página que el final de la tabla."""
+    que entren en la misma página que el final de la tabla. En el PDF, las firmas van al pie de la página,
+    justo encima del pie (pedido del usuario, 2026-10-20): el espacio antes de ellas llena lo que sobra."""
     ncol = len(widths)
     box(ws, r, 1, r, ncol, "DECLARACIÓN JURADA", fnt(8, True, WHITE), NAVY, LEFT)
     ws.row_dimensions[r].height = 15
@@ -556,7 +557,11 @@ def _signature(ws, r, widths):
     ws.row_dimensions[r + 1].height = ws.row_dimensions[r + 2].height = 12
     box(ws, r + 3, 1, r + 3, ncol, f"Fecha: {date_in_words(dt.date.today())}", fnt(7.5, True), None, LEFT, border=False)
     ws.row_dimensions[r + 3].height = 14
-    ws.row_dimensions[r + 4].height = 6
+    spacer = 6
+    if page is not None and page.printable:
+        page._count_until(r + 4)                          # lo usado hasta la fecha, en esta página
+        spacer = max(spacer, page.capacity - page.used - SIGN_SPACE - 12 - 1)
+    ws.row_dimensions[r + 4].height = spacer
     ws.row_dimensions[r + 5].height = SIGN_SPACE          # espacio para firmar, sobre la línea
     for (c1, c2), title in zip(signature_blocks(widths), ("RESPONSABLE DE FARMACIA", "JEFE DEL ESTABLECIMIENTO")):
         for c in range(c1, c2 + 1):

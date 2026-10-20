@@ -462,6 +462,27 @@ class IciExcelTests(unittest.TestCase):
                 # La última página empieza con el encabezado de la tabla y filas, no con la declaración.
                 self.assertEqual(ws.cell(breaks[-1] + 1, 1).value, "PRODUCTO FARMACÉUTICO", count)
 
+    def test_pdf_signatures_sit_at_the_foot_of_the_page(self):
+        # En el PDF las firmas van al pie de la última página, justo encima del pie de página.
+        import fitz
+        import ici_render
+
+        rows = [tformdet("06502F01", f"{k:03d}", f"L{k}", SALDO=10 + k, SIS=1) for k in range(12)]
+        m = month(rows)
+        est = m.establishments[0]
+        wb, _ = build_workbook(ici_data.pharmacy_report(m, est, est.pharmacies[0]), printable="toolkit")
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = str(Path(tmp) / "ici.pdf")
+            ici_render.render_workbook(wb, pdf)
+            page = fitz.open(pdf)[0]
+            title = next(w for w in page.get_text("words") if w[4] == "RESPONSABLE")
+            bottom = ici_render.A4_LANDSCAPE[1] - wb["ICI"].page_margins.bottom * 72
+            self.assertGreater(title[3], bottom - 25)
+        # En el Excel siguen pegadas a la tabla.
+        ws = build_workbook(ici_data.pharmacy_report(m, est, est.pharmacies[0]))[0]["ICI"]
+        heights = [ws.row_dimensions[r].height for r in range(1, ws.max_row + 1)]
+        self.assertLessEqual(max(h for h in heights if h is not None), 72)
+
     def test_long_names_get_a_taller_row(self):
         long_name = "ACIDO FOLICO + FERROSO SULFATO (EQUIV. DE HIERRO ELEMENTAL) 400 UG + 60 MG FE TABLETA RECUBIERTA"
         self.assertGreaterEqual(row_height(long_name, 46, 7.2), 24)
