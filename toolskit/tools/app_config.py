@@ -29,7 +29,6 @@ _DEFAULTS = {
     "ici_sismed_dir":          r"C:\SISMEDV2",
     "ici_out_dir":             "",
     "ici_consolidado":         True,
-    "ici_por_farmacia":        True,
     "stock_sismed_dir":        r"C:\SISMEDV2",
     "disponibilidad_sismed_dir": r"C:\SISMEDV2",
     "disponibilidad_filter_mode": "excluir",

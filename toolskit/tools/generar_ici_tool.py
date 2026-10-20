@@ -138,10 +138,11 @@ class GenerarIciTool(SismedTool):
             tooltip="Suma todas las farmacias y puestos comunales y descuenta lo entregado entre ellos.",
             value=bool(cfg_get("ici_consolidado")),
         )
+        # Siempre empieza desmarcado (pedido del usuario); con una sola farmacia su ICI sale igual.
         check_farmacias = ft.Checkbox(
             label="Un ICI por cada farmacia",
             label_style=ft.TextStyle(size=13, color=ft.colors.GREY_300),
-            value=bool(cfg_get("ici_por_farmacia")),
+            value=False,
         )
         texto_resumen = ft.Text("", size=16, weight=ft.FontWeight.BOLD, color=ft.colors.WHITE)
         texto_detalle = ft.Text("", size=12, color=ft.colors.PINK_100)
@@ -189,7 +190,6 @@ class GenerarIciTool(SismedTool):
                     "Alertas de farmacia, Lotes sin movimiento y Correcciones de lote."
                 icono_resumen.name, icono_resumen.color = ft.icons.EVENT_NOTE_ROUNDED, ACCENT
             cfg_set("ici_consolidado", bool(check_consolidado.value))
-            cfg_set("ici_por_farmacia", bool(check_farmacias.value))
             if e is not None:
                 page.update()
 
@@ -286,6 +286,46 @@ class GenerarIciTool(SismedTool):
             on_click=_run,
         )
 
+        form_panel = ft.Container(
+            expand=7,
+            bgcolor=ft.colors.BLUE_GREY_900,
+            border_radius=16,
+            padding=ft.padding.all(26),
+            content=ft.Column([
+                ft.Row([
+                    ft.Icon(ft.icons.TUNE_ROUNDED, color=ACCENT, size=20),
+                    ft.Text("Configuración del ICI", size=15, weight=ft.FontWeight.W_700,
+                            color=ft.colors.WHITE),
+                ], spacing=8),
+                ft.Divider(color=ft.colors.WHITE12, height=12),
+                ft.Column([_lbl("Directorio raíz SISMED:"), ft.Row([sismed_row])], spacing=6),
+                ft.Column([_lbl("Mes del ICI:"), ft.Row([dropdown_mes, input_anio], spacing=8)], spacing=6),
+                ft.Column([_lbl("Generar:"), check_consolidado, check_farmacias], spacing=2),
+                resumen,
+                ft.Container(height=4),
+                ft.Row([
+                    ft.Container(content=btn_run, width=360, alignment=ft.alignment.center)
+                ], alignment=ft.MainAxisAlignment.CENTER),
+            ], spacing=12),
+        )
+        console_panel = ft.Container(
+            expand=5,
+            bgcolor=ft.colors.BLACK87,
+            border_radius=16,
+            border=ft.border.all(1, ft.colors.BLUE_GREY_800),
+            padding=ft.padding.all(20),
+            content=ft.Column([
+                ft.Row([
+                    ft.Icon(ft.icons.TERMINAL_ROUNDED, color=ACCENT, size=18),
+                    ft.Text("Consola", color=ft.colors.GREY_300, size=14, weight=ft.FontWeight.W_700),
+                    ft.Container(expand=True),
+                    btn_open,
+                ], spacing=8),
+                ft.Divider(color=ft.colors.BLUE_GREY_800, height=10),
+                log_view,
+            ], spacing=4, expand=True),
+        )
+
         return ft.Container(
             padding=ft.padding.all(28),
             expand=True,
@@ -299,46 +339,16 @@ class GenerarIciTool(SismedTool):
                         right_content=self._back_button("Volver a Farmacia", navigate_fn, 20),
                     ),
                     ft.Container(height=14),
-                    ft.ResponsiveRow([
-                        ft.Container(
-                            col={"sm": 12, "lg": 7},
-                            bgcolor=ft.colors.BLUE_GREY_900,
-                            border_radius=16,
-                            padding=ft.padding.all(26),
-                            content=ft.Column([
-                                ft.Row([
-                                    ft.Icon(ft.icons.TUNE_ROUNDED, color=ACCENT, size=20),
-                                    ft.Text("Configuración del ICI", size=15, weight=ft.FontWeight.W_700,
-                                            color=ft.colors.WHITE),
-                                ], spacing=8),
-                                ft.Divider(color=ft.colors.WHITE12, height=12),
-                                ft.Column([_lbl("Directorio raíz SISMED:"), ft.Row([sismed_row])], spacing=6),
-                                ft.Column([_lbl("Mes del ICI:"), ft.Row([dropdown_mes, input_anio], spacing=8)], spacing=6),
-                                ft.Column([_lbl("Generar:"), check_consolidado, check_farmacias], spacing=2),
-                                resumen,
-                                ft.Container(height=4),
-                                ft.Row([
-                                    ft.Container(content=btn_run, width=360, alignment=ft.alignment.center)
-                                ], alignment=ft.MainAxisAlignment.CENTER),
-                            ], spacing=12),
-                        ),
-                        ft.Container(
-                            col={"sm": 12, "lg": 5},
-                            height=600,
-                            bgcolor=ft.colors.BLACK87,
-                            border_radius=16,
-                            border=ft.border.all(1, ft.colors.BLUE_GREY_800),
-                            padding=ft.padding.all(20),
-                            content=ft.Column([
-                                ft.Row([
-                                    ft.Icon(ft.icons.TERMINAL_ROUNDED, color=ACCENT, size=18),
-                                    ft.Text("Consola", color=ft.colors.GREY_300, size=14, weight=ft.FontWeight.W_700),
-                                    ft.Container(expand=True),
-                                    btn_open,
-                                ], spacing=8),
-                                ft.Divider(color=ft.colors.BLUE_GREY_800, height=10),
-                                log_view,
-                            ], spacing=4, expand=True),
+                    # La consola mide lo mismo que el formulario (pedido del usuario): el formulario da
+                    # el alto y la consola va en una capa encima, estirada a ese alto. TransparentPointer
+                    # deja pasar los clics de esa capa al formulario de abajo.
+                    ft.Stack([
+                        ft.Row([form_panel, ft.Container(expand=5)], spacing=10,
+                               vertical_alignment=ft.CrossAxisAlignment.START),
+                        ft.TransparentPointer(
+                            content=ft.Row([ft.Container(expand=7), console_panel], spacing=10,
+                                           vertical_alignment=ft.CrossAxisAlignment.STRETCH),
+                            left=0, top=0, right=0, bottom=0,
                         ),
                     ]),
                 ],
