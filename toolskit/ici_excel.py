@@ -1,7 +1,8 @@
 """Generar ICI: el libro de Excel con el diseño aprobado por el usuario el 2026-10-19.
 
-Hojas, en este orden: ICI (para imprimir horizontal y firmar), Guías de ingreso, Vencimientos,
-Alertas de farmacia, Lotes sin movimiento y Correcciones de lote.
+Hojas, en el orden de `SHEETS`: ICI (para imprimir horizontal y firmar), Guías de ingreso, Ingresos
+internos, Salidas por devolución, Vencimientos, Recetas diarias, Control de recetas, Alertas de
+farmacia y Lotes sin movimiento (estas dos, solo en el Excel).
 
 Se arman dos versiones del mismo libro: la de Excel (para revisarla en la PC: filtro en el ICI,
 paneles fijos) y la de imprimir, que se pasa a PDF. En la de imprimir cada hoja ya viene cortada
@@ -1355,6 +1356,8 @@ def control_sheet(wb, report: IciReport, printable=False):
     page.setup("Control de recetas", report, titles="1:2")
 
 
+SHEETS = ("ICI", "Guías de ingreso", "Ingresos internos", "Salidas por devolución", "Vencimientos",
+          "Recetas diarias", "Control de recetas", "Alertas de farmacia", "Lotes sin movimiento")
 EXCEL_ONLY = ("Alertas de farmacia", "Lotes sin movimiento")   # hojas que no van al PDF
 
 

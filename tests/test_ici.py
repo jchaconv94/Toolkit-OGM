@@ -13,7 +13,7 @@ if str(TOOLKIT_DIR) not in sys.path:
 
 import ici_data
 import ici_pdf
-from ici_excel import COLS, Page, build_workbook, row_height, column_span, signature_blocks, date_in_words, reference_group, write_reports
+from ici_excel import COLS, EXCEL_ONLY, SHEETS, Page, build_workbook, row_height, column_span, signature_blocks, date_in_words, reference_group, write_reports
 
 MONTH = "202608"
 
@@ -390,6 +390,9 @@ class IciExcelTests(unittest.TestCase):
         printable = build_workbook(self._report(), printable="toolkit")[0]
         self.assertEqual(printable.sheetnames, ["ICI", "Guías de ingreso", "Ingresos internos", "Salidas por devolución", "Vencimientos",
                                                 "Recetas diarias", "Control de recetas"])
+        # La lista que se muestra en Generar ICI es la misma que arma el libro.
+        self.assertEqual(wb.sheetnames, list(SHEETS))
+        self.assertEqual(printable.sheetnames, [n for n in SHEETS if n not in EXCEL_ONLY])
         cells = [c.value for row in printable["ICI"].iter_rows() for c in row if isinstance(c.value, str)]
         self.assertIn("RESPONSABLE DE FARMACIA", cells)
         self.assertFalse(any(v in ("Nombre:", "DNI:") for v in cells))

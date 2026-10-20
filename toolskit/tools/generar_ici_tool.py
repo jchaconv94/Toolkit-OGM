@@ -22,7 +22,7 @@ from datetime import date
 import flet as ft
 
 from ici_data import month_label, read_month, sismed_establishment
-from ici_excel import write_reports
+from ici_excel import EXCEL_ONLY, SHEETS, write_reports
 from tformdet_periods import MESES
 from tools.app_config import get as cfg_get, set as cfg_set
 from tools.base_tool import SismedTool, ToolMetadata
@@ -38,6 +38,16 @@ def previous_month(today: date | None = None) -> tuple[int, int]:
     today = today or date.today()
     return (today.year, today.month - 1) if today.month > 1 else (today.year - 1, 12)
 
+
+
+def _join(names) -> str:
+    names = list(names)
+    return ", ".join(names[:-1]) + f" y {names[-1]}" if len(names) > 1 else "".join(names)
+
+
+# Sale de la misma lista que arma el libro, así no se desactualiza.
+SHEETS_TEXT = (f"Hojas: {_join(s for s in SHEETS if s not in EXCEL_ONLY)}. "
+               f"Solo en el Excel: {_join(s for s in SHEETS if s in EXCEL_ONLY)}.")
 
 class GenerarIciTool(SismedTool):
     """ICI por farmacia y consolidado, con el diseño aprobado, desde el SISMED."""
@@ -186,8 +196,7 @@ class GenerarIciTool(SismedTool):
             else:
                 texto_resumen.value = f"ICI de {month_label(annomes).title()}"
                 texto_detalle.value = (" y ".join(partes).capitalize() if partes else "Marque qué generar") + \
-                    ", en Excel y en PDF (todas las hojas, para imprimir). Hojas: ICI, Guías de ingreso, Vencimientos, " \
-                    "Alertas de farmacia, Lotes sin movimiento y Correcciones de lote."
+                    f", en Excel y en PDF. {SHEETS_TEXT}"
                 icono_resumen.name, icono_resumen.color = ft.icons.EVENT_NOTE_ROUNDED, ACCENT
             cfg_set("ici_consolidado", bool(check_consolidado.value))
             if e is not None:
