@@ -443,7 +443,7 @@ class IciExcelTests(unittest.TestCase):
         report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
         ws = build_workbook(report)[0]["Alertas de farmacia"]
         cells = [c.value for row in ws.iter_rows() for c in row if c.value is not None]
-        start = cells.index("LOS 10 PRODUCTOS DE MAYOR CONSUMO EN CANTIDAD")
+        start = cells.index("LOS 10 PRODUCTOS DE MAYOR CONSUMO")
         listed = [v for v in cells[start:] if v in ("001", "002")]
         self.assertEqual(listed[:2], ["001", "002"])
 

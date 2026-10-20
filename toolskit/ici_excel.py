@@ -756,7 +756,7 @@ def alerts_sheet(wb, report: IciReport, printable=False):
            ("INGRESOS", 8, 8, INT0), ("CONSUMO DEL MES", 9, 9, INT0), ("STOCK FINAL", 10, 10, INT0)],
           [[k, v["desc"], v["ff"], v["saldo"], v["ing"], v["cons"], v["stock"]] for k, v in out],
           "Tuvieron consumo en el mes y terminaron con stock cero (sumando todos sus lotes). De mayor a menor consumo.")
-    table("LOS 10 PRODUCTOS DE MAYOR CONSUMO EN CANTIDAD",
+    table("LOS 10 PRODUCTOS DE MAYOR CONSUMO",
           [("CÓDIGO", 1, 1, None), ("DESCRIPCIÓN", 2, 5, None), ("UNIDAD", 6, 6, None), ("CONSUMO DEL MES", 7, 7, INT0),
            ("VALOR S/", 8, 8, "0.00"), ("% DEL CONSUMO EN S/", 9, 9, "0.0%"), ("STOCK FINAL", 10, 10, INT0)],
           [[k, v["desc"], v["ff"], v["cons"], v["val"], (v["val"] / total) if total else 0, v["stock"]] for k, v in top],
