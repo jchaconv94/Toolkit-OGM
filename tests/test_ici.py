@@ -384,9 +384,9 @@ class IciExcelTests(unittest.TestCase):
 
     def test_workbook_has_the_approved_sheets(self):
         wb, summary = build_workbook(self._report())
-        # Orden del usuario; alertas y lotes sin movimiento al final y solo en el Excel.
+        # Orden del usuario; alertas y productos sin rotar al final y solo en el Excel.
         self.assertEqual(wb.sheetnames, ["ICI", "Guías de ingreso", "Ingresos internos", "Salidas por devolución", "Vencimientos",
-                                         "Recetas diarias", "Control de recetas", "Alertas de farmacia", "Lotes sin movimiento"])
+                                         "Recetas diarias", "Control de recetas", "Alertas de farmacia", "Productos sin rotar"])
         printable = build_workbook(self._report(), printable="toolkit")[0]
         self.assertEqual(printable.sheetnames, ["ICI", "Guías de ingreso", "Ingresos internos", "Salidas por devolución", "Vencimientos",
                                                 "Recetas diarias", "Control de recetas"])
@@ -401,7 +401,7 @@ class IciExcelTests(unittest.TestCase):
         self.assertNotIn("AJUSTE DE INVENTARIO (+)", headers)
         self.assertEqual(ws.page_setup.orientation, "landscape")
         self.assertEqual(ws.print_title_rows, "$11:$12")
-        self.assertEqual(summary["sin_movimiento"], 1)
+        self.assertEqual(summary["sin_rotar"], 1)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "ici.xlsx"
             wb.save(path)
@@ -447,8 +447,8 @@ class IciExcelTests(unittest.TestCase):
         listed = [v for v in cells[start:] if v in ("001", "002")]
         self.assertEqual(listed[:2], ["001", "002"])
 
-    def test_still_lots_are_by_quantity(self):
-        # Sin movimiento: 001 con 500 unidades a S/ 0.10 (S/ 50); 002 con 3 unidades a S/ 100 (S/ 300).
+    def test_products_without_rotation_are_by_quantity(self):
+        # Sin rotar: 001 con 500 unidades a S/ 0.10 (S/ 50); 002 con 3 unidades a S/ 100 (S/ 300).
         rows = [tformdet("06502F01", "001", "L1", precio=0.1, SALDO=500),
                 tformdet("06502F01", "002", "L2", precio=100.0, SALDO=3)]
         m = month(rows)
@@ -456,11 +456,28 @@ class IciExcelTests(unittest.TestCase):
         report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
         ws = build_workbook(report)[0]["Alertas de farmacia"]
         cells = [c.value for row in ws.iter_rows() for c in row if c.value is not None]
-        start = next(i for i, v in enumerate(cells) if str(v).startswith("LOTES SIN MOVIMIENTO  ·  LOS 2 DE MAYOR CANTIDAD"))
+        start = next(i for i, v in enumerate(cells) if str(v).startswith("PRODUCTOS SIN ROTAR  ·  LOS 2 DE MAYOR CANTIDAD"))
         self.assertEqual([v for v in cells[start:] if v in ("001", "002")], ["001", "002"])
         # La hoja con la lista completa, en el mismo orden.
-        full = build_workbook(report)[0]["Lotes sin movimiento"]
+        full = build_workbook(report)[0]["Productos sin rotar"]
         self.assertEqual([full.cell(r, 1).value for r in (3, 4)], ["001", "002"])
+
+    def test_a_still_lot_of_a_product_that_rotates_is_not_listed(self):
+        # Paracetamol (001): L1 parado con 900 unidades, L2 se usa. 002: sus dos lotes parados.
+        rows = [tformdet("06502F01", "001", "L1", precio=0.05, SALDO=900, FEC_EXP=date(2027, 1, 31)),
+                tformdet("06502F01", "001", "L2", precio=0.05, SALDO=300, SIS=120, FEC_EXP=date(2027, 6, 30)),
+                tformdet("06502F01", "002", "A", precio=2.0, SALDO=10, FEC_EXP=date(2027, 3, 31)),
+                tformdet("06502F01", "002", "B", precio=3.0, SALDO=5, FEC_EXP=date(2026, 12, 31))]
+        m = month(rows)
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        wb, summary = build_workbook(report)
+        self.assertEqual(summary["sin_rotar"], 1)
+        self.assertAlmostEqual(summary["sin_rotar_valor"], 35.0)
+        full = wb["Productos sin rotar"]
+        self.assertEqual([full.cell(3, c).value for c in (1, 4, 6, 7)], ["002", 2, 15, 35.0])
+        self.assertEqual(full.cell(3, 5).value.date(), date(2026, 12, 31))   # el que vence primero
+        self.assertIsNone(full.cell(4, 1).value)
 
     def test_excel_has_the_column_letters_with_filter(self):
         wb, _ = build_workbook(self._report())
