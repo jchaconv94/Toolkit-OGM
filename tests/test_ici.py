@@ -339,6 +339,15 @@ class IciDataTests(unittest.TestCase):
         self.assertIn("06513", m.warnings[0])
         self.assertIn("99999XX01", m.warnings[0])
 
+    def test_guide_value_is_rounded_like_the_sismed(self):
+        # El importe de cada guía va a céntimos: la suma de las guías da lo mismo que en el SISMED.
+        move = ici_data.Movement("E", "1", "04", "030S05", "01", "06502F01", "01", "03", "G-1", date(2026, 9, 2))
+        move.lines = [ici_data.MoveLine("001", "L1", 1, 3.333333), ici_data.MoveLine("002", "L2", 1, 3.333333),
+                      ici_data.MoveLine("003", "L3", 1, 3.334339)]
+        self.assertEqual(move.valor, 10.0)
+        move.lines = [ici_data.MoveLine("001", "L1", 1, 1.005)]
+        self.assertEqual(move.valor, 1.01)
+
     def test_month_without_tformdet_is_empty(self):
         m = month([tformdet("06502F01", "001", "L1", ANNOMES="202607", SALDO=1)])
         self.assertEqual(m.establishments, [])
@@ -515,10 +524,11 @@ class IciFilesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = write_reports(m, tmp, pdf=False, log=lambda _m: None)
             names = sorted(Path(p).name for p in paths)
-            self.assertEqual(names, ["ICI AGOSTO 2026 - 06502F01 - FARMACIA.xlsx", "ICI AGOSTO 2026 - 06502F02 - EMERGENCIA.xlsx",
-                                     "ICI CONSOLIDADO AGOSTO 2026 - 06502 - HOSPITAL.xlsx"])
+            # Con el nombre del establecimiento o de la farmacia (pedido del usuario).
+            self.assertEqual(names, ["ICI CONSOLIDADO HOSPITAL AGOSTO 2026.xlsx", "ICI F01 FARMACIA AGOSTO 2026.xlsx",
+                                     "ICI F02 EMERGENCIA AGOSTO 2026.xlsx"])
             only = write_reports(m, tmp, per_pharmacy=False, pdf=False, log=lambda _m: None)
-            self.assertEqual([Path(p).name for p in only], ["ICI CONSOLIDADO AGOSTO 2026 - 06502 - HOSPITAL.xlsx"])
+            self.assertEqual([Path(p).name for p in only], ["ICI CONSOLIDADO HOSPITAL AGOSTO 2026.xlsx"])
 
     def test_each_book_also_goes_to_pdf(self):
         m = month([tformdet("06502F01", "001", "L1", SALDO=10, SIS=2), tformdet("06502F02", "001", "L1", SALDO=5)])
@@ -541,11 +551,11 @@ class IciFilesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             paths = write_reports(m, tmp, log=logs.append, open_exporter=lambda log: FakeExporter())
             names = sorted(Path(p).name for p in paths)
-        self.assertIn("ICI CONSOLIDADO AGOSTO 2026 - 06502 - HOSPITAL.pdf", names)
-        self.assertIn("ICI AGOSTO 2026 - 06502F01 - FARMACIA.pdf", names)
+        self.assertIn("ICI CONSOLIDADO HOSPITAL AGOSTO 2026.pdf", names)
+        self.assertIn("ICI F01 FARMACIA AGOSTO 2026.pdf", names)
         # Si un PDF falla, el Excel queda y se sigue con los demás.
-        self.assertIn("ICI AGOSTO 2026 - 06502F02 - EMERGENCIA.xlsx", names)
-        self.assertNotIn("ICI AGOSTO 2026 - 06502F02 - EMERGENCIA.pdf", names)
+        self.assertIn("ICI F02 EMERGENCIA AGOSTO 2026.xlsx", names)
+        self.assertNotIn("ICI F02 EMERGENCIA AGOSTO 2026.pdf", names)
         self.assertTrue(any("No se pudo pasar a PDF" in line for line in logs))
         self.assertTrue(FakeExporter.closed)
 
@@ -639,7 +649,7 @@ class IciFilesTests(unittest.TestCase):
         m = month([tformdet("06502F01", "001", "L1", SALDO=10)])
         with tempfile.TemporaryDirectory() as tmp:
             paths = write_reports(m, tmp, per_pharmacy=False, pdf=False, log=lambda _m: None)
-            self.assertEqual([Path(p).name for p in paths], ["ICI AGOSTO 2026 - 06502F01 - FARMACIA.xlsx"])
+            self.assertEqual([Path(p).name for p in paths], ["ICI F01 FARMACIA AGOSTO 2026.xlsx"])
 
 
 if __name__ == "__main__":

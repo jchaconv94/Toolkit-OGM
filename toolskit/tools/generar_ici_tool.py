@@ -21,7 +21,7 @@ from datetime import date
 
 import flet as ft
 
-from ici_data import month_label, read_month
+from ici_data import month_label, read_month, sismed_establishment
 from ici_excel import write_reports
 from tformdet_periods import MESES
 from tools.app_config import get as cfg_get, set as cfg_set
@@ -219,9 +219,14 @@ class GenerarIciTool(SismedTool):
                            consolidated=bool(check_consolidado.value), per_pharmacy=bool(check_farmacias.value))
             label = month_label(annomes)
             last_dir = cfg_get("ici_out_dir") or ""
+            # Con el nombre del establecimiento: «ICI P.S. HUACHO SEPTIEMBRE 2026».
+            name, several = sismed_establishment(input_sismed.value)
+            prefix = "ICI CONSOLIDADO" if pending["consolidated"] and several else "ICI"
+            suggested = " ".join(part for part in (prefix, name, label) if part)
+            suggested = "".join("-" if ch in '<>:"/\\|?*' else ch for ch in suggested)
             save_picker.save_file(
                 dialog_title="Guardar el ICI",
-                file_name=f"ICI CONSOLIDADO {label}.xlsx" if pending["consolidated"] else f"ICI {label}.xlsx",
+                file_name=f"{suggested}.xlsx",
                 initial_directory=last_dir if os.path.isdir(last_dir) else None,
                 allowed_extensions=["xlsx"],
             )

@@ -1347,9 +1347,19 @@ def main_report_name(month, consolidated: bool = True) -> str:
         return f"ICI {label}"
     est = month.establishments[0]
     if consolidated and len(est.pharmacies) > 1:
-        return _safe_name(f"ICI CONSOLIDADO {label} - {est.code} - {est.name}")
-    ph = est.pharmacies[0]
-    return _safe_name(f"ICI {label} - {ph.code} - {ph.name}")
+        return consolidated_file_name(est, label)
+    return pharmacy_file_name(est, est.pharmacies[0], label)
+
+
+# Nombres de archivo con el establecimiento (pedido del usuario, 2026-10-20): «ICI P.S. HUACHO SEPTIEMBRE 2026».
+def consolidated_file_name(est, label: str) -> str:
+    return _safe_name(f"ICI CONSOLIDADO {est.name} {label}")
+
+
+def pharmacy_file_name(est, ph, label: str) -> str:
+    if ph.code == est.code:
+        return _safe_name(f"ICI {ph.name} {label}")
+    return _safe_name(f"ICI {ph.code[-3:]} {ph.name} {label}")
 
 
 def write_reports(month, out_dir: str, consolidated: bool = True, per_pharmacy: bool = True, pdf: bool = True,
@@ -1418,7 +1428,7 @@ def _write_all(month, consolidated, per_pharmacy, save, log, label):
             if report.internal_value:
                 kind = "estimado por lote" if report.internal_estimated else "según las guías"
                 log(f"🔁 {est.name}: entregas entre farmacias descontadas, S/ {report.internal_value:.2f} ({kind}).")
-            save(report, f"ICI CONSOLIDADO {label} - {est.code} - {est.name}")
+            save(report, consolidated_file_name(est, label))
         if per_pharmacy or len(est.pharmacies) == 1:
             for ph in est.pharmacies:
-                save(pharmacy_report(month, est, ph), f"ICI {label} - {ph.code} - {ph.name}")
+                save(pharmacy_report(month, est, ph), pharmacy_file_name(est, ph, label))
