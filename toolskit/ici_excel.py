@@ -1,7 +1,8 @@
 """Generar ICI: el libro de Excel con el diseño aprobado por el usuario el 2026-10-19.
 
-Hojas, en este orden: ICI (para imprimir horizontal y firmar), Guías de ingreso, Vencimientos,
-Alertas de farmacia, Lotes sin movimiento y Correcciones de lote.
+Hojas, en el orden de `SHEETS`: ICI (para imprimir horizontal y firmar), Guías de ingreso, Ingresos
+internos, Salidas por devolución, Vencimientos, Recetas diarias, Control de recetas, Alertas de
+farmacia y Lotes sin movimiento (estas dos, solo en el Excel).
 
 Se arman dos versiones del mismo libro: la de Excel (para revisarla en la PC: filtro en el ICI,
 paneles fijos) y la de imprimir, que se pasa a PDF. En la de imprimir cada hoja ya viene cortada
@@ -573,16 +574,18 @@ def _signature(ws, r, widths, page=None):
 # ── Vencimientos ───────────────────────────────────────────────────────────────
 
 
-def expiry_groups(rows, end: dt.date):
-    """Los cuatro grupos del reporte de vencimientos: (título, tinta, tinte, filas, campo de cantidad)."""
+def expiry_groups(rows, end: dt.date, include_3_to_6=True):
+    """Los grupos del reporte de vencimientos: (título, tinta, tinte, filas, campo de cantidad).
+    Sin `include_3_to_6` no va el grupo «entre 3 y 6 meses»."""
     months = lambda d: (d - end).days / 30.4375
     with_stock = [r for r in rows if r["STOCK_FIN"] > 0 and r["FEC_EXP"]]
-    return [
+    groups = [
         ("SALIERON POR VENCIMIENTO EN EL MES", INKT["venc"], TINT["venc"], [r for r in rows if r["VENCIDO"] > 0], "VENCIDO"),
         ("VENCIDOS QUE AÚN TIENEN STOCK", INKT["venc"], TINT["venc"], [r for r in with_stock if r["FEC_EXP"] <= end], "STOCK_FIN"),
         ("VENCEN EN LOS PRÓXIMOS 3 MESES", INKT["dev"], TINT["dev"], [r for r in with_stock if 0 < months(r["FEC_EXP"]) <= 3], "STOCK_FIN"),
         ("VENCEN ENTRE 3 Y 6 MESES", "7A5B00", "FFF8E1", [r for r in with_stock if 3 < months(r["FEC_EXP"]) <= 6], "STOCK_FIN"),
     ]
+    return groups if include_3_to_6 else groups[:-1]
 
 
 def _section(ws, page, r, nc, title, header_row, first_height):
@@ -617,7 +620,9 @@ def expiry_sheet(wb, report: IciReport, printable=False):
     end = report.hasta
     _title(ws, nc, "REPORTE DE VENCIMIENTOS", report,
            f"{report.title}  ·  Meses contados desde el cierre del mes ({end:%d/%m/%Y})")
-    groups = expiry_groups(report.rows, end)
+    # En el PDF, los próximos vencimientos solo hasta 3 meses; el Excel trae también los de 3 a 6
+    # (pedido del usuario, 2026-10-20).
+    groups = expiry_groups(report.rows, end, include_3_to_6=not printable)
 
     r = 4
     box(ws, r, 1, r, 5, "RESUMEN", fnt(7.5, True, WHITE), NAVY, LEFT)
@@ -629,7 +634,7 @@ def expiry_sheet(wb, report: IciReport, printable=False):
         box(ws, rr, 6, rr, 7, len(items), fnt(9, True, ink), tint, CENTER, fmt=INT0)
         box(ws, rr, 8, rr, 10, sum(t["PRECIO"] * t[qf] for t in items), fnt(9, True, ink), tint, RIGHT, fmt=MONEY)
         ws.row_dimensions[rr].height = 17
-    r += 6
+    r += len(groups) + 2
     for title, ink, tint, items, qf in groups:
         header = ["SALIÓ" if (h == "STOCK" and qf == "VENCIDO") else h for h, _ in cols]
         ordered = sorted(items, key=lambda t: (t["FEC_EXP"] or end, -t["PRECIO"] * t[qf]))
@@ -1351,6 +1356,8 @@ def control_sheet(wb, report: IciReport, printable=False):
     page.setup("Control de recetas", report, titles="1:2")
 
 
+SHEETS = ("ICI", "Guías de ingreso", "Ingresos internos", "Salidas por devolución", "Vencimientos",
+          "Recetas diarias", "Control de recetas", "Alertas de farmacia", "Lotes sin movimiento")
 EXCEL_ONLY = ("Alertas de farmacia", "Lotes sin movimiento")   # hojas que no van al PDF
 
 
