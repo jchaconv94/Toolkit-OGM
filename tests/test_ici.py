@@ -411,6 +411,26 @@ class IciExcelTests(unittest.TestCase):
         self.assertNotIn("04 Distribución", cells)
         self.assertIn("Intervención sanitaria", cells)
 
+    def test_pdf_expiries_only_up_to_3_months(self):
+        # Cierre 31/08/2026: L2 vence en ~2 meses y L3 en ~4 meses.
+        rows = [tformdet("06502F01", "001", "L2", SALDO=10, FEC_EXP=date(2026, 10, 31)),
+                tformdet("06502F01", "002", "L3", SALDO=20, FEC_EXP=date(2026, 12, 31))]
+        m = month(rows)
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+
+        def texts(printable):
+            ws = build_workbook(report, printable=printable)[0]["Vencimientos"]
+            return [c.value for row in ws.iter_rows() for c in row if c.value is not None]
+
+        excel, pdf = texts(False), texts("toolkit")
+        self.assertIn("VENCEN ENTRE 3 Y 6 MESES  ·  1 lotes", excel)
+        self.assertIn("L3", excel)
+        self.assertIn("VENCEN EN LOS PRÓXIMOS 3 MESES  ·  1 lotes", pdf)
+        self.assertIn("L2", pdf)
+        self.assertFalse(any("3 Y 6" in str(v) or "3 y 6" in str(v) for v in pdf))
+        self.assertNotIn("L3", pdf)
+
     def test_excel_has_the_column_letters_with_filter(self):
         wb, _ = build_workbook(self._report())
         ws = wb["ICI"]
