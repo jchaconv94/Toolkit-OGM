@@ -762,13 +762,14 @@ def alerts_sheet(wb, report: IciReport, printable=False):
           [[k, v["desc"], v["ff"], v["cons"], v["val"], (v["val"] / total) if total else 0, v["stock"]] for k, v in top],
           "Venta, SIS, intervención sanitaria y demás consumos, en unidades del producto. De mayor a menor cantidad; "
           "el valor, al precio de cada lote.")
-    shown = still[:30]
-    table(f"LOTES SIN MOVIMIENTO  ·  LOS {len(shown)} DE MAYOR VALOR  (de {len(still)} lotes, S/ {still_value:.2f})",
+    # Los de mayor cantidad, no de mayor valor (pedido del usuario, 2026-10-20); a igual stock, el de más valor.
+    shown = sorted(still, key=lambda t: (-t["STOCK_FIN"], -t["STOCK_FIN"] * t["PRECIO"]))[:30]
+    table(f"LOTES SIN MOVIMIENTO  ·  LOS {len(shown)} DE MAYOR CANTIDAD  (de {len(still)} lotes, S/ {still_value:.2f})",
           [("CÓDIGO", 1, 1, None), ("DESCRIPCIÓN", 2, 3, None), ("UNIDAD", 4, 4, None), ("LOTE", 5, 5, None),
            ("VENCE", 6, 6, "dd/mm/yyyy"), ("STOCK", 7, 7, INT0), ("PRECIO S/", 8, 8, PRICE), ("VALOR S/", 9, 10, "0.00")],
           [[t["CODIGO_MED"], t["DESC"], t["MEDFF"], t["MEDLOTE"], _as_datetime(t["FEC_EXP"]), t["STOCK_FIN"], t["PRECIO"],
             t["STOCK_FIN"] * t["PRECIO"]] for t in shown],
-          "Lotes con stock que no tuvieron ninguna entrada ni salida en el mes. De mayor a menor valor. "
+          "Lotes con stock que no tuvieron ninguna entrada ni salida en el mes. De mayor a menor stock. "
           "La lista completa está en la hoja «Lotes sin movimiento».")
     page.setup("Alertas de farmacia", report, titles="1:2")
     return {"desabastecidos": len(out), "sin_movimiento": len(still), "sin_movimiento_valor": still_value,
