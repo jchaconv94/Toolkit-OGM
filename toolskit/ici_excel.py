@@ -2,7 +2,7 @@
 
 Hojas, en el orden de `SHEETS`: ICI (para imprimir horizontal y firmar), Guías de ingreso, Ingresos
 internos, Salidas por devolución, Vencimientos, Recetas diarias, Control de recetas, Alertas de
-farmacia y Lotes sin movimiento (estas dos, solo en el Excel).
+farmacia y Productos sin rotar (estas dos, solo en el Excel).
 
 Se arman dos versiones del mismo libro: la de Excel (para revisarla en la PC: filtro en el ICI,
 paneles fijos) y la de imprimir, que se pasa a PDF. En la de imprimir cada hoja ya viene cortada
@@ -669,28 +669,36 @@ def expiry_sheet(wb, report: IciReport, printable=False):
     page.setup("Vencimientos", report, titles="1:2")
 
 
-# ── Alertas de farmacia y lotes sin movimiento ─────────────────────────────────
+# ── Alertas de farmacia y productos sin rotar ──────────────────────────────────
 
 
 def alerts(rows):
-    """(desabastecidos, 10 de mayor consumo en cantidad, consumo total en soles, lotes sin movimiento)."""
+    """(desabastecidos, 10 de mayor consumo en cantidad, consumo total en soles, productos sin rotar)."""
     products = collections.OrderedDict()
     for t in rows:
         p = products.setdefault(t["CODIGO_MED"], {"desc": t["DESC"], "ff": t["MEDFF"], "cons": 0.0, "val": 0.0,
-                                                   "stock": 0.0, "saldo": 0.0, "ing": 0.0})
+                                                   "stock": 0.0, "saldo": 0.0, "ing": 0.0, "sal": 0.0,
+                                                   "stock_val": 0.0, "lots": 0, "vence": None})
         p["cons"] += consumo(t)
         p["val"] += consumo(t) * t["PRECIO"]
         p["stock"] += t["STOCK_FIN"]
         p["saldo"] += t["SALDO"]
         p["ing"] += t["INGRE"] + t["REINGRE"] + t["ING_REGULA"]
+        p["sal"] += t["TOTAL"]
+        if t["STOCK_FIN"] > 0:
+            p["stock_val"] += t["STOCK_FIN"] * t["PRECIO"]
+            p["lots"] += 1
+            if isinstance(t["FEC_EXP"], dt.date) and (p["vence"] is None or t["FEC_EXP"] < p["vence"]):
+                p["vence"] = t["FEC_EXP"]
     out = sorted(((k, v) for k, v in products.items() if v["cons"] > 0 and v["stock"] <= 0), key=lambda kv: -kv[1]["cons"])
     total = sum(v["val"] for v in products.values())
     # En cantidad, no en soles (pedido del usuario, 2026-10-20); a igual cantidad, el de más valor.
     top = sorted((kv for kv in products.items() if kv[1]["cons"] > 0), key=lambda kv: (-kv[1]["cons"], -kv[1]["val"]))[:10]
-    # Lotes sin movimiento de mayor a menor cantidad, no por valor (pedido del usuario, 2026-10-20);
-    # a igual stock, el de más valor. Así salen en Alertas y en la hoja «Lotes sin movimiento».
-    still = sorted((t for t in rows if t["STOCK_FIN"] > 0 and not (t["INGRE"] + t["REINGRE"] + t["ING_REGULA"] + t["TOTAL"])),
-                   key=lambda t: (-t["STOCK_FIN"], -t["STOCK_FIN"] * t["PRECIO"]))
+    # Sin rotar es el producto con todos sus lotes, no cada lote: un lote parado mientras se usa otro
+    # del mismo producto hacía creer que el producto no rotaba (pedido del usuario, 2026-10-20).
+    # De mayor a menor stock; a igual stock, el de más valor.
+    still = sorted(((k, v) for k, v in products.items() if v["stock"] > 0 and not (v["ing"] or v["sal"])),
+                   key=lambda kv: (-kv[1]["stock"], -kv[1]["stock_val"]))
     return out, top, total, still
 
 
@@ -704,13 +712,13 @@ def alerts_sheet(wb, report: IciReport, printable=False):
     page = Page(ws, widths, printable)
     _title(ws, nc, "ALERTAS DE FARMACIA", report, f"{report.title}  ·  Al cierre del {report.hasta:%d/%m/%Y}", split=3)
     out, top, total, still = alerts(report.rows)
-    still_value = sum(t["STOCK_FIN"] * t["PRECIO"] for t in still)
+    still_value = sum(v["stock_val"] for _, v in still)
     share = sum(v["val"] for _, v in top) / total * 100 if total else 0
 
     r = 4
     cards = [("PRODUCTOS DESABASTECIDOS", f"{len(out)}", "consumo en el mes y stock final cero", INKT["venc"], TINT["venc"]),
              ("10 DE MAYOR CONSUMO", f"{share:.1f} %", f"del consumo del mes (S/ {total:.2f})", INKT["cons"], TINT["cons"]),
-             ("LOTES SIN MOVIMIENTO", f"{len(still)}", f"S/ {still_value:.2f} en stock sin entradas ni salidas", INKT["dev"], TINT["dev"])]
+             ("PRODUCTOS SIN ROTAR", f"{len(still)}", f"S/ {still_value:.2f} en stock sin entradas ni salidas", INKT["dev"], TINT["dev"])]
     for (title, value, hint, ink, tint), (c1, c2) in zip(cards, [(1, 2), (3, 6), (7, 10)]):
         box(ws, r, c1, r, c2, title, fnt(7.5, True, ink), tint, CENTER)
         box(ws, r + 1, c1, r + 1, c2, value, fnt(14, True, ink), tint, CENTER)
@@ -765,27 +773,26 @@ def alerts_sheet(wb, report: IciReport, printable=False):
           "Venta, SIS, intervención sanitaria y demás consumos, en unidades del producto. De mayor a menor cantidad; "
           "el valor, al precio de cada lote.")
     shown = still[:30]
-    table(f"LOTES SIN MOVIMIENTO  ·  LOS {len(shown)} DE MAYOR CANTIDAD  (de {len(still)} lotes, S/ {still_value:.2f})",
-          [("CÓDIGO", 1, 1, None), ("DESCRIPCIÓN", 2, 3, None), ("UNIDAD", 4, 4, None), ("LOTE", 5, 5, None),
-           ("VENCE", 6, 6, "dd/mm/yyyy"), ("STOCK", 7, 7, INT0), ("PRECIO S/", 8, 8, PRICE), ("VALOR S/", 9, 10, "0.00")],
-          [[t["CODIGO_MED"], t["DESC"], t["MEDFF"], t["MEDLOTE"], _as_datetime(t["FEC_EXP"]), t["STOCK_FIN"], t["PRECIO"],
-            t["STOCK_FIN"] * t["PRECIO"]] for t in shown],
-          "Lotes con stock que no tuvieron ninguna entrada ni salida en el mes. De mayor a menor stock. "
-          "La lista completa está en la hoja «Lotes sin movimiento».")
+    table(f"PRODUCTOS SIN ROTAR  ·  LOS {len(shown)} DE MAYOR CANTIDAD  (de {len(still)} productos, S/ {still_value:.2f})",
+          [("CÓDIGO", 1, 1, None), ("DESCRIPCIÓN", 2, 3, None), ("UNIDAD", 4, 4, None), ("LOTES", 5, 5, INT0),
+           ("VENCE PRIMERO", 6, 6, "dd/mm/yyyy"), ("STOCK", 7, 8, INT0), ("VALOR S/", 9, 10, "0.00")],
+          [[k, v["desc"], v["ff"], v["lots"], _as_datetime(v["vence"]), v["stock"], v["stock_val"]] for k, v in shown],
+          "Productos con stock que en el mes no tuvieron ninguna entrada ni salida en ninguno de sus lotes: si otro lote "
+          "del producto se movió, no sale aquí. De mayor a menor stock. La lista completa está en la hoja «Productos sin rotar».")
     page.setup("Alertas de farmacia", report, titles="1:2")
-    return {"desabastecidos": len(out), "sin_movimiento": len(still), "sin_movimiento_valor": still_value,
+    return {"desabastecidos": len(out), "sin_rotar": len(still), "sin_rotar_valor": still_value,
             "top10": share}, still, still_value
 
 
 def still_sheet(wb, report: IciReport, still, still_value, printable=False):
-    ws = wb.create_sheet("Lotes sin movimiento")
+    ws = wb.create_sheet("Productos sin rotar")
     ws.sheet_view.showGridLines = False
-    header = ["CÓDIGO", "DESCRIPCIÓN", "UNIDAD", "LOTE", "VENCE", "STOCK", "PRECIO S/", "VALOR S/"]
-    widths = [8, 52, 8, 14, 11, 9, 10, 12]
+    header = ["CÓDIGO", "DESCRIPCIÓN", "UNIDAD", "LOTES", "VENCE PRIMERO", "STOCK", "VALOR S/"]
+    widths = [8, 52, 8, 8, 13, 10, 12]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[L(i)].width = w
     page = Page(ws, widths, printable)
-    box(ws, 1, 1, 1, len(header), f"LOTES SIN MOVIMIENTO  ·  {month_title(report)}  ·  {len(still)} lotes  ·  S/ {still_value:.2f}",
+    box(ws, 1, 1, 1, len(header), f"PRODUCTOS SIN ROTAR  ·  {month_title(report)}  ·  {len(still)} productos  ·  S/ {still_value:.2f}",
         fnt(11, True, WHITE), NAVY, LEFT, border=False)
     ws.row_dimensions[1].height = 22
 
@@ -794,23 +801,23 @@ def still_sheet(wb, report: IciReport, still, still_value, printable=False):
         return rr + 1
 
     r = header_row(2)
-    for k, t in enumerate(still):
-        height = row_height(t["DESC"], 52, 8)
+    for k, (code, v) in enumerate(still):
+        height = row_height(v["desc"], 52, 8)
         r = page.keep(r, height, header_row)
-        values = [t["CODIGO_MED"], t["DESC"], t["MEDFF"], t["MEDLOTE"], _as_datetime(t["FEC_EXP"]), t["STOCK_FIN"], t["PRECIO"], f"=F{r}*G{r}"]
-        for i, v in enumerate(values, 1):
-            c = ws.cell(r, i, v)
-            c.font, c.border = fnt(8, bold=i == 8), BOX
-            c.alignment = WRAP_LEFT if i == 2 else (NUM if i >= 5 else MID)
-            c.number_format = {5: "dd/mm/yyyy", 6: INT0, 7: PRICE, 8: "0.00"}.get(i, "General")
+        values = [code, v["desc"], v["ff"], v["lots"], _as_datetime(v["vence"]), v["stock"], v["stock_val"]]
+        for i, value in enumerate(values, 1):
+            c = ws.cell(r, i, value)
+            c.font, c.border = fnt(8, bold=i == 7), BOX
+            c.alignment = WRAP_LEFT if i == 2 else (NUM if i >= 4 else MID)
+            c.number_format = {4: INT0, 5: "dd/mm/yyyy", 6: INT0, 7: "0.00"}.get(i, "General")
             if k % 2:
                 c.fill = fill(ZEBRA)
         ws.row_dimensions[r].height = height
         r += 1
     if not printable:
         ws.freeze_panes = "A3"
-        ws.auto_filter.ref = f"A2:H{max(r - 1, 3)}"
-    page.setup("Lotes sin movimiento", report, titles="1:2")
+        ws.auto_filter.ref = f"A2:G{max(r - 1, 3)}"
+    page.setup("Productos sin rotar", report, titles="1:2")
 
 
 # ── Guías de ingreso e ingresos internos ───────────────────────────────────────
@@ -1361,14 +1368,14 @@ def control_sheet(wb, report: IciReport, printable=False):
 
 
 SHEETS = ("ICI", "Guías de ingreso", "Ingresos internos", "Salidas por devolución", "Vencimientos",
-          "Recetas diarias", "Control de recetas", "Alertas de farmacia", "Lotes sin movimiento")
-EXCEL_ONLY = ("Alertas de farmacia", "Lotes sin movimiento")   # hojas que no van al PDF
+          "Recetas diarias", "Control de recetas", "Alertas de farmacia", "Productos sin rotar")
+EXCEL_ONLY = ("Alertas de farmacia", "Productos sin rotar")   # hojas que no van al PDF
 
 
 def build_workbook(report: IciReport, printable: bool | str = False) -> tuple[Workbook, dict]:
     """Arma el libro completo; `printable` es la versión que se pasa a PDF. Devuelve (libro,
     cifras para la consola). Orden del usuario (2026-10-19): ICI, guías de ingreso, ingresos internos,
-    salidas por devolución, vencimientos, recetas diarias y control de recetas; alertas y lotes sin movimiento van al final y solo en el
+    salidas por devolución, vencimientos, recetas diarias y control de recetas; alertas y productos sin rotar van al final y solo en el
     Excel, no en el PDF."""
     wb = Workbook()
     products = {**report.products, **{r["CODIGO_MED"]: (r["DESC"], r["MEDFF"]) for r in report.rows}}
@@ -1448,7 +1455,7 @@ def write_reports(month, out_dir: str, consolidated: bool = True, per_pharmacy: 
         wb.save(path)
         paths.append(path)
         log(f"✅ {os.path.basename(path)}  ·  {len(report.rows)} lotes · {summary['desabastecidos']} desabastecidos · "
-            f"{summary['sin_movimiento']} lotes sin movimiento")
+            f"{summary['sin_rotar']} productos sin rotar")
         if exporter is not None:
             pdf_path = path[:-len(".xlsx")] + ".pdf"
             try:
