@@ -474,8 +474,9 @@ class IciExcelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             pdf = str(Path(tmp) / "ici.pdf")
             ici_render.render_workbook(wb, pdf)
-            page = fitz.open(pdf)[0]
-            title = next(w for w in page.get_text("words") if w[4] == "RESPONSABLE")
+            doc = fitz.open(pdf)        # se cierra antes de borrar la carpeta: Windows no borra un archivo abierto
+            title = next(w for w in doc[0].get_text("words") if w[4] == "RESPONSABLE")
+            doc.close()
             bottom = ici_render.A4_LANDSCAPE[1] - wb["ICI"].page_margins.bottom * 72
             self.assertGreater(title[3], bottom - 25)
         # En el Excel siguen pegadas a la tabla.
