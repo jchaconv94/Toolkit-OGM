@@ -447,7 +447,7 @@ class IciExcelTests(unittest.TestCase):
         listed = [v for v in cells[start:] if v in ("001", "002")]
         self.assertEqual(listed[:2], ["001", "002"])
 
-    def test_still_lots_in_alerts_are_by_quantity(self):
+    def test_still_lots_are_by_quantity(self):
         # Sin movimiento: 001 con 500 unidades a S/ 0.10 (S/ 50); 002 con 3 unidades a S/ 100 (S/ 300).
         rows = [tformdet("06502F01", "001", "L1", precio=0.1, SALDO=500),
                 tformdet("06502F01", "002", "L2", precio=100.0, SALDO=3)]
@@ -458,6 +458,9 @@ class IciExcelTests(unittest.TestCase):
         cells = [c.value for row in ws.iter_rows() for c in row if c.value is not None]
         start = next(i for i, v in enumerate(cells) if str(v).startswith("LOTES SIN MOVIMIENTO  ·  LOS 2 DE MAYOR CANTIDAD"))
         self.assertEqual([v for v in cells[start:] if v in ("001", "002")], ["001", "002"])
+        # La hoja con la lista completa, en el mismo orden.
+        full = build_workbook(report)[0]["Lotes sin movimiento"]
+        self.assertEqual([full.cell(r, 1).value for r in (3, 4)], ["001", "002"])
 
     def test_excel_has_the_column_letters_with_filter(self):
         wb, _ = build_workbook(self._report())

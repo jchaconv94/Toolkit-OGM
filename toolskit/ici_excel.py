@@ -687,8 +687,10 @@ def alerts(rows):
     total = sum(v["val"] for v in products.values())
     # En cantidad, no en soles (pedido del usuario, 2026-10-20); a igual cantidad, el de más valor.
     top = sorted((kv for kv in products.items() if kv[1]["cons"] > 0), key=lambda kv: (-kv[1]["cons"], -kv[1]["val"]))[:10]
+    # Lotes sin movimiento de mayor a menor cantidad, no por valor (pedido del usuario, 2026-10-20);
+    # a igual stock, el de más valor. Así salen en Alertas y en la hoja «Lotes sin movimiento».
     still = sorted((t for t in rows if t["STOCK_FIN"] > 0 and not (t["INGRE"] + t["REINGRE"] + t["ING_REGULA"] + t["TOTAL"])),
-                   key=lambda t: -t["STOCK_FIN"] * t["PRECIO"])
+                   key=lambda t: (-t["STOCK_FIN"], -t["STOCK_FIN"] * t["PRECIO"]))
     return out, top, total, still
 
 
@@ -762,8 +764,7 @@ def alerts_sheet(wb, report: IciReport, printable=False):
           [[k, v["desc"], v["ff"], v["cons"], v["val"], (v["val"] / total) if total else 0, v["stock"]] for k, v in top],
           "Venta, SIS, intervención sanitaria y demás consumos, en unidades del producto. De mayor a menor cantidad; "
           "el valor, al precio de cada lote.")
-    # Los de mayor cantidad, no de mayor valor (pedido del usuario, 2026-10-20); a igual stock, el de más valor.
-    shown = sorted(still, key=lambda t: (-t["STOCK_FIN"], -t["STOCK_FIN"] * t["PRECIO"]))[:30]
+    shown = still[:30]
     table(f"LOTES SIN MOVIMIENTO  ·  LOS {len(shown)} DE MAYOR CANTIDAD  (de {len(still)} lotes, S/ {still_value:.2f})",
           [("CÓDIGO", 1, 1, None), ("DESCRIPCIÓN", 2, 3, None), ("UNIDAD", 4, 4, None), ("LOTE", 5, 5, None),
            ("VENCE", 6, 6, "dd/mm/yyyy"), ("STOCK", 7, 7, INT0), ("PRECIO S/", 8, 8, PRICE), ("VALOR S/", 9, 10, "0.00")],
