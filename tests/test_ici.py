@@ -295,6 +295,42 @@ class IciDataTests(unittest.TestCase):
         self.assertAlmostEqual(daily[4][1], 3.75)
         self.assertEqual(sum(sum(c) for c, _ in daily.values()), 2)
 
+    def test_recipe_control_lists_cancelled_and_missing_fua(self):
+        # Cada receta anulada y cada receta sin FUA, del SIS y de intervención sanitaria si allí lo registran.
+        from datetime import datetime
+        base = {"ALMCOD": "06513", "ALMCODSUB": "0651301", "VTATIP": "M", "VTATIPODOC": "26"}
+        ventas = [
+            {**base, "VTASIT": "1", "VTAFORMPAG": "03", "VTAFECHREG": datetime(2026, 8, 4, 9, 15), "VTATOTAL": 2.5,
+             "VTANUMEDOC": "B001-1", "FUA": "", "NUMRCTA": "R-1", "VENCOD": "JPE"},
+            {**base, "VTASIT": "1", "VTAFORMPAG": "03", "VTAFECHREG": datetime(2026, 8, 4, 10, 0), "VTATOTAL": 3.0,
+             "VTANUMEDOC": "B001-2", "FUA": "12345-6"},
+            {**base, "VTASIT": "1", "VTAFORMPAG": "20", "VTAFECHREG": datetime(2026, 8, 5, 8, 0), "VTATOTAL": 1.0,
+             "VTANUMEDOC": "B001-3", "FUA": "777"},
+            {**base, "VTASIT": "1", "VTAFORMPAG": "20", "VTAFECHREG": datetime(2026, 8, 5, 8, 30), "VTATOTAL": 1.5,
+             "VTANUMEDOC": "B001-4", "FUA": "000"},
+            {**base, "VTASIT": "1", "VTAFORMPAG": "01", "VTAFECHREG": datetime(2026, 8, 6, 8, 30), "VTATOTAL": 4.0,
+             "VTANUMEDOC": "B001-5", "FUA": ""},                                  # venta: no lleva FUA
+            {**base, "VTASIT": "0", "VTAFORMPAG": "03", "VTAFECHREG": datetime(2026, 8, 7, 11, 3), "VTATOTAL": 22.1,
+             "VTANUMEDOC": "B001-6", "VTAMOTANUL": "DUPLICADO", "VTAUSUANUL": "MRA",
+             "VTAFECANUL": datetime(2026, 8, 7, 11, 20)},
+        ]
+        m = month([tformdet("06513", "001", "L1", SALDO=10, SIS=2)], ventas=ventas)
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        self.assertEqual([x.comprobante for x in report.anuladas], ["B001-6"])
+        self.assertEqual([x.comprobante for x in report.sin_fua], ["B001-1", "B001-4"])
+        self.assertEqual(report.fua_tipos, ["SIS", "INTERSAN"])
+        # La anulada no cuenta como receta del día.
+        daily = {d.day: counts for d, counts, _, _ in report.recetas_diarias}
+        self.assertEqual(daily[7][ici_data.CONSUMO.index("SIS")], 0)
+        cells = [str(c.value) for row in build_workbook(report)[0]["Control de recetas"].iter_rows()
+                 for c in row if c.value is not None]
+        self.assertIn("DUPLICADO", cells)
+        self.assertIn("07/08/2026 11:20", cells)
+        self.assertIn("09:15", cells)
+        self.assertIn("R-1", cells)
+        self.assertFalse(any("B001-5" in v for v in cells))
+
     def test_warns_when_no_movement_is_found(self):
         m = month([tformdet("06513", "001", "L1", SALDO=10, INGRE=20)],
                   [head("E", "1", "04", "030S0501", "99999XX01")], [detail("E", "1", "001", "L1", 20)])
@@ -321,10 +357,10 @@ class IciExcelTests(unittest.TestCase):
         wb, summary = build_workbook(self._report())
         # Orden del usuario; alertas y lotes sin movimiento al final y solo en el Excel.
         self.assertEqual(wb.sheetnames, ["ICI", "Guías de ingreso", "Ingresos internos", "Salidas por devolución", "Vencimientos",
-                                         "Recetas diarias", "Alertas de farmacia", "Lotes sin movimiento"])
+                                         "Recetas diarias", "Control de recetas", "Alertas de farmacia", "Lotes sin movimiento"])
         printable = build_workbook(self._report(), printable="toolkit")[0]
         self.assertEqual(printable.sheetnames, ["ICI", "Guías de ingreso", "Ingresos internos", "Salidas por devolución", "Vencimientos",
-                                                "Recetas diarias"])
+                                                "Recetas diarias", "Control de recetas"])
         cells = [c.value for row in printable["ICI"].iter_rows() for c in row if isinstance(c.value, str)]
         self.assertIn("RESPONSABLE DE FARMACIA", cells)
         self.assertFalse(any(v in ("Nombre:", "DNI:") for v in cells))

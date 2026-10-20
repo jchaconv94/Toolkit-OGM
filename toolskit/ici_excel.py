@@ -1208,13 +1208,112 @@ def recetas_sheet(wb, report: IciReport, printable=False):
     page.setup("Recetas diarias", report, titles="1:2")
 
 
+TIPO_ATENCION = {"VENTA": "Venta", "SIS": "S.I.S.", "INTERSAN": "Interv. sanitaria", "EXO": "Exoneración",
+                 "SOAT": "SOAT", "CREDHOSP": "Crédito hospitalario", "OTR_CONV": "Otros convenios",
+                 "DEFNAC": "Defensa nacional", "FAC_PERD": "Factor de pérdida"}
+
+
+def _moment(value):
+    """(fecha, hora) de una venta: la hora solo si el SISMED la guardó."""
+    if isinstance(value, dt.datetime):
+        return _as_datetime(value.date()), (value.strftime("%H:%M") if value.time() != dt.time() else "—")
+    if isinstance(value, dt.date):
+        return _as_datetime(value), "—"
+    return None, "—"
+
+
+def control_sheet(wb, report: IciReport, printable=False):
+    """Control de recetas (pedido del usuario, 2026-10-20): cada receta anulada del mes y cada receta sin
+    FUA (del SIS y de los tipos de atención que también lo registran), una por una."""
+    ws = wb.create_sheet("Control de recetas")
+    ws.sheet_view.showGridLines = False
+    widths = [10, 7, 16, 17, 10, 34, 11, 14]
+    if report.consolidated:
+        widths.append(9)
+    nc = len(widths)
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[L(i)].width = w
+    page = Page(ws, widths, printable)
+    anuladas, sin_fua = report.anuladas, report.sin_fua
+    tipos = " y ".join(TIPO_ATENCION.get(t, t) for t in report.fua_tipos) or "S.I.S."
+    _title(ws, nc, "CONTROL DE RECETAS", report,
+           f"{report.title}  ·  Recetas anuladas y recetas sin FUA ({tipos}), de las ventas del SISMED", split=3)
+    ws.row_dimensions[3].height = 6
+    if not report.ventas:
+        box(ws, 4, 1, 4, nc, "Sin datos: el SISMED no tiene las ventas del mes (TVENTA).", fnt(7.5, False, MUTED, True), None, LEFT)
+        page.setup("Control de recetas", report, titles="1:2")
+        return
+    # Indicadores
+    half = nc // 2
+    kpis = [((1, half), "RECETAS ANULADAS", len(anuladas), f"S/ {sum(x.total for x in anuladas):.2f}  ·  no cuentan en el ICI", "venc"),
+            ((half + 1, nc), "RECETAS SIN FUA", len(sin_fua),
+             "  ·  ".join(f"{TIPO_ATENCION.get(t, t)} {sum(1 for x in sin_fua if x.column == t)}" for t in report.fua_tipos), "dev")]
+    for (c1, c2), label, value, hint, tone in kpis:
+        box(ws, 4, c1, 4, c2, label, fnt(7.5, True, INKT[tone]), TINT[tone], CENTER)
+        box(ws, 5, c1, 5, c2, value, fnt(15, True, INKT[tone]), TINT[tone], CENTER, fmt='0;-0;"0"')
+        box(ws, 6, c1, 6, c2, hint, fnt(7, False, INKT[tone]), TINT[tone], CENTER)
+    ws.row_dimensions[4].height, ws.row_dimensions[5].height, ws.row_dimensions[6].height = 15, 24, 13
+    ws.row_dimensions[7].height = 8
+
+    def table(r, title, header, rows, empty):
+        def head(rr):
+            for i, h in enumerate(header, 1):
+                box(ws, rr, i, rr, i, h, fnt(7, True, NAVY), SOFT, CENTER)
+            ws.row_dimensions[rr].height = 18
+            return rr + 1
+
+        def repeat(rr):
+            box(ws, rr, 1, rr, nc, f"{title}  ·  continuación", fnt(7.5, True, WHITE), NAVY, LEFT)
+            ws.row_dimensions[rr].height = 15
+            return head(rr + 1)
+
+        r = page.keep(r, 15 + 18 + 13.5)
+        box(ws, r, 1, r, nc, title, fnt(7.5, True, WHITE), NAVY, LEFT)
+        ws.row_dimensions[r].height = 15
+        r = head(r + 1)
+        if not rows:
+            box(ws, r, 1, r, nc, empty, fnt(7.5, False, MUTED, True), None, LEFT)
+            return r + 2
+        for k, values in enumerate(rows):
+            r = page.keep(r, 13.5, repeat)
+            for i, v in enumerate(values, 1):
+                money = header[i - 1] == "VALOR S/"
+                box(ws, r, i, r, i, v, fnt(7.5, money), ZEBRA if k % 2 else None,
+                    WRAP_LEFT if header[i - 1] == "MOTIVO DE ANULACIÓN" else (NUM if money else MID),
+                    fmt=MONEY if money else ("dd/mm/yyyy" if i == 1 else None))
+            ws.row_dimensions[r].height = 13.5
+            r += 1
+        return r + 1
+
+    farmacia = ["FARMACIA"] if report.consolidated else []
+    rows = []
+    for x in anuladas:
+        fecha, hora = _moment(x.fecha)
+        anulada = (x.anulada_el.strftime("%d/%m/%Y %H:%M") if isinstance(x.anulada_el, dt.datetime)
+                   else x.anulada_el.strftime("%d/%m/%Y") if isinstance(x.anulada_el, dt.date) else "—")
+        rows.append([fecha, hora, x.comprobante or x.numero, TIPO_ATENCION.get(x.column, x.column), x.total,
+                     x.motivo or "—", x.anulo or "—", anulada] + ([x.code[-3:]] if farmacia else []))
+    r = table(8, f"RECETAS ANULADAS  ·  {len(anuladas)}  ·  S/ {sum(x.total for x in anuladas):.2f}",
+              ["FECHA", "HORA", "COMPROBANTE", "TIPO DE ATENCIÓN", "VALOR S/", "MOTIVO DE ANULACIÓN", "ANULÓ", "ANULADA EL"]
+              + farmacia, rows, "Sin recetas anuladas en el mes.")
+    rows = []
+    for x in sin_fua:
+        fecha, hora = _moment(x.fecha)
+        rows.append([fecha, hora, x.comprobante or x.numero, TIPO_ATENCION.get(x.column, x.column), x.total,
+                     x.receta or "—", x.usuario or "—", x.numero or "—"] + ([x.code[-3:]] if farmacia else []))
+    table(r, f"RECETAS SIN FUA  ·  {len(sin_fua)}  ·  {tipos}",
+          ["FECHA", "HORA", "COMPROBANTE", "TIPO DE ATENCIÓN", "VALOR S/", "N° DE RECETA", "REGISTRÓ", "N° DE VENTA"]
+          + farmacia, rows, "Todas las recetas tienen su FUA.")
+    page.setup("Control de recetas", report, titles="1:2")
+
+
 EXCEL_ONLY = ("Alertas de farmacia", "Lotes sin movimiento")   # hojas que no van al PDF
 
 
 def build_workbook(report: IciReport, printable: bool | str = False) -> tuple[Workbook, dict]:
     """Arma el libro completo; `printable` es la versión que se pasa a PDF. Devuelve (libro,
     cifras para la consola). Orden del usuario (2026-10-19): ICI, guías de ingreso, ingresos internos,
-    salidas por devolución, vencimientos y recetas diarias; alertas y lotes sin movimiento van al final y solo en el
+    salidas por devolución, vencimientos, recetas diarias y control de recetas; alertas y lotes sin movimiento van al final y solo en el
     Excel, no en el PDF."""
     wb = Workbook()
     products = {**report.products, **{r["CODIGO_MED"]: (r["DESC"], r["MEDFF"]) for r in report.rows}}
@@ -1224,6 +1323,7 @@ def build_workbook(report: IciReport, printable: bool | str = False) -> tuple[Wo
     returns_sheet(wb, report, products, printable)
     expiry_sheet(wb, report, printable)
     recetas_sheet(wb, report, printable)
+    control_sheet(wb, report, printable)
     summary, still, still_value = alerts_sheet(wb, report, printable)
     still_sheet(wb, report, still, still_value, printable)
     if printable:

@@ -207,11 +207,11 @@ class IciMonth:
     warnings: list[str] = field(default_factory=list)
     concepts: dict[str, str] = field(default_factory=dict)   # CCTCODIGO → nombre (MTIPOCONP)
     products: dict = field(default_factory=dict)             # código → (descripción, unidad)
-    sales: list | None = None    # TVENTA: (código del ICI, fecha, columna de consumo, valor); None sin TVENTA
+    sales: list | None = None    # TVENTA: las ventas del mes (Sale), vigentes y anuladas; None sin TVENTA
 
     @property
     def has_dispensations(self) -> bool:
-        return self.has_movements or bool(self.sales)
+        return self.has_movements or any(sale.activa for sale in self.sales or [])
 
 
 @dataclass
@@ -237,6 +237,10 @@ class IciReport:
     products: dict = field(default_factory=dict)            # código → (descripción, unidad)
     valores: list | None = None                             # consumo en soles según el SISMED (TFORMATO)
     devoluciones: list = field(default_factory=list)        # salidas que el ICI pone en DEVOLUCIÓN
+    anuladas: list = field(default_factory=list)            # recetas anuladas del mes (Sale)
+    sin_fua: list = field(default_factory=list)             # recetas vigentes sin FUA en los tipos que lo llevan
+    fua_tipos: list = field(default_factory=list)           # tipos de atención que llevan FUA
+    ventas: bool = False                                    # el SISMED tiene TVENTA
 
 
 # ── Lectura del SISMED ─────────────────────────────────────────────────────────
@@ -424,28 +428,64 @@ VENTA_FORMAS = {"01": "VENTA", "02": "CREDHOSP", "03": "SIS", "04": "SOAT", "05"
 VENTA_DOCS = ("08", "09", "26", "27", "15")
 
 
-def _load_sales(open_table, codes: set[str], desde: date, hasta: date) -> list | None:
-    """Ventas y dispensaciones vigentes del periodo: (código del ICI, fecha, columna de consumo, valor).
-    Cada una es una receta del ICI. None si el SISMED no tiene TVENTA."""
+@dataclass
+class Sale:
+    """Una venta o dispensación de TVENTA (una receta del ICI), vigente o anulada."""
+    code: str                  # código del ICI (farmacia)
+    fecha: datetime | date
+    column: str                # columna de consumo del ICI (VENTA, SIS, INTERSAN…)
+    total: float
+    activa: bool
+    numero: str = ""           # VTANUMERO
+    comprobante: str = ""      # VTANUMEDOC
+    fua: str = ""
+    receta: str = ""           # n.° de receta digitado (NUMRCTA)
+    usuario: str = ""          # quién la registró (VENCOD)
+    motivo: str = ""           # motivo de anulación
+    anulada_el: datetime | date | None = None
+    anulo: str = ""            # usuario que la anuló
+
+    @property
+    def sin_fua(self) -> bool:
+        return not self.fua.strip(" 0-")
+
+
+def _load_sales(open_table, codes: set[str], desde: date, hasta: date) -> list[Sale] | None:
+    """Ventas y dispensaciones del periodo, vigentes y anuladas, como las lee procesar_ici para las
+    recetas y los valores de TFORMATO. Cada vigente es una receta del ICI. None si el SISMED no tiene
+    TVENTA."""
     table = open_table("TVENTA")
     if table is None:
         return None
     sales = []
     for rec in table:
-        if text(rec.get("VTASIT")) != "1":
+        situ = text(rec.get("VTASIT"))
+        if situ not in ("0", "1"):
             continue
         tip, doc = text(rec.get("VTATIP")).upper(), text(rec.get("VTATIPODOC"))
         if (tip and tip != "M") or (doc and doc not in VENTA_DOCS):
             continue
         column = VENTA_FORMAS.get(text(rec.get("VTAFORMPAG")))
-        fecha = _as_date(rec.get("VTAFECHREG"))
+        moment = rec.get("VTAFECHREG")
+        fecha = _as_date(moment)
         if column is None or not fecha or not (desde <= fecha <= hasta):
             continue
         sub = text(rec.get("ALMCODSUB"))
         owner = _owner(sub, codes) if sub else _owner(rec.get("ALMCOD"), codes)
         if owner:
-            sales.append((owner, fecha, column, num(rec.get("VTATOTAL"))))
+            sales.append(Sale(
+                owner, moment if isinstance(moment, datetime) else fecha, column, num(rec.get("VTATOTAL")),
+                situ == "1", text(rec.get("VTANUMERO")), text(rec.get("VTANUMEDOC")), text(rec.get("FUA")),
+                text(rec.get("NUMRCTA")), text(rec.get("VENCOD")), text(rec.get("VTAMOTANUL")),
+                rec.get("VTAFECANUL") or None, text(rec.get("VTAUSUANUL"))))
     return sales
+
+
+def fua_columns(sales: list[Sale]) -> list[str]:
+    """Tipos de atención que llevan FUA: el SIS siempre, y los que tienen FUA en alguna receta del mes
+    (intervención sanitaria, si allí también lo registran)."""
+    used = {s.column for s in sales if s.activa and not s.sin_fua}
+    return [c for c in CONSUMO if c == "SIS" or c in used]
 
 
 def _load_concepts(open_table) -> dict:
@@ -590,6 +630,19 @@ RECETA_CONCEPTOS = {"10": "VENTA", "11": "VENTA", "12": "VENTA", "13": "SIS", "1
                     "14": "SOAT", "17": "CREDHOSP", "19": "CREDHOSP", "25": "OTR_CONV"}
 
 
+def recipe_control(month: IciMonth, codes: set[str]) -> dict:
+    """Control de recetas: las anuladas y las que no tienen FUA (pedido del usuario, 2026-10-20)."""
+    sales = [sale for sale in month.sales or [] if sale.code in codes]
+    tipos = fua_columns(sales)
+    order = lambda sale: (str(sale.fecha), sale.numero)
+    return {
+        "anuladas": sorted((s for s in sales if not s.activa), key=order),
+        "sin_fua": sorted((s for s in sales if s.activa and s.column in tipos and s.sin_fua), key=order),
+        "fua_tipos": tipos,
+        "ventas": month.sales is not None,
+    }
+
+
 def daily_recetas(month: IciMonth, codes: set[str], desde: date, hasta: date) -> list:
     """Recetas (dispensaciones) por día y tipo de atención: (fecha, cuentas en el orden de CONSUMO, valor,
     valor de cada tipo en el orden de CONSUMO). De TVENTA, como las cuenta el ICI del SISMED; sin TVENTA,
@@ -605,11 +658,11 @@ def daily_recetas(month: IciMonth, codes: set[str], desde: date, hasta: date) ->
         counts[CONSUMO.index(column)] += 1
         values[CONSUMO.index(column)] += total
 
-    sales = [sale for sale in month.sales or [] if sale[0] in codes]
+    sales = [sale for sale in month.sales or [] if sale.code in codes and sale.activa]
     if sales:
-        for _, fecha, column, total in sales:
-            if fecha in days:
-                add(fecha, column, total)
+        for sale in sales:
+            if _as_date(sale.fecha) in days:
+                add(_as_date(sale.fecha), sale.column, sale.total)
     else:
         for m in month.movements:
             column = RECETA_CONCEPTOS.get(m.concepto)
@@ -675,7 +728,7 @@ def pharmacy_report(month: IciMonth, est: Establishment, ph: Pharmacy) -> IciRep
     return IciReport(
         annomes=month.annomes, title=ph.name, ficha=ficha, rows=rows, recetas=list(ph.recetas),
         desde=ph.desde, hasta=ph.hasta, guias=sorted(guias, key=_move_order), internos=internos,
-        devoluciones=return_exits(month, {ph.code}),
+        devoluciones=return_exits(month, {ph.code}), **recipe_control(month, {ph.code}),
         names=month.names, codes={ph.code}, concepts=month.concepts, products=month.products,
         valores=list(ph.valores) if ph.valores else None,
         recetas_diarias=daily_recetas(month, {ph.code}, ph.desde, ph.hasta) if month.has_dispensations else [],
@@ -818,6 +871,7 @@ def consolidated_report(month: IciMonth, est: Establishment) -> IciReport:
     return IciReport(
         annomes=month.annomes, title=est.name, ficha=ficha, rows=rows, recetas=recetas, desde=desde, hasta=hasta,
         guias=sorted(guias, key=_move_order), internos=internos, devoluciones=return_exits(month, codes, True),
+        **recipe_control(month, codes),
         names=month.names, consolidated=True, internal_value=internal, internal_estimated=estimated,
         in_transit=transit, codes=codes, concepts=month.concepts, products=month.products, valores=valores,
         recetas_diarias=daily_recetas(month, codes, desde, hasta) if month.has_dispensations else [],
