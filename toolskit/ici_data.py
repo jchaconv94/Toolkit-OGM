@@ -473,7 +473,7 @@ def _load_sales(open_table, codes: set[str], desde: date, hasta: date) -> list[S
         return None
     motivos = _load_catalog(open_table, "MMOTIVO", "MOTCOD", "MOTDSCL")
     users = _load_catalog(open_table, "MUSUARIO", "USRCOD", "USRDESCRIP")
-    user = lambda code: f"{code} · {users[code]}" if code in users else code
+    user = lambda code: users.get(code, code)      # solo el nombre (pedido del usuario); sin él, el código
     sales = []
     for rec in table:
         situ = text(rec.get("VTASIT"))

@@ -1222,6 +1222,35 @@ def _moment(value):
     return None, "—"
 
 
+def _cancelled_by_type(ws, page, r, nc, anuladas) -> int:
+    """Al final de las anuladas, cuántas hay de cada tipo de atención y cuánto valen (pedido del usuario,
+    2026-10-20)."""
+    by_type = collections.OrderedDict()
+    for x in anuladas:
+        n, value = by_type.get(x.column, (0, 0.0))
+        by_type[x.column] = (n + 1, value + x.total)
+    order = [c for c in CONSUMO if c in by_type]
+    r = page.keep(r, 15 + 18 + 13.5 * (len(order) + 1))
+    box(ws, r, 1, r, 5, "ANULADAS POR TIPO DE ATENCIÓN", fnt(7.5, True, WHITE), NAVY, LEFT)
+    ws.row_dimensions[r].height = 15
+    for (c1, c2), h in zip(((1, 3), (4, 4), (5, 5)), ("TIPO DE ATENCIÓN", "RECETAS", "VALOR S/")):
+        box(ws, r + 1, c1, r + 1, c2, h, fnt(7, True, NAVY), SOFT, CENTER)
+    ws.row_dimensions[r + 1].height = 18
+    r += 2
+    for k, column in enumerate(order):
+        n, value = by_type[column]
+        box(ws, r, 1, r, 3, TIPO_ATENCION.get(column, column), fnt(7.5), ZEBRA if k % 2 else None, LEFT)
+        box(ws, r, 4, r, 4, n, fnt(8, True), ZEBRA if k % 2 else None, CENTER, fmt=INT0)
+        box(ws, r, 5, r, 5, round(value, 2), fnt(7.5), ZEBRA if k % 2 else None, NUM, fmt=MONEY)
+        ws.row_dimensions[r].height = 13.5
+        r += 1
+    box(ws, r, 1, r, 3, "Total", fnt(7.5, True, WHITE), NAVY, RIGHT)
+    box(ws, r, 4, r, 4, len(anuladas), fnt(8, True, WHITE), NAVY, CENTER, fmt=INT0)
+    box(ws, r, 5, r, 5, round(sum(x.total for x in anuladas), 2), fnt(7.5, True, WHITE), NAVY, NUM, fmt=MONEY)
+    ws.row_dimensions[r].height = 13.5
+    return r + 2
+
+
 def control_sheet(wb, report: IciReport, printable=False):
     """Control de recetas (pedido del usuario, 2026-10-20): cada receta anulada del mes y cada receta SIS
     sin FUA, una por una."""
@@ -1296,6 +1325,8 @@ def control_sheet(wb, report: IciReport, printable=False):
     r = table(8, f"RECETAS ANULADAS  ·  {len(anuladas)}  ·  S/ {sum(x.total for x in anuladas):.2f}",
               ["FECHA", "HORA", "COMPROBANTE", "TIPO DE ATENCIÓN", "VALOR S/", "MOTIVO DE ANULACIÓN", "ANULÓ", "ANULADA EL"]
               + farmacia, rows, "Sin recetas anuladas en el mes.")
+    if anuladas:
+        r = _cancelled_by_type(ws, page, r, nc, anuladas)
     rows = []
     for x in sin_fua:
         fecha, hora = _moment(x.fecha)
