@@ -41,7 +41,7 @@ def detail(tipo, numero, code, lote, qty, total=None, vence=date(2027, 12, 31), 
             "TIPSUM": tipsum, "FFINAN": ffinan}
 
 
-def month(tformdet_rows, heads=None, details=None, tformato=None, links=None):
+def month(tformdet_rows, heads=None, details=None, tformato=None, links=None, ventas=None):
     tables = {
         "TFORMDET": tformdet_rows,
         "TFORMATO": tformato or [],
@@ -54,6 +54,8 @@ def month(tformdet_rows, heads=None, details=None, tformato=None, links=None):
         tables["TMOVIM"] = heads
         tables["TMOVIMDET"] = details or []
         tables["TMOVIMTRF"] = [{"MOVNUMESAL": s, "MOVNUMEING": e} for s, e in (links or [])]
+    if ventas is not None:
+        tables["TVENTA"] = ventas
     return ici_data.load_month(lambda name: tables.get(name), MONTH, log=lambda _m: None)
 
 
@@ -144,7 +146,8 @@ class IciDataTests(unittest.TestCase):
         self.assertEqual([g.doc_numero for g in report.guias], ["G-100"])
         # En la farmacia que recibe, la entrega de la F01 sí es una guía de ingreso.
         f02 = ici_data.pharmacy_report(m, est, est.pharmacies[1])
-        self.assertEqual([g.numero for g in f02.guias], ["11"])
+        # Lo que F01 le entrega con devolución por sobrestock no es una guía de ingreso (regla del usuario).
+        self.assertEqual([g.numero for g in f02.guias], [])
         self.assertEqual(f02.rows[0]["REINGRE"], 30)
 
     def test_without_tmovim_the_internal_delivery_is_estimated(self):
@@ -156,10 +159,13 @@ class IciDataTests(unittest.TestCase):
         self.assertEqual(ici_data.balance_errors(report.rows), 0)
         self.assertTrue(m.warnings)
 
-    def test_lot_correction_stays_and_is_marked(self):
+    def test_internal_entries_keep_the_ici_columns(self):
+        # Un reingreso que hizo la propia farmacia (otro lote) queda en Devolución y Reingreso del ICI y
+        # va a Ingresos internos, no a Guías de ingreso.
         rows = [tformdet("06502F01", "001", "L1", SALDO=20, DEVOL=20),
                 tformdet("06502F01", "001", "L2", REINGRE=20)]
-        heads = [head("S", "1", "07", "06502F0101", "06502F0101"), head("E", "2", "07", "06502F0101", "06502F0101")]
+        heads = [head("S", "1", "07", "06502F0101", "06502F0101"),
+                 head("E", "2", "07", "030A0001", "06502F0101", doc=("04", "G-2"), refe="CORRECCION DE LOTE")]
         details = [detail("S", "1", "001", "L1", 20), detail("E", "2", "001", "L2", 20)]
         m = month(rows, heads, details)
         est = m.establishments[0]
@@ -167,36 +173,11 @@ class IciDataTests(unittest.TestCase):
             by_lot = {r["MEDLOTE"]: r for r in report.rows}
             self.assertEqual(by_lot["L1"]["DEVOL"], 20)
             self.assertEqual(by_lot["L2"]["REINGRE"], 20)
-            self.assertIn("correccion", by_lot["L1"]["flags"])
-            self.assertIn("correccion", by_lot["L2"]["flags"])
-            # Una sola corrección: la salida y su reingreso juntos, con lo que cambió.
-            self.assertEqual(len(report.corrections), 1)
-            change = report.corrections[0].changes[0]
-            self.assertEqual(change.fields, ["Lote"])
-            self.assertEqual((change.before.lote, change.after.lote), ("L1", "L2"))
+            self.assertEqual([g.doc_numero for g in report.internos], ["G-2"])
             self.assertEqual(report.guias, [])
 
-    def test_correction_detected_by_what_changed(self):
-        rows = [tformdet("06502F01", "001", "L1", SALDO=30, DEVOL=10, REINGRE=10),
-                tformdet("06502F01", "002", "L5", SALDO=8, DEVOL=8),
-                tformdet("06502F01", "009", "L5", REINGRE=8)]
-        heads = [head("S", "10", "07", "06502F0101", "030A0001", doc=("04", "001-0000700")),
-                 head("E", "11", "07", "030A0001", "06502F0101", doc=("04", "001-0000901")),
-                 head("S", "12", "07", "06502F0101", "030A0001", doc=("04", "001-0000702")),
-                 head("E", "13", "07", "030A0001", "06502F0101", doc=("04", "1-702"))]
-        details = [detail("S", "10", "001", "L1", 10, vence=date(2026, 9, 30)),
-                   detail("E", "11", "001", "L1", 10, vence=date(2027, 9, 30)),
-                   detail("S", "12", "002", "L5", 8), detail("E", "13", "009", "L5", 8)]
-        # La primera se enlaza por TMOVIMTRF; la segunda, por el mismo número de guía.
-        m = month(rows, heads, details, links=[("10", "11")])
-        est = m.establishments[0]
-        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
-        self.assertEqual([[ch.fields for ch in c.changes] for c in report.corrections], [[["Vencimiento"]], [["Código"]]])
-        self.assertEqual(report.corrections[0].changes[0].after.describe(["Vencimiento"]), "Vencimiento 30/09/2027")
-        self.assertEqual(report.guias, [])
-
-    def test_recovered_products_are_not_corrections(self):
-        # Producto recuperado: salió, sobró y volvió como reingreso, igual que salió.
+    def test_recovered_products_are_internal_entries(self):
+        # Producto recuperado: lo ingresó el responsable de farmacia con devolución por sobrestock.
         rows = [tformdet("06502F01", "001", "L1", SALDO=30, SAL_CONINS=10, REINGRE=4)]
         heads = [head("S", "20", "33", "06502F0101", "", dia=3),
                  head("E", "21", "07", "06502F0101", "06502F0101", dia=9, doc=("04", "260322"), refe="PRODUCTO RECUPERADO")]
@@ -204,21 +185,39 @@ class IciDataTests(unittest.TestCase):
         m = month(rows, heads, details)
         est = m.establishments[0]
         report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
-        self.assertEqual(report.corrections, [])
-        self.assertEqual([g.doc_numero for g in report.guias], ["260322"])
-        self.assertEqual(ici_data.entry_kind(report.guias[0]), "otro")
-        cells = [c.value for row in build_workbook(report)[0]["Guías de ingreso"].iter_rows() for c in row if c.value]
+        # Va a Ingresos internos (con su referencia), no a Guías de ingreso.
+        self.assertEqual([g.doc_numero for g in report.internos], ["260322"])
+        self.assertEqual(report.guias, [])
+        wb = build_workbook(report)[0]
+        cells = [str(c.value) for row in wb["Guías de ingreso"].iter_rows() for c in row if c.value]
+        self.assertFalse(any("260322" in v for v in cells))
+        cells = [str(c.value) for row in wb["Ingresos internos"].iter_rows() for c in row if c.value]
         self.assertIn("GUÍA N° 260322  ·  09/08/2026", cells)
-        self.assertIn("PARACETAMOL 500 mg", cells)
+        self.assertIn("Devolución por sobrestock", cells)
+        self.assertIn("PRODUCTO RECUPERADO", cells)
 
-    def test_correction_sent_but_not_back_is_pending(self):
+    def test_return_exits_are_the_devolucion_column(self):
+        # Salidas por devolución: lo que cae en DEVOLUCIÓN (sobrestock, RS cancelado…); el vencido (35) no.
+        rows = [tformdet("06502F01", "001", "L1", SALDO=30, DEVOL=7, VENCIDO=3)]
+        heads = [head("S", "40", "07", "06502F0101", "030A0001", doc=("04", "G-40"), refe="SOBRESTOCK"),
+                 head("S", "41", "22", "06502F0101", "030A0001", doc=("04", "G-41"), refe="RS CANCELADO"),
+                 head("S", "42", "35", "06502F0101", "030A0001", doc=("04", "G-42"), refe="PRODUCTO EXPIRADO")]
+        details = [detail("S", "40", "001", "L1", 5), detail("S", "41", "001", "L1", 2), detail("S", "42", "001", "L1", 3)]
+        m = month(rows, heads, details)
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        self.assertEqual([g.doc_numero for g in report.devoluciones], ["G-40", "G-41"])
+        cells = [str(c.value) for row in build_workbook(report)[0]["Salidas por devolución"].iter_rows()
+                 for c in row if c.value is not None]
+        self.assertIn("RS CANCELADO", cells)
+        self.assertFalse(any("G-42" in v for v in cells))
+
+    def test_an_exit_alone_is_not_an_internal_entry(self):
         rows = [tformdet("06502F01", "001", "L1", SALDO=30, DEVOL=10)]
         m = month(rows, [head("S", "30", "07", "06502F0101", "030A0001", refe="CORRECCION DE LOTE")],
                   [detail("S", "30", "001", "L1", 10)])
         est = m.establishments[0]
-        corrections = ici_data.pharmacy_report(m, est, est.pharmacies[0]).corrections
-        self.assertEqual(len(corrections), 1)
-        self.assertIsNone(corrections[0].entrada)
+        self.assertEqual(ici_data.pharmacy_report(m, est, est.pharmacies[0]).internos, [])
 
     def test_daily_recetas_by_type(self):
         rows = [tformdet("06502F01", "001", "L1", SALDO=30, SIS=3, VENTA=1)]
@@ -228,11 +227,117 @@ class IciDataTests(unittest.TestCase):
                    detail("S", "42", "001", "L1", 1, 1.25)]
         m = month(rows, heads, details)
         est = m.establishments[0]
-        daily = {d.day: (counts, value) for d, counts, value in ici_data.pharmacy_report(m, est, est.pharmacies[0]).recetas_diarias}
+        daily = {d.day: (counts, value) for d, counts, value, _ in ici_data.pharmacy_report(m, est, est.pharmacies[0]).recetas_diarias}
         self.assertEqual(len(daily), 31)
         self.assertEqual(daily[4][0][ici_data.CONSUMO.index("SIS")], 2)
         self.assertAlmostEqual(daily[4][1], 3.75)
         self.assertEqual(daily[5][0][ici_data.CONSUMO.index("VENTA")], 1)
+
+    def test_consumption_values_come_from_the_sismed(self):
+        # La venta valorizada es la del SISMED (TFORMATO.VTAS), no cantidad × precio del lote.
+        m = month([tformdet("06502F01", "001", "L1", precio=2.0, SALDO=10, VENTA=3, SIS=2)],
+                  tformato=[{"ANNOMES": MONTH, "CODIGO_PRE": "06502F01", "TIPSUM": "S", "REC_VTAS": 3,
+                             "VTAS": 5.85, "SIS": 4.0}])
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        self.assertEqual(report.valores[ici_data.CONSUMO.index("VENTA")], 5.85)
+        ws = build_workbook(report)[0]["ICI"]
+        labels = {ws.cell(r, c).value: ws.cell(r, c + 3).value for r in range(5, 10) for c in (11, 17)}
+        self.assertEqual(labels["Venta"], 5.85)
+        self.assertTrue(str(labels["Consumo total"]).startswith("=9.85+SUMPRODUCT"))
+        self.assertTrue(str(labels["Saldo anterior"]).startswith("=SUMPRODUCT"))
+
+    def test_other_agreements_are_valued_by_lot(self):
+        # Otros convenios no los graba el SISMED (TFORMATO.CON en 0): el consumo total no los pierde.
+        m = month([tformdet("06502F01", "001", "L1", precio=2.0, SALDO=10, VENTA=3, OTR_CONV=2)],
+                  tformato=[{"ANNOMES": MONTH, "CODIGO_PRE": "06502F01", "TIPSUM": "S", "VTAS": 5.85, "CON": 0}])
+        est = m.establishments[0]
+        ws = build_workbook(ici_data.pharmacy_report(m, est, est.pharmacies[0]))[0]["ICI"]
+        labels = {ws.cell(r, c).value: ws.cell(r, c + 3).value for r in range(5, 10) for c in (11, 17)}
+        self.assertEqual(labels["Venta"], 5.85)
+        total = str(labels["Consumo total"])
+        self.assertTrue(total.startswith("=5.85+SUMPRODUCT"), total)
+        self.assertEqual(total.count("SUMPRODUCT"), 2)  # factor de pérdida y otros convenios
+
+    def test_single_pharmacy_establishment_finds_its_movements(self):
+        # Puesto con una sola farmacia: el ICI va con el código del establecimiento (06513) y el SISMED
+        # escribe el almacén como el de su farmacia principal (06513F0101) o como 0651301.
+        heads = [head("E", "1", "04", "030S0501", "06513F0101", doc=("03", "260322"), refe="SISMED"),
+                 head("S", "2", "13", "06513F0101", "", dia=4),
+                 head("S", "3", "13", "0651301", "", dia=5),
+                 head("S", "4", "13", "06513F0102", "", dia=5)]          # donaciones: no entra
+        details = [detail("E", "1", "001", "L1", 20), detail("S", "2", "001", "L1", 1),
+                   detail("S", "3", "001", "L1", 1), detail("S", "4", "001", "L1", 1)]
+        m = month([tformdet("06513", "001", "L1", SALDO=10, INGRE=20, SIS=2)], heads, details)
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        self.assertEqual([g.numero for g in report.guias], ["1"])
+        self.assertEqual(report.guias[0].origen, "030S05")
+        sis = sum(counts[ici_data.CONSUMO.index("SIS")] for _, counts, _, _ in report.recetas_diarias)
+        self.assertEqual(sis, 2)
+        self.assertEqual(m.warnings, [])
+
+    def test_daily_recetas_come_from_tventa(self):
+        # Como las cuenta el ICI: cada venta vigente de la farmacia es una receta, con su forma de pago.
+        ventas = [{"ALMCOD": "06513", "ALMCODSUB": "0651301", "VTASIT": "1", "VTATIP": "M", "VTATIPODOC": "26",
+                   "VTAFORMPAG": "03", "VTAFECHREG": date(2026, 8, 4), "VTATOTAL": 2.5},
+                  {"ALMCOD": "06513", "ALMCODSUB": "0651301", "VTASIT": "1", "VTATIP": "M", "VTATIPODOC": "08",
+                   "VTAFORMPAG": "01", "VTAFECHREG": date(2026, 8, 4), "VTATOTAL": 1.25},
+                  {"ALMCOD": "06513", "ALMCODSUB": "0651301", "VTASIT": "0", "VTATIP": "M", "VTATIPODOC": "26",
+                   "VTAFORMPAG": "03", "VTAFECHREG": date(2026, 8, 4), "VTATOTAL": 9.0},       # anulada
+                  {"ALMCOD": "06513", "ALMCODSUB": "0651301", "VTASIT": "1", "VTATIP": "M", "VTATIPODOC": "26",
+                   "VTAFORMPAG": "03", "VTAFECHREG": date(2026, 7, 31), "VTATOTAL": 9.0}]     # otro mes
+        m = month([tformdet("06513", "001", "L1", SALDO=10, SIS=2)], ventas=ventas)
+        est = m.establishments[0]
+        daily = {d.day: (counts, value) for d, counts, value, _ in ici_data.pharmacy_report(m, est, est.pharmacies[0]).recetas_diarias}
+        self.assertEqual(daily[4][0][ici_data.CONSUMO.index("SIS")], 1)
+        self.assertEqual(daily[4][0][ici_data.CONSUMO.index("VENTA")], 1)
+        self.assertAlmostEqual(daily[4][1], 3.75)
+        self.assertEqual(sum(sum(c) for c, _ in daily.values()), 2)
+
+    def test_recipe_control_lists_cancelled_and_missing_fua(self):
+        # Cada receta anulada y cada receta SIS sin FUA.
+        from datetime import datetime
+        base = {"ALMCOD": "06513", "ALMCODSUB": "0651301", "VTATIP": "M", "VTATIPODOC": "26"}
+        ventas = [
+            {**base, "VTASIT": "1", "VTAFORMPAG": "03", "VTAFECHREG": datetime(2026, 8, 4, 9, 15), "VTATOTAL": 2.5,
+             "VTANUMEDOC": "B001-1", "FUA": "", "NUMRCTA": "R-1", "VENCOD": "JPE"},
+            {**base, "VTASIT": "1", "VTAFORMPAG": "03", "VTAFECHREG": datetime(2026, 8, 4, 10, 0), "VTATOTAL": 3.0,
+             "VTANUMEDOC": "B001-2", "FUA": "12345-6"},
+            {**base, "VTASIT": "1", "VTAFORMPAG": "20", "VTAFECHREG": datetime(2026, 8, 5, 8, 0), "VTATOTAL": 1.0,
+             "VTANUMEDOC": "B001-3", "FUA": "777"},
+            {**base, "VTASIT": "1", "VTAFORMPAG": "20", "VTAFECHREG": datetime(2026, 8, 5, 8, 30), "VTATOTAL": 1.5,
+             "VTANUMEDOC": "B001-4", "FUA": "000"},
+            {**base, "VTASIT": "1", "VTAFORMPAG": "01", "VTAFECHREG": datetime(2026, 8, 6, 8, 30), "VTATOTAL": 4.0,
+             "VTANUMEDOC": "B001-5", "FUA": ""},                                  # venta: no lleva FUA
+            {**base, "VTASIT": "0", "VTAFORMPAG": "03", "VTAFECHREG": datetime(2026, 8, 7, 11, 3), "VTATOTAL": 22.1,
+             "VTANUMEDOC": "B001-6", "VTAMOTANUL": "DUPLICADO", "VTAUSUANUL": "MRA",
+             "VTAFECANUL": datetime(2026, 8, 7, 11, 20)},
+        ]
+        m = month([tformdet("06513", "001", "L1", SALDO=10, SIS=2)], ventas=ventas)
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        self.assertEqual([x.comprobante for x in report.anuladas], ["B001-6"])
+        # Solo el SIS exige FUA: intervención sanitaria no sale aunque no lo tenga.
+        self.assertEqual([x.comprobante for x in report.sin_fua], ["B001-1"])
+        self.assertEqual(report.fua_tipos, ["SIS"])
+        # La anulada no cuenta como receta del día.
+        daily = {d.day: counts for d, counts, _, _ in report.recetas_diarias}
+        self.assertEqual(daily[7][ici_data.CONSUMO.index("SIS")], 0)
+        cells = [str(c.value) for row in build_workbook(report)[0]["Control de recetas"].iter_rows()
+                 for c in row if c.value is not None]
+        self.assertIn("DUPLICADO", cells)
+        self.assertIn("07/08/2026 11:20", cells)
+        self.assertIn("09:15", cells)
+        self.assertIn("R-1", cells)
+        self.assertFalse(any("B001-5" in v for v in cells))
+
+    def test_warns_when_no_movement_is_found(self):
+        m = month([tformdet("06513", "001", "L1", SALDO=10, INGRE=20)],
+                  [head("E", "1", "04", "030S0501", "99999XX01")], [detail("E", "1", "001", "L1", 20)])
+        self.assertEqual(len(m.warnings), 1)
+        self.assertIn("06513", m.warnings[0])
+        self.assertIn("99999XX01", m.warnings[0])
 
     def test_month_without_tformdet_is_empty(self):
         m = month([tformdet("06502F01", "001", "L1", ANNOMES="202607", SALDO=1)])
@@ -251,9 +356,15 @@ class IciExcelTests(unittest.TestCase):
 
     def test_workbook_has_the_approved_sheets(self):
         wb, summary = build_workbook(self._report())
-        # Las guías van justo después del ICI (pedido del usuario).
-        self.assertEqual(wb.sheetnames, ["ICI", "Guías de ingreso", "Vencimientos", "Alertas de farmacia",
-                                         "Lotes sin movimiento", "Correcciones de lote", "Recetas diarias"])
+        # Orden del usuario; alertas y lotes sin movimiento al final y solo en el Excel.
+        self.assertEqual(wb.sheetnames, ["ICI", "Guías de ingreso", "Ingresos internos", "Salidas por devolución", "Vencimientos",
+                                         "Recetas diarias", "Control de recetas", "Alertas de farmacia", "Lotes sin movimiento"])
+        printable = build_workbook(self._report(), printable="toolkit")[0]
+        self.assertEqual(printable.sheetnames, ["ICI", "Guías de ingreso", "Ingresos internos", "Salidas por devolución", "Vencimientos",
+                                                "Recetas diarias", "Control de recetas"])
+        cells = [c.value for row in printable["ICI"].iter_rows() for c in row if isinstance(c.value, str)]
+        self.assertIn("RESPONSABLE DE FARMACIA", cells)
+        self.assertFalse(any(v in ("Nombre:", "DNI:") for v in cells))
         ws = wb["ICI"]
         headers = [ws.cell(12, c).value for c in range(1, ws.max_column + 1)]
         self.assertNotIn("AJUSTE DE INVENTARIO (+)", headers)
@@ -297,9 +408,20 @@ class IciExcelTests(unittest.TestCase):
                 self.assertEqual(ws.cell(brk + 2, 2).value, "DESCRIPCIÓN")
         self.assertFalse(ws.print_title_rows)
         self.assertIsNone(ws.auto_filter.ref)
-        # El PDF ocupa el ancho de la hoja: escala propia, no «ajustar a una página».
-        self.assertFalse(ws.sheet_properties.pageSetUpPr.fitToPage)
-        self.assertEqual(ws.page_setup.scale, Page(ws, [c[1] for c in COLS], True, (0.25, 0.25, 0.35, 0.45)).scale)
+        # El ICI es más ancho que la página: se ajusta a una página de ancho (lo calcula el programa que
+        # arma el PDF, así llena el ancho en Excel y en LibreOffice) y de alto libre (cortes propios).
+        self.assertTrue(ws.sheet_properties.pageSetUpPr.fitToPage)
+        self.assertEqual((ws.page_setup.fitToWidth, ws.page_setup.fitToHeight), (1, 0))
+        # Una hoja angosta se agranda con escala fija.
+        small = build_workbook(report, printable=True)[0]["Vencimientos"]
+        self.assertFalse(small.sheet_properties.pageSetUpPr.fitToPage)
+        self.assertGreater(small.page_setup.scale, 100)
+
+    def test_prices_never_show_hashes(self):
+        wb, _ = build_workbook(self._report())
+        ws = wb["ICI"]
+        price_col = [ws.cell(13 - 1, c).value for c in range(1, ws.max_column + 1)].index("PRECIO S/") + 1
+        self.assertTrue(ws.cell(15, price_col).alignment.shrink_to_fit)
 
     def test_signatures_never_alone_on_the_last_page(self):
         for count in range(30, 140, 7):
@@ -317,6 +439,30 @@ class IciExcelTests(unittest.TestCase):
         self.assertGreaterEqual(row_height(long_name, 46, 7.2), 24)
         self.assertEqual(row_height("PARACETAMOL 500 mg", 46, 7.2), 13.8)
 
+    def test_guides_by_concept_not_by_origin(self):
+        # Solo van las de distribución (del almacén o subalmacén de la UNGET); las de devolución por
+        # sobrestock las ingresó el propio usuario de farmacia, aunque la guía diga 030A00, y no van.
+        rows = [tformdet("06502F01", "001", "L1", SALDO=10, INGRE=5, REINGRE=2)]
+        heads = [head("E", "1", "04", "030S0501", "06502F0101", doc=("03", "030S050001694"), refe="ESTRAGIA : REGULARIZACION"),
+                 head("E", "2", "07", "030A0001", "06502F0101", doc=("04", "20260340"), refe="PRODUCTO RECUPERADO")]
+        m = month(rows, heads, [detail("E", "1", "001", "L1", 5), detail("E", "2", "001", "L1", 2)])
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        self.assertEqual([g.doc_numero for g in report.guias], ["030S050001694"])
+        ws = build_workbook(report)[0]["Guías de ingreso"]
+        cells = [str(c.value) for row in ws.iter_rows() for c in row if c.value is not None]
+        self.assertIn("DESDE EL ALMACÉN · ESTRATEGIA  ·  1 guías", cells)
+        self.assertNotIn("DESDE EL ALMACÉN · OTRAS REFERENCIAS  ·  1 guías", cells)
+        self.assertFalse(any("20260340" in v or "SOBRESTOCK" in v for v in cells))
+        # Lo que entrega otra farmacia del establecimiento, aunque sea por distribución, es ingreso interno.
+        m = month([tformdet("06502F01", "001", "L1", SALDO=10, INGRE=5), tformdet("06502F02", "001", "L1", SALDO=9)],
+                  [head("E", "3", "04", "06502F0201", "06502F0101", doc=("03", "G-77"), refe="SISMED")],
+                  [detail("E", "3", "001", "L1", 5)])
+        est = m.establishments[0]
+        f01 = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        self.assertEqual(f01.guias, [])
+        self.assertEqual([g.doc_numero for g in f01.internos], ["G-77"])
+
     def test_correction_reference_goes_to_corrections_not_to_guides(self):
         rows = [tformdet("06502F01", "001", "L1", SALDO=10, REINGRE=5)]
         m = month(rows, heads=[head("E", "1", "05", "030A0001", "06502F0101", doc=("04", "G-9"), refe="Corrección de lote")],
@@ -324,18 +470,21 @@ class IciExcelTests(unittest.TestCase):
         est = m.establishments[0]
         report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
         self.assertEqual(report.guias, [])
-        self.assertEqual([c.entrada.doc_numero for c in report.corrections], ["G-9"])
-        self.assertIn("correccion", report.rows[0]["flags"])
-        # Cada corrección sale completa: cabecera con su referencia y debajo sus productos.
+        self.assertEqual([g.doc_numero for g in report.internos], ["G-9"])
+        # Cada guía sale completa: cabecera con su referencia y debajo sus productos.
         wb, _ = build_workbook(report)
-        cells = [str(c.value) for row in wb["Correcciones de lote"].iter_rows() for c in row if c.value is not None]
-        self.assertIn("REINGRESO POR CORRECCIÓN  ·  GUÍA G-9", cells)
-        self.assertTrue(any("ref. Corrección de lote" in v for v in cells))
+        cells = [str(c.value) for row in wb["Ingresos internos"].iter_rows() for c in row if c.value is not None]
+        self.assertTrue(any(v.startswith("GUÍA N° G-9") for v in cells))
+        self.assertIn("Corrección de lote", cells)
         self.assertIn("PARACETAMOL 500 mg", cells)
 
     def test_reference_groups_and_date_in_words(self):
         self.assertEqual(reference_group("sismed"), "SISMED")
         self.assertEqual(reference_group("Estrategia sanitaria TBC"), "ESTRATEGIA")
+        # Mal escrita, como llega del almacén (captura del usuario, setiembre 2026).
+        self.assertEqual(reference_group("ESTRAGIA : REGULARIZACION"), "ESTRATEGIA")
+        self.assertEqual(reference_group("ESTRATEJIA"), "ESTRATEGIA")
+        self.assertEqual(reference_group("PRODUCTO RECUPERADO"), "OTRAS REFERENCIAS")
         self.assertEqual(reference_group("INTERVENCION SANITARIA"), "ESTRATEGIA")
         self.assertEqual(reference_group("Transf. Hosp. Tarapoto"), "TRANSFERENCIAS")
         self.assertEqual(reference_group(""), "OTRAS REFERENCIAS")
@@ -400,9 +549,77 @@ class IciFilesTests(unittest.TestCase):
         self.assertTrue(any("No se pudo pasar a PDF" in line for line in logs))
         self.assertTrue(FakeExporter.closed)
 
+    def test_the_toolkit_draws_the_pdf_filling_every_page(self):
+        import fitz
+        import ici_render
+
+        long_name = "ACIDO FOLICO + FERROSO SULFATO (Equiv. de Hierro elemental) 400 ug + 60 mg Fe"
+        rows = [tformdet("06502F01", f"{k:03d}", f"L{k}", SALDO=10 + k, SIS=k % 3,
+                         **({"DESCRIPCION MED": long_name} if k % 9 == 0 else {})) for k in range(260)]
+        m = month(rows)
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        wb, _ = build_workbook(report, printable="toolkit")
+        bottom = ici_render.A4_LANDSCAPE[1] - wb["ICI"].page_margins.bottom * 72
+        sheet = ici_render._Sheet(wb["ICI"])
+        pages = sheet.layout()
+        self.assertGreater(len(pages), 3)
+        for k, rows_on_page in enumerate(pages[:-2]):
+            r, y, h = rows_on_page[-1]
+            next_row = pages[k + 1][0][0]
+            # La página llega hasta abajo: la fila que sigue ya no entraba.
+            self.assertGreater(y + h + sheet.height(next_row) * sheet.scale, bottom - 60, k)
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = str(Path(tmp) / "ici.pdf")
+            total = ici_render.render_workbook(wb, pdf)
+            doc = fitz.open(pdf)
+            self.assertEqual(len(doc), total)
+            for page in doc:
+                # Ninguna página queda en blanco (solo con el pie).
+                self.assertTrue(any(w[3] < ici_render.A4_LANDSCAPE[1] - 30 for w in page.get_text("words")), page.number)
+                for x0, y0, x1, y1, *_ in page.get_text("words"):
+                    # Nada se sale de la página: cada hoja entra a lo ancho.
+                    self.assertLessEqual(x1, ici_render.A4_LANDSCAPE[0] - 10)
+                    self.assertLessEqual(y1, ici_render.A4_LANDSCAPE[1])
+            text = doc[0].get_text()
+            self.assertIn("INFORME DE CONSUMO INTEGRADO", text)
+            self.assertIn(f"Página 1 de {total}", text)
+            last_ici = next(i for i in range(len(doc)) if "DECLARACIÓN JURADA" in doc[i].get_text())
+            self.assertIn("TOTAL", doc[last_ici].get_text())
+            self.assertIn("ACIDO FOLICO", "".join(doc[i].get_text() for i in range(last_ici + 1)))
+            doc.close()
+
+    def test_formulas_and_formats_as_excel_shows_them(self):
+        import ici_render
+        import ici_values
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"], ws["A2"], ws["A3"] = 2, 3, "texto"
+        ws["B1"], ws["B2"], ws["B3"] = 1.5, 2, 4
+        ws["C1"] = date(2026, 9, 15)
+        ws["D1"] = "=SUMPRODUCT(A1:A3,B1:B3)"
+        ws["D2"] = "=SUM(A1:A3)+B2*2"
+        ws["D3"] = '=COUNTIF(A1:A3,">2")'
+        ws["D4"] = '=COUNTIFS(C1:C1,">"&DATE(2026,8,31),C1:C1,"<="&EDATE(DATE(2026,8,31),6))'
+        ev = ici_values.Evaluator(ws)
+        self.assertEqual(ev.value(1, 4), 9.0)
+        self.assertEqual(ev.value(2, 4), 9.0)
+        self.assertEqual(ev.value(3, 4), 1.0)
+        self.assertEqual(ev.value(4, 4), 1.0)
+        f = ici_render.format_value
+        self.assertEqual(f(0, '0;-0;"–"'), "–")
+        self.assertEqual(f(2.5, '0;-0;"–"'), "3")
+        self.assertEqual(f(0.14875, "0.00####"), "0.14875")
+        self.assertEqual(f(5, "0.00####"), "5.00")
+        self.assertEqual(f(290.92, '"S/ "0.00'), "S/ 290.92")
+        self.assertEqual(f(0.177, '0.0%;-0.0%;"–"'), "17.7%")
+        self.assertEqual(f(date(2026, 8, 31), "dd/mm/yyyy"), "31/08/2026")
+
     def test_without_a_spreadsheet_program_only_the_excel_is_made(self):
         logs = []
-        exporter = ici_pdf.open_exporter(log=logs.append, com_programs=(), libreoffice=lambda: None)
+        exporter = ici_pdf.open_exporter(log=logs.append, com_programs=(), libreoffice=lambda: None, toolkit=False)
         self.assertIsNone(exporter)
         self.assertIn("No se pudo generar el PDF", logs[0])
 
@@ -411,12 +628,12 @@ class IciFilesTests(unittest.TestCase):
         m = month([tformdet("06502F01", "001", "L1", SALDO=10, SIS=2)])
         with tempfile.TemporaryDirectory() as tmp:
             paths = write_reports(m, tmp, log=lambda _m: None, open_exporter=lambda log: ici_pdf.open_exporter(
-                log=log, com_programs=()))
+                log=log, com_programs=(), toolkit=False))
             pdf = next(p for p in paths if p.endswith(".pdf"))
             data = Path(pdf).read_bytes()
         self.assertTrue(data.startswith(b"%PDF"))
-        # Una página por hoja como mínimo: ICI, Vencimientos, Alertas, Lotes sin movimiento, Guías, Correcciones.
-        self.assertGreaterEqual(len(re.findall(rb"/Type\s*/Page(?!s)", data)), 6)
+        # Una página por hoja como mínimo: ICI, Guías, Correcciones, Vencimientos y Recetas diarias.
+        self.assertGreaterEqual(len(re.findall(rb"/Type\s*/Page(?!s)", data)), 5)
 
     def test_a_single_pharmacy_has_no_consolidated(self):
         m = month([tformdet("06502F01", "001", "L1", SALDO=10)])

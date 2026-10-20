@@ -30,7 +30,9 @@ hiddenimports = [
     "send_key_config",
     # Conexión inmediata con la web (backups SISMED).
     "websocket",
-    # Generar ICI: el PDF lo arma Excel (o WPS) por COM.
+    # Generar ICI: el PDF lo dibuja el Toolkit (ici_render con PyMuPDF); Excel o WPS por COM, de respaldo.
+    "ici_render",
+    "ici_values",
     "win32com.client",
     "pythoncom",
 ]

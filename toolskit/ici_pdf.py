@@ -1,16 +1,16 @@
 """Generar ICI: el mismo libro en PDF, con todas sus hojas, listo para imprimir.
 
 Si solo se entrega el Excel, se imprime la hoja que está abierta y las demás se quedan
-(pedido del usuario del 2026-10-19). El PDF lo arma el programa de hojas de cálculo que
-tenga la PC, que respeta lo que el libro ya trae para imprimir (horizontal, a una hoja de
-ancho, encabezado de columnas en cada página) y calcula las fórmulas:
+(pedido del usuario del 2026-10-19). El PDF lo dibuja el propio Toolkit (ici_render, con
+PyMuPDF): sale igual en todas las PC y cada página llega hasta abajo. Con Excel, WPS o
+LibreOffice la tabla salía de otro tamaño que el calculado (espacio en blanco al pie, una
+columna sola en otra página), así que esos programas quedan solo de respaldo, en este orden:
 
 1. Microsoft Excel (por COM, con pywin32).
 2. WPS Office (mismo COM que Excel).
 3. LibreOffice (soffice sin ventana).
 
-Se abre un solo programa para todos los libros de una tanda. Si no hay ninguno, el Excel se
-genera igual y la consola lo avisa.
+Si no hay con qué, el Excel se genera igual y la consola lo avisa.
 """
 
 from __future__ import annotations
@@ -42,7 +42,26 @@ def find_libreoffice() -> str | None:
     return None
 
 
+class _ToolkitExporter:
+    """El PDF lo dibuja el propio Toolkit (ici_render, con PyMuPDF): igual en todas las PC, con o sin
+    Excel, y cada página llega hasta abajo."""
+    name = "el Toolkit"
+    engine = "toolkit"
+
+    def __init__(self):
+        import ici_render
+        self._render = ici_render.render_workbook
+
+    def render(self, wb, pdf: str) -> None:
+        self._render(wb, pdf)
+
+    def close(self) -> None:
+        pass
+
+
 class _ComExporter:
+    # Medidas de columna con que se arma la versión de imprimir (ver ici_excel.Page).
+    engine = "excel"
     def __init__(self, prog_id: str, name: str):
         import pythoncom
         import win32com.client
@@ -79,6 +98,7 @@ class _ComExporter:
 
 class _LibreOfficeExporter:
     name = "LibreOffice"
+    engine = "libreoffice"
 
     def __init__(self, soffice: str):
         self.soffice = soffice
@@ -102,8 +122,14 @@ class _LibreOfficeExporter:
         self._profile.cleanup()
 
 
-def open_exporter(log=print, com_programs=COM_PROGRAMS, libreoffice=find_libreoffice):
-    """El primer programa disponible para pasar a PDF, o None si la PC no tiene ninguno."""
+def open_exporter(log=print, com_programs=COM_PROGRAMS, libreoffice=find_libreoffice, toolkit=True):
+    """Quién arma el PDF: el propio Toolkit; si no pudiera (sin PyMuPDF), el primer programa de hojas de
+    cálculo de la PC. None si no hay ninguno."""
+    if toolkit:
+        try:
+            return _ToolkitExporter()
+        except Exception:  # noqa: BLE001 - se prueba con los programas de la PC
+            pass
     if os.name == "nt":
         for prog_id, name in com_programs:
             try:
