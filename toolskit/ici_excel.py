@@ -1227,7 +1227,7 @@ def control_sheet(wb, report: IciReport, printable=False):
     sin FUA, una por una."""
     ws = wb.create_sheet("Control de recetas")
     ws.sheet_view.showGridLines = False
-    widths = [10, 7, 16, 17, 10, 34, 11, 14]
+    widths = [10, 7, 15, 16, 10, 34, 24, 14]
     if report.consolidated:
         widths.append(9)
     nc = len(widths)

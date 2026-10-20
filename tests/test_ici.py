@@ -41,7 +41,7 @@ def detail(tipo, numero, code, lote, qty, total=None, vence=date(2027, 12, 31), 
             "TIPSUM": tipsum, "FFINAN": ffinan}
 
 
-def month(tformdet_rows, heads=None, details=None, tformato=None, links=None, ventas=None):
+def month(tformdet_rows, heads=None, details=None, tformato=None, links=None, ventas=None, extra=None):
     tables = {
         "TFORMDET": tformdet_rows,
         "TFORMATO": tformato or [],
@@ -56,6 +56,7 @@ def month(tformdet_rows, heads=None, details=None, tformato=None, links=None, ve
         tables["TMOVIMTRF"] = [{"MOVNUMESAL": s, "MOVNUMEING": e} for s, e in (links or [])]
     if ventas is not None:
         tables["TVENTA"] = ventas
+    tables.update(extra or {})
     return ici_data.load_month(lambda name: tables.get(name), MONTH, log=lambda _m: None)
 
 
@@ -311,10 +312,13 @@ class IciDataTests(unittest.TestCase):
             {**base, "VTASIT": "1", "VTAFORMPAG": "01", "VTAFECHREG": datetime(2026, 8, 6, 8, 30), "VTATOTAL": 4.0,
              "VTANUMEDOC": "B001-5", "FUA": ""},                                  # venta: no lleva FUA
             {**base, "VTASIT": "0", "VTAFORMPAG": "03", "VTAFECHREG": datetime(2026, 8, 7, 11, 3), "VTATOTAL": 22.1,
-             "VTANUMEDOC": "B001-6", "VTAMOTANUL": "DUPLICADO", "VTAUSUANUL": "MRA",
+             "VTANUMEDOC": "B001-6", "VTAMOTANUL": "", "MOTCOD": "03", "VTAUSUANUL": "028",
              "VTAFECANUL": datetime(2026, 8, 7, 11, 20)},
         ]
-        m = month([tformdet("06513", "001", "L1", SALDO=10, SIS=2)], ventas=ventas)
+        # El motivo y el usuario vienen como códigos, con su nombre en MMOTIVO y MUSUARIO.
+        m = month([tformdet("06513", "001", "L1", SALDO=10, SIS=2)], ventas=ventas,
+                  extra={"MMOTIVO": [{"MOTCOD": "03", "MOTDSCL": "DUPLICADO"}],
+                         "MUSUARIO": [{"USRCOD": "028", "USRDESCRIP": "MARIA RAMOS", "USRPWD": "x"}]})
         est = m.establishments[0]
         report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
         self.assertEqual([x.comprobante for x in report.anuladas], ["B001-6"])
@@ -327,6 +331,8 @@ class IciDataTests(unittest.TestCase):
         cells = [str(c.value) for row in build_workbook(report)[0]["Control de recetas"].iter_rows()
                  for c in row if c.value is not None]
         self.assertIn("DUPLICADO", cells)
+        self.assertIn("028 · MARIA RAMOS", cells)
+        self.assertFalse(any(v == "x" for v in cells))
         self.assertIn("07/08/2026 11:20", cells)
         self.assertIn("09:15", cells)
         self.assertIn("R-1", cells)

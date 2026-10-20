@@ -452,13 +452,28 @@ class Sale:
         return not self.fua.strip(" 0-")
 
 
+def _load_catalog(open_table, table: str, key: str, value: str) -> dict:
+    """Código → descripción de una tabla maestra del SISMED. De MUSUARIO solo se leen el código y el
+    nombre (la tabla guarda también las claves: no se tocan)."""
+    found = {}
+    for rec in open_table(table) or []:
+        code, name = text(rec.get(key)), text(rec.get(value))
+        if code and name:
+            found[code] = name
+    return found
+
+
 def _load_sales(open_table, codes: set[str], desde: date, hasta: date) -> list[Sale] | None:
     """Ventas y dispensaciones del periodo, vigentes y anuladas, como las lee procesar_ici para las
     recetas y los valores de TFORMATO. Cada vigente es una receta del ICI. None si el SISMED no tiene
-    TVENTA."""
+    TVENTA. El motivo de una anulación se guarda como código (MOTCOD, con su nombre en MMOTIVO) y los
+    usuarios también (con su nombre en MUSUARIO)."""
     table = open_table("TVENTA")
     if table is None:
         return None
+    motivos = _load_catalog(open_table, "MMOTIVO", "MOTCOD", "MOTDSCL")
+    users = _load_catalog(open_table, "MUSUARIO", "USRCOD", "USRDESCRIP")
+    user = lambda code: f"{code} · {users[code]}" if code in users else code
     sales = []
     for rec in table:
         situ = text(rec.get("VTASIT"))
@@ -478,8 +493,9 @@ def _load_sales(open_table, codes: set[str], desde: date, hasta: date) -> list[S
             sales.append(Sale(
                 owner, moment if isinstance(moment, datetime) else fecha, column, num(rec.get("VTATOTAL")),
                 situ == "1", text(rec.get("VTANUMERO")), text(rec.get("VTANUMEDOC")), text(rec.get("FUA")),
-                text(rec.get("NUMRCTA")), text(rec.get("VENCOD")), text(rec.get("VTAMOTANUL")),
-                rec.get("VTAFECANUL") or None, text(rec.get("VTAUSUANUL"))))
+                text(rec.get("NUMRCTA")), user(text(rec.get("VENCOD"))),
+                text(rec.get("VTAMOTANUL")) or motivos.get(text(rec.get("MOTCOD")), text(rec.get("MOTCOD"))),
+                rec.get("VTAFECANUL") or None, user(text(rec.get("VTAUSUANUL")))))
     return sales
 
 
