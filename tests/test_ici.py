@@ -296,7 +296,7 @@ class IciDataTests(unittest.TestCase):
         self.assertEqual(sum(sum(c) for c, _ in daily.values()), 2)
 
     def test_recipe_control_lists_cancelled_and_missing_fua(self):
-        # Cada receta anulada y cada receta sin FUA, del SIS y de intervención sanitaria si allí lo registran.
+        # Cada receta anulada y cada receta SIS sin FUA.
         from datetime import datetime
         base = {"ALMCOD": "06513", "ALMCODSUB": "0651301", "VTATIP": "M", "VTATIPODOC": "26"}
         ventas = [
@@ -318,8 +318,9 @@ class IciDataTests(unittest.TestCase):
         est = m.establishments[0]
         report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
         self.assertEqual([x.comprobante for x in report.anuladas], ["B001-6"])
-        self.assertEqual([x.comprobante for x in report.sin_fua], ["B001-1", "B001-4"])
-        self.assertEqual(report.fua_tipos, ["SIS", "INTERSAN"])
+        # Solo el SIS exige FUA: intervención sanitaria no sale aunque no lo tenga.
+        self.assertEqual([x.comprobante for x in report.sin_fua], ["B001-1"])
+        self.assertEqual(report.fua_tipos, ["SIS"])
         # La anulada no cuenta como receta del día.
         daily = {d.day: counts for d, counts, _, _ in report.recetas_diarias}
         self.assertEqual(daily[7][ici_data.CONSUMO.index("SIS")], 0)

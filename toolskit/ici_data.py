@@ -482,10 +482,9 @@ def _load_sales(open_table, codes: set[str], desde: date, hasta: date) -> list[S
 
 
 def fua_columns(sales: list[Sale]) -> list[str]:
-    """Tipos de atención que llevan FUA: el SIS siempre, y los que tienen FUA en alguna receta del mes
-    (intervención sanitaria, si allí también lo registran)."""
-    used = {s.column for s in sales if s.activa and not s.sin_fua}
-    return [c for c in CONSUMO if c == "SIS" or c in used]
+    """Tipos de atención que llevan FUA: solo el SIS, donde se exige sí o sí (el usuario, 2026-10-20:
+    intervención sanitaria no lleva FUA)."""
+    return ["SIS"]
 
 
 def _load_concepts(open_table) -> dict:

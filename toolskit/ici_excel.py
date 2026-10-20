@@ -1223,8 +1223,8 @@ def _moment(value):
 
 
 def control_sheet(wb, report: IciReport, printable=False):
-    """Control de recetas (pedido del usuario, 2026-10-20): cada receta anulada del mes y cada receta sin
-    FUA (del SIS y de los tipos de atención que también lo registran), una por una."""
+    """Control de recetas (pedido del usuario, 2026-10-20): cada receta anulada del mes y cada receta SIS
+    sin FUA, una por una."""
     ws = wb.create_sheet("Control de recetas")
     ws.sheet_view.showGridLines = False
     widths = [10, 7, 16, 17, 10, 34, 11, 14]
