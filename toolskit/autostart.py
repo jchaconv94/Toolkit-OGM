@@ -10,12 +10,15 @@ La casilla «Abrir esta aplicación al encender Windows» solo guarda la prefere
 el Toolkit abierto por el acceso directo se cierra sin mostrar nada.
 
 La primera vez, la preferencia sale de lo que dejó la versión anterior (la tarea o la clave Run), y
-eso se borra: borrarlo no es registrarse en el arranque.
+eso se borra: borrarlo no es registrarse en el arranque. La tarea es una sola para toda la PC y
+quedaba a nombre del último usuario de Windows que abrió el Toolkit: si es de otro usuario, no cuenta
+para este ni se borra (se la deja a su dueño, o al desinstalador).
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from typing import Callable
@@ -68,12 +71,36 @@ def _hidden_run(arguments: list[str]):
     )
 
 
+def _current_user_ids(env=None) -> set[str]:
+    """Cómo puede figurar este usuario en una tarea: SID, «usuario» o «DOMINIO\\usuario»."""
+    env = os.environ if env is None else env
+    ids = set()
+    user, domain = env.get("USERNAME", ""), env.get("USERDOMAIN", "")
+    if user:
+        ids.add(user.lower())
+        if domain:
+            ids.add(f"{domain}\\{user}".lower())
+    try:
+        import win32api
+        import win32con
+        import win32security
+
+        token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+        sid = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+        ids.add(win32security.ConvertSidToStringSid(sid).lower())
+    except Exception:
+        pass
+    return ids
+
+
 class LegacyStartup:
     """La tarea programada y la clave Run que creaban las versiones anteriores."""
 
-    def __init__(self, run: Callable[[list[str]], object] = _hidden_run, registry=None):
+    def __init__(self, run: Callable[[list[str]], object] = _hidden_run, registry=None, user_ids=None):
         self.run = run
         self.registry = registry
+        self.user_ids = user_ids
+        self._task = None
 
     def _winreg(self):
         if self.registry is not None:
@@ -84,11 +111,31 @@ class LegacyStartup:
 
         return winreg
 
-    def task_exists(self) -> bool:
-        try:
-            return self.run(["schtasks", "/Query", "/TN", LEGACY_TASK_NAME]).returncode == 0
-        except Exception:
+    def task_owner(self) -> str | None:
+        """None si la tarea no existe; "" si existe y no dice de quién es."""
+        if self._task is None:
+            try:
+                result = self.run(["schtasks", "/Query", "/TN", LEGACY_TASK_NAME, "/XML"])
+                if result.returncode != 0:
+                    self._task = (False, "")
+                else:
+                    # schtasks puede escribir el XML en UTF-16: se quitan los nulos antes de buscar.
+                    xml = str(result.stdout or "").replace("\x00", "")
+                    match = re.search(r"<UserId>\s*([^<]*?)\s*</UserId>", xml)
+                    self._task = (True, match.group(1) if match else "")
+            except Exception:
+                self._task = (False, "")
+        exists, owner = self._task
+        return owner if exists else None
+
+    def task_is_mine(self) -> bool:
+        owner = self.task_owner()
+        if owner is None:
             return False
+        if not owner:
+            return True
+        ids = _current_user_ids() if self.user_ids is None else {i.lower() for i in self.user_ids}
+        return owner.lower() in ids
 
     def run_value_exists(self) -> bool:
         reg = self._winreg()
@@ -102,11 +149,14 @@ class LegacyStartup:
             return False
 
     def enabled(self) -> bool:
-        return self.task_exists() or self.run_value_exists()
+        return self.task_is_mine() or self.run_value_exists()
 
     def remove(self) -> list[str]:
         messages = []
-        if self.task_exists():
+        owner = self.task_owner()
+        if owner is not None and not self.task_is_mine():
+            messages.append(f"startup_legacy_task_kept owner={owner}")
+        elif owner is not None:
             try:
                 result = self.run(["schtasks", "/Delete", "/TN", LEGACY_TASK_NAME, "/F"])
                 ok = result.returncode == 0
@@ -114,6 +164,7 @@ class LegacyStartup:
             except Exception as exc:
                 ok, detail = False, f"{type(exc).__name__}: {exc}"
             messages.append(f"startup_legacy_task_removed={ok}; {detail}".rstrip("; "))
+            self._task = None
         reg = self._winreg()
         if reg is not None and self.run_value_exists():
             try:

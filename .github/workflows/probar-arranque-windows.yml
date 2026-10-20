@@ -1,0 +1,72 @@
+name: Probar arranque con Windows
+
+# Instala el Toolkit de verdad en una máquina Windows desechable y revisa el arranque con Windows
+# (tests/e2e_windows_autostart.py). No publica nada.
+
+on:
+  pull_request:
+    paths:
+      - toolskit/main.py
+      - toolskit/autostart.py
+      - packaging/windows/**
+      - tests/e2e_windows_autostart.py
+      - .github/workflows/probar-arranque-windows.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  arranque:
+    name: Instalar, actualizar y abrir al encender
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Descargar el codigo
+        uses: actions/checkout@v4
+
+      - name: Preparar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: toolskit/requirements.txt
+
+      - name: Crear entorno de compilacion
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt
+
+      - name: Instalar Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Ejecutar pruebas automaticas
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe -m unittest discover -s tests
+
+      - name: Generar ejecutable e instalador
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
+
+      - name: Probar el arranque con Windows de punta a punta
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_autostart.py
+
+      - name: Copiar registros si algo falla
+        if: failure()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force registros | Out-Null
+          Copy-Item "$env:APPDATA\ToolkitOGM\*.log", "$env:APPDATA\ToolkitOGM\config.json" registros -ErrorAction SilentlyContinue
+
+      - name: Guardar registros si algo falla
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: registros-arranque
+          path: registros
+          if-no-files-found: ignore
