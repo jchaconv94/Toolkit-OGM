@@ -56,12 +56,17 @@ jobs:
         shell: pwsh
         run: .\.venv\Scripts\python.exe tests\e2e_windows_autostart.py
 
+      - name: Copiar registros si algo falla
+        if: failure()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force registros | Out-Null
+          Copy-Item "$env:APPDATA\ToolkitOGM\*.log", "$env:APPDATA\ToolkitOGM\config.json" registros -ErrorAction SilentlyContinue
+
       - name: Guardar registros si algo falla
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: registros-arranque
-          path: |
-            ${{ env.APPDATA }}\ToolkitOGM\*.log
-            ${{ env.APPDATA }}\ToolkitOGM\config.json
+          path: registros
           if-no-files-found: ignore

@@ -334,6 +334,7 @@ def per_user_install():
 
 
 def main() -> int:
+    sys.stdout.reconfigure(encoding="utf-8")  # la consola de Windows usa cp1252: tildes y ✅
     if os.environ.get("GITHUB_ACTIONS") != "true":
         print("Esta prueba instala y desinstala el Toolkit de verdad: solo corre en GitHub Actions.")
         return 2
