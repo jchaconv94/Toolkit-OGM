@@ -5,9 +5,7 @@ import hashlib
 import flet as ft
 import os
 import sys
-import subprocess
 import traceback
-import winreg as reg
 import threading
 import pystray
 from pystray import MenuItem as item
@@ -30,11 +28,12 @@ def _bootstrap_runtime_directory():
 
 _bootstrap_runtime_directory()
 
-from tools.app_config import append_runtime_log, get as cfg_get, get_config_log_path, get_startup_log_path, set as cfg_set, update_runtime_status
+from tools.app_config import append_runtime_log, get as cfg_get, get_config_log_path, set as cfg_set, update_runtime_status
 from update_shutdown import arm_update_exit_watchdog
 from window_watch import HEARTBEAT_TIMEOUT_SECONDS, WindowHeartbeat, kill_flet_views
 from tools.tool_registry import TOOLS_REGISTRY, get_tool_by_name
 from app_version import get_current_version
+from autostart import PREFERENCE_KEY as STARTUP_PREFERENCE_KEY, LegacyStartup, shortcut_installed, startup_preference
 from updater_controller import AppUpdaterController
 
 # ==========================================
@@ -45,9 +44,6 @@ RESTORE_WINDOW_EVENT_NAME = "ToolkitOGM_RestoreWindow_v1"
 RESTORE_WINDOW_ACK_EVENT_NAME = "ToolkitOGM_RestoreWindowAck_v1"
 SECOND_INSTANCE_TIMEOUT_MS = 3000
 AUTORUN_READY_TIMEOUT_MS = 5000
-STARTUP_REGISTRY_VALUE_NAME = "ToolkitOGM_Sync"
-STARTUP_TASK_NAME = "ToolkitOGM_Autorun"
-STARTUP_TASK_DELAY = "0002:00"
 single_instance_mutex = None
 restore_window_event = None
 restore_window_ack_event = None
@@ -106,6 +102,9 @@ def _acquire_single_instance() -> bool:
     single_instance_mutex = win32event.CreateMutex(None, False, SINGLE_INSTANCE_MUTEX_NAME)
     mutex_last_error = win32api.GetLastError()
     if mutex_last_error == winerror.ERROR_ALREADY_EXISTS:
+        # Al encender Windows no se muestra la ventana del Toolkit que ya está abierto.
+        if "--autorun" in sys.argv:
+            return False
         if not _signal_restore_request():
             _show_existing_instance_warning()
         return False
@@ -115,22 +114,6 @@ def _acquire_single_instance() -> bool:
     return True
 
 
-def _expected_startup_command() -> str:
-    if getattr(sys, 'frozen', False):
-        return f'"{sys.executable}" --autorun'
-
-    python_exe = sys.executable
-    pythonw_exe = os.path.join(os.path.dirname(python_exe), "pythonw.exe")
-    if not os.path.exists(pythonw_exe):
-        pythonw_exe = python_exe
-    script_path = os.path.abspath(__file__)
-    return f'"{pythonw_exe}" "{script_path}" --autorun'
-
-
-def _normalize_startup_command(command: str) -> str:
-    return os.path.normcase(" ".join(str(command or "").strip().split()))
-
-
 def _log_startup_registration(message: str):
     try:
         append_runtime_log("startup", message)
@@ -138,184 +121,15 @@ def _log_startup_registration(message: str):
         pass
 
 
-def _run_schtasks(arguments: list[str]) -> subprocess.CompletedProcess[str]:
-    startupinfo = None
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    if os.name == "nt" and hasattr(subprocess, "STARTUPINFO"):
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-    return subprocess.run(
-        ["schtasks", *arguments],
-        capture_output=True,
-        text=True,
-        check=False,
-        startupinfo=startupinfo,
-        creationflags=creationflags,
-    )
-
-
-def _query_startup_registry_command() -> str | None:
-    try:
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        key = reg.OpenKey(reg.HKEY_CURRENT_USER, key_path, 0, reg.KEY_READ)
-        value, _ = reg.QueryValueEx(key, STARTUP_REGISTRY_VALUE_NAME)
-        reg.CloseKey(key)
-        return value
-    except FileNotFoundError:
-        return None
-    except Exception as exc:
-        _log_startup_registration(f"startup_registry_query_error={type(exc).__name__}: {exc}")
-        return None
-
-
-def _set_startup_registry_command(command: str) -> tuple[bool, str]:
-    try:
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        key = reg.OpenKey(reg.HKEY_CURRENT_USER, key_path, 0, reg.KEY_SET_VALUE)
-        reg.SetValueEx(key, STARTUP_REGISTRY_VALUE_NAME, 0, reg.REG_SZ, command)
-        reg.CloseKey(key)
-        return True, "Registro HKCU Run actualizado."
-    except Exception as exc:
-        return False, f"No se pudo escribir la clave Run: {type(exc).__name__}: {exc}"
-
-
-def _delete_startup_registry_command() -> tuple[bool, str]:
-    try:
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        key = reg.OpenKey(reg.HKEY_CURRENT_USER, key_path, 0, reg.KEY_SET_VALUE)
-        try:
-            reg.DeleteValue(key, STARTUP_REGISTRY_VALUE_NAME)
-            message = "Clave Run eliminada."
-        except FileNotFoundError:
-            message = "La clave Run ya no existía."
-        reg.CloseKey(key)
-        return True, message
-    except Exception as exc:
-        return False, f"No se pudo eliminar la clave Run: {type(exc).__name__}: {exc}"
-
-
-def _startup_task_exists() -> bool:
-    try:
-        result = _run_schtasks(["/Query", "/TN", STARTUP_TASK_NAME])
-        return result.returncode == 0
-    except Exception as exc:
-        _log_startup_registration(f"startup_task_query_error={type(exc).__name__}: {exc}")
-        return False
-
-
-def _create_startup_task(command: str) -> tuple[bool, str]:
-    try:
-        result = _run_schtasks([
-            "/Create",
-            "/TN", STARTUP_TASK_NAME,
-            "/TR", command,
-            "/SC", "ONLOGON",
-            "/RL", "LIMITED",
-            "/IT",
-            "/DELAY", STARTUP_TASK_DELAY,
-            "/F",
-        ])
-        output = (result.stdout or result.stderr or "").strip()
-        if result.returncode == 0:
-            return True, output or "Tarea programada de autoarranque creada."
-        return False, output or f"schtasks devolvió código {result.returncode}."
-    except Exception as exc:
-        return False, f"No se pudo crear la tarea programada: {type(exc).__name__}: {exc}"
-
-
-def _delete_startup_task() -> tuple[bool, str]:
-    try:
-        result = _run_schtasks([
-            "/Delete",
-            "/TN", STARTUP_TASK_NAME,
-            "/F",
-        ])
-        output = (result.stdout or result.stderr or "").strip()
-        if result.returncode == 0:
-            return True, output or "Tarea programada eliminada."
-        output_lc = output.lower()
-        if "no existe" in output_lc or "cannot find the file" in output_lc:
-            return True, output or "La tarea programada ya no existía."
-        return False, output or f"schtasks devolvió código {result.returncode}."
-    except Exception as exc:
-        return False, f"No se pudo eliminar la tarea programada: {type(exc).__name__}: {exc}"
-
-
-def _get_startup_registration_status() -> dict:
-    expected_command = _expected_startup_command()
-    registry_command = _query_startup_registry_command()
-    registry_match = _normalize_startup_command(registry_command) == _normalize_startup_command(expected_command)
-    task_exists = _startup_task_exists() if getattr(sys, 'frozen', False) else False
-
-    enabled = task_exists or registry_match
-    if task_exists:
-        mode = "task"
-    elif registry_match:
-        mode = "registry"
-    else:
-        mode = "disabled"
-
-    return {
-        "enabled": enabled,
-        "mode": mode,
-        "registry_match": registry_match,
-        "registry_command": registry_command,
-        "task_exists": task_exists,
-        "expected_command": expected_command,
-    }
-
-
-def _repair_startup_registration_if_needed():
-    status = _get_startup_registration_status()
-    if not getattr(sys, 'frozen', False):
-        return status
-    if not status["enabled"]:
-        return status
-
-    if status["task_exists"]:
-        success = set_startup(True)
-        refreshed = _get_startup_registration_status()
-        if success and refreshed["task_exists"]:
-            _log_startup_registration("startup_registration_refreshed=task")
-        else:
-            _log_startup_registration("startup_registration_refresh_failed")
-        return refreshed
-
-    success = set_startup(True)
-    refreshed = _get_startup_registration_status()
-    if success and refreshed["task_exists"]:
-        _log_startup_registration("startup_registration_repaired=task")
-    else:
-        _log_startup_registration("startup_registration_repair_failed")
-    return refreshed
+def is_startup_enabled() -> bool:
+    return startup_preference(cfg_get, cfg_set, LegacyStartup(), _log_startup_registration)
 
 
 def set_startup(run: bool) -> bool:
-    expected_command = _expected_startup_command()
-
-    if run:
-        if getattr(sys, 'frozen', False):
-            task_ok, task_message = _create_startup_task(expected_command)
-            _log_startup_registration(f"startup_enable_task={task_ok}; {task_message}")
-            if task_ok:
-                reg_ok, reg_message = _delete_startup_registry_command()
-                _log_startup_registration(f"startup_cleanup_registry={reg_ok}; {reg_message}")
-                return _get_startup_registration_status()["enabled"]
-
-        reg_ok, reg_message = _set_startup_registry_command(expected_command)
-        _log_startup_registration(f"startup_enable_registry={reg_ok}; {reg_message}")
-        return _get_startup_registration_status()["enabled"]
-
-    reg_ok, reg_message = _delete_startup_registry_command()
-    task_ok, task_message = _delete_startup_task()
-    _log_startup_registration(f"startup_disable_registry={reg_ok}; {reg_message}")
-    _log_startup_registration(f"startup_disable_task={task_ok}; {task_message}")
-    return not _get_startup_registration_status()["enabled"]
-
-
-def is_startup_enabled() -> bool:
-    return _get_startup_registration_status()["enabled"]
+    # Solo la preferencia: el acceso directo de Inicio lo pone el instalador (ver autostart.py).
+    cfg_set(STARTUP_PREFERENCE_KEY, bool(run))
+    _log_startup_registration(f"startup_preference={bool(run)}")
+    return True
 
 
 def main(page: ft.Page):
@@ -333,8 +147,8 @@ def main(page: ft.Page):
         "sync_startup_message": None,
     }
 
-    startup_registration = _repair_startup_registration_if_needed()
-    saved_auto_startup = startup_registration["enabled"]
+    saved_auto_startup = is_startup_enabled()
+    startup_shortcut = shortcut_installed()
 
     def _log_startup_event(message: str):
         append_runtime_log("startup", message)
@@ -364,17 +178,12 @@ def main(page: ft.Page):
 
     def _on_startup_change(e):
         requested_value = bool(e.control.value)
-        success = set_startup(requested_value)
+        set_startup(requested_value)
         chk_auto_startup.value = is_startup_enabled()
         chk_auto_startup.update()
-        if requested_value and not success:
-            _show_message(f"No se pudo registrar el autoarranque. Revisa el log: {get_startup_log_path()}")
-        elif not requested_value and chk_auto_startup.value:
-            _show_message(f"No se pudo desactivar completamente el autoarranque. Revisa el log: {get_startup_log_path()}")
-    _log_startup_event(
-        f"startup_registration mode={startup_registration['mode']}; "
-        f"registry_match={startup_registration['registry_match']}; task_exists={startup_registration['task_exists']}"
-    )
+        if requested_value and getattr(sys, 'frozen', False) and not shortcut_installed():
+            _show_message("Falta el acceso de la carpeta Inicio de Windows: vuelva a instalar ToolKit SISMED.")
+    _log_startup_event(f"startup_preference enabled={saved_auto_startup}; shortcut={startup_shortcut}")
     _log_startup_event(
         f"runtime_context cwd={os.getcwd()}; executable={sys.executable}; frozen={getattr(sys, 'frozen', False)}"
     )
@@ -1571,6 +1380,9 @@ def main(page: ft.Page):
         )
 
 if __name__ == "__main__":
+    # El acceso directo de Inicio siempre abre el Toolkit; con la casilla apagada se cierra sin mostrar nada.
+    if "--autorun" in sys.argv and not is_startup_enabled():
+        sys.exit(0)
     if _acquire_single_instance():
         try:
             ft.app(target=main)

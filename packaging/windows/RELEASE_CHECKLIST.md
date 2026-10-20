@@ -31,6 +31,7 @@
 
 - Revisar apertura de la ventana principal y bandeja del sistema.
 - Revisar configuraciones: autoarranque con Windows y acceso al log de configuracion.
+- El arranque con Windows es el acceso directo `ToolKit SISMED` que deja el instalador en la carpeta Inicio (con `--autorun`). El Toolkit no debe crear tareas programadas ni claves Run: Windows Defender lo borraba como `Behavior:Win32/Persistence.A!ml` (octubre 2026).
 - Revisar Sync SISMED con URL valida e invalida.
 - Revisar una operacion critica de PDF para confirmar dependencias empaquetadas.
 

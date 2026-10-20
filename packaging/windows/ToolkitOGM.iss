@@ -77,12 +77,20 @@ Source: "{#MyBuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+; Abrir al encender Windows: lo pone el instalador, no el Toolkit. Cuando el Toolkit se registraba
+; solo en el arranque (tarea programada o clave Run), Windows Defender lo borraba como
+; "Behavior:Win32/Persistence.A!ml". La casilla del Toolkit solo decide si se queda abierto.
+Name: "{autostartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--autorun"; WorkingDir: "{app}"
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--install-success"; Description: "Ejecutar {#MyAppName}"; Flags: nowait postinstall skipifsilent
 ; Las versiones anteriores del auxiliar solo enviaban /AUTOUPDATE y necesitan este arranque.
 ; El auxiliar seguro envia tambien /SAFEUPDATE y abre la app despues de verificarla.
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--install-success"; Flags: nowait; Check: IsLegacyAutoUpdateMode
+
+[UninstallRun]
+; Tarea de arranque que creaban las versiones anteriores a la 2.3.19.
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ToolkitOGM_Autorun /F"; Flags: runhidden; RunOnceId: "BorrarArranqueAnterior"
 
 [Code]
 function IsAutoUpdateMode: Boolean;
