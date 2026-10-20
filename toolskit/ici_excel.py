@@ -673,7 +673,7 @@ def expiry_sheet(wb, report: IciReport, printable=False):
 
 
 def alerts(rows):
-    """(desabastecidos, 10 de mayor consumo en soles, consumo total en soles, lotes sin movimiento)."""
+    """(desabastecidos, 10 de mayor consumo en cantidad, consumo total en soles, lotes sin movimiento)."""
     products = collections.OrderedDict()
     for t in rows:
         p = products.setdefault(t["CODIGO_MED"], {"desc": t["DESC"], "ff": t["MEDFF"], "cons": 0.0, "val": 0.0,
@@ -685,7 +685,8 @@ def alerts(rows):
         p["ing"] += t["INGRE"] + t["REINGRE"] + t["ING_REGULA"]
     out = sorted(((k, v) for k, v in products.items() if v["cons"] > 0 and v["stock"] <= 0), key=lambda kv: -kv[1]["cons"])
     total = sum(v["val"] for v in products.values())
-    top = sorted((kv for kv in products.items() if kv[1]["val"] > 0), key=lambda kv: -kv[1]["val"])[:10]
+    # En cantidad, no en soles (pedido del usuario, 2026-10-20); a igual cantidad, el de más valor.
+    top = sorted((kv for kv in products.items() if kv[1]["cons"] > 0), key=lambda kv: (-kv[1]["cons"], -kv[1]["val"]))[:10]
     still = sorted((t for t in rows if t["STOCK_FIN"] > 0 and not (t["INGRE"] + t["REINGRE"] + t["ING_REGULA"] + t["TOTAL"])),
                    key=lambda t: -t["STOCK_FIN"] * t["PRECIO"])
     return out, top, total, still
@@ -755,11 +756,12 @@ def alerts_sheet(wb, report: IciReport, printable=False):
            ("INGRESOS", 8, 8, INT0), ("CONSUMO DEL MES", 9, 9, INT0), ("STOCK FINAL", 10, 10, INT0)],
           [[k, v["desc"], v["ff"], v["saldo"], v["ing"], v["cons"], v["stock"]] for k, v in out],
           "Tuvieron consumo en el mes y terminaron con stock cero (sumando todos sus lotes). De mayor a menor consumo.")
-    table("LOS 10 PRODUCTOS DE MAYOR CONSUMO EN SOLES",
+    table("LOS 10 PRODUCTOS DE MAYOR CONSUMO EN CANTIDAD",
           [("CÓDIGO", 1, 1, None), ("DESCRIPCIÓN", 2, 5, None), ("UNIDAD", 6, 6, None), ("CONSUMO DEL MES", 7, 7, INT0),
-           ("VALOR S/", 8, 8, "0.00"), ("% DEL CONSUMO", 9, 9, "0.0%"), ("STOCK FINAL", 10, 10, INT0)],
+           ("VALOR S/", 8, 8, "0.00"), ("% DEL CONSUMO EN S/", 9, 9, "0.0%"), ("STOCK FINAL", 10, 10, INT0)],
           [[k, v["desc"], v["ff"], v["cons"], v["val"], (v["val"] / total) if total else 0, v["stock"]] for k, v in top],
-          "Venta, SIS, intervención sanitaria y demás consumos, valorizados al precio de cada lote.")
+          "Venta, SIS, intervención sanitaria y demás consumos, en unidades del producto. De mayor a menor cantidad; "
+          "el valor, al precio de cada lote.")
     shown = still[:30]
     table(f"LOTES SIN MOVIMIENTO  ·  LOS {len(shown)} DE MAYOR VALOR  (de {len(still)} lotes, S/ {still_value:.2f})",
           [("CÓDIGO", 1, 1, None), ("DESCRIPCIÓN", 2, 3, None), ("UNIDAD", 4, 4, None), ("LOTE", 5, 5, None),

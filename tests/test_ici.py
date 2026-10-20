@@ -434,6 +434,19 @@ class IciExcelTests(unittest.TestCase):
         self.assertFalse(any("3 Y 6" in str(v) or "3 y 6" in str(v) for v in pdf))
         self.assertNotIn("L3", pdf)
 
+    def test_top_10_is_by_quantity_not_by_soles(self):
+        # 001: 100 unidades a S/ 0.10 (S/ 10); 002: 2 unidades a S/ 50 (S/ 100).
+        rows = [tformdet("06502F01", "001", "L1", precio=0.1, SALDO=200, SIS=100),
+                tformdet("06502F01", "002", "L2", precio=50.0, SALDO=10, SIS=2)]
+        m = month(rows)
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        ws = build_workbook(report)[0]["Alertas de farmacia"]
+        cells = [c.value for row in ws.iter_rows() for c in row if c.value is not None]
+        start = cells.index("LOS 10 PRODUCTOS DE MAYOR CONSUMO EN CANTIDAD")
+        listed = [v for v in cells[start:] if v in ("001", "002")]
+        self.assertEqual(listed[:2], ["001", "002"])
+
     def test_excel_has_the_column_letters_with_filter(self):
         wb, _ = build_workbook(self._report())
         ws = wb["ICI"]
