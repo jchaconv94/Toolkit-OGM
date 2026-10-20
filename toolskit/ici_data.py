@@ -241,6 +241,7 @@ class IciReport:
     devoluciones: list = field(default_factory=list)        # salidas que el ICI pone en DEVOLUCIÓN
     anuladas: list = field(default_factory=list)            # recetas anuladas del mes (Sale)
     sin_fua: list = field(default_factory=list)             # recetas vigentes sin FUA en los tipos que lo llevan
+    fua_revisadas: int = 0                                  # recetas vigentes de esos tipos que se revisaron
     fua_tipos: list = field(default_factory=list)           # tipos de atención que llevan FUA
     ventas: bool = False                                    # el SISMED tiene TVENTA
 
@@ -656,6 +657,7 @@ def recipe_control(month: IciMonth, codes: set[str]) -> dict:
         "anuladas": sorted((s for s in sales if not s.activa), key=order),
         "sin_fua": sorted((s for s in sales if s.activa and s.column in tipos and s.sin_fua), key=order),
         "fua_tipos": tipos,
+        "fua_revisadas": sum(1 for s in sales if s.activa and s.column in tipos),
         "ventas": month.sales is not None,
     }
 

@@ -337,7 +337,19 @@ class IciDataTests(unittest.TestCase):
         self.assertIn("07/08/2026 11:20", cells)
         self.assertIn("09:15", cells)
         self.assertIn("R-1", cells)
+        self.assertEqual(report.fua_revisadas, 2)
+        self.assertIn("de 2 recetas S.I.S. revisadas", cells)
         self.assertFalse(any("B001-5" in v for v in cells))
+
+    def test_recipe_control_says_when_sis_recipes_were_not_found(self):
+        # «0 sin FUA» no debe confundirse con no haber encontrado las recetas SIS.
+        m = month([tformdet("06513", "001", "L1", SALDO=10, SIS=2)], ventas=[],
+                  tformato=[{"ANNOMES": MONTH, "CODIGO_PRE": "06513", "TIPSUM": "S", "REC_SIS": 185}])
+        est = m.establishments[0]
+        report = ici_data.pharmacy_report(m, est, est.pharmacies[0])
+        cells = [str(c.value) for row in build_workbook(report)[0]["Control de recetas"].iter_rows()
+                 for c in row if c.value is not None]
+        self.assertTrue(any("No se encontraron" in v and "185" in v for v in cells))
 
     def test_warns_when_no_movement_is_found(self):
         m = month([tformdet("06513", "001", "L1", SALDO=10, INGRE=20)],

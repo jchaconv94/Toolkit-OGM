@@ -1275,8 +1275,7 @@ def control_sheet(wb, report: IciReport, printable=False):
     # Indicadores
     half = nc // 2
     kpis = [((1, half), "RECETAS ANULADAS", len(anuladas), f"S/ {sum(x.total for x in anuladas):.2f}  ·  no cuentan en el ICI", "venc"),
-            ((half + 1, nc), "RECETAS SIN FUA", len(sin_fua),
-             "  ·  ".join(f"{TIPO_ATENCION.get(t, t)} {sum(1 for x in sin_fua if x.column == t)}" for t in report.fua_tipos), "dev")]
+            ((half + 1, nc), "RECETAS SIN FUA", len(sin_fua), f"de {report.fua_revisadas} recetas {tipos} revisadas", "dev")]
     for (c1, c2), label, value, hint, tone in kpis:
         box(ws, 4, c1, 4, c2, label, fnt(7.5, True, INKT[tone]), TINT[tone], CENTER)
         box(ws, 5, c1, 5, c2, value, fnt(15, True, INKT[tone]), TINT[tone], CENTER, fmt='0;-0;"0"')
@@ -1327,6 +1326,15 @@ def control_sheet(wb, report: IciReport, printable=False):
               + farmacia, rows, "Sin recetas anuladas en el mes.")
     if anuladas:
         r = _cancelled_by_type(ws, page, r, nc, anuladas)
+    # Que se vea si se revisaron recetas: «0 sin FUA» no es lo mismo que no haber encontrado las recetas.
+    official_sis = report.recetas[CONSUMO.index("SIS")] if report.recetas else 0
+    if report.fua_revisadas:
+        no_fua_text = f"Las {report.fua_revisadas} recetas {tipos} del mes tienen su FUA."
+    elif official_sis:
+        no_fua_text = (f"No se encontraron en las ventas del SISMED (TVENTA) las {int(official_sis)} recetas {tipos} "
+                       "que tiene el ICI: no se pudo revisar el FUA.")
+    else:
+        no_fua_text = f"Sin recetas {tipos} en el mes."
     rows = []
     for x in sin_fua:
         fecha, hora = _moment(x.fecha)
@@ -1334,7 +1342,7 @@ def control_sheet(wb, report: IciReport, printable=False):
                      x.receta or "—", x.usuario or "—", x.numero or "—"] + ([x.code[-3:]] if farmacia else []))
     table(r, f"RECETAS SIN FUA  ·  {len(sin_fua)}  ·  {tipos}",
           ["FECHA", "HORA", "COMPROBANTE", "TIPO DE ATENCIÓN", "VALOR S/", "N° DE RECETA", "REGISTRÓ", "N° DE VENTA"]
-          + farmacia, rows, "Todas las recetas tienen su FUA.")
+          + farmacia, rows, no_fua_text)
     page.setup("Control de recetas", report, titles="1:2")
 
 
