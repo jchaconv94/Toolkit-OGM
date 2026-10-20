@@ -72,12 +72,23 @@ catch {
 
 Write-Host ""
 Write-Host "== Autoarranque Toolkit ==" -ForegroundColor Cyan
+# Desde la 2.3.19 el arranque es un acceso directo que deja el instalador en la carpeta Inicio.
+$startupLinks = @(
+    (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\StartUp\ToolKit SISMED.lnk"),
+    (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\ToolKit SISMED.lnk")
+)
+foreach ($link in $startupLinks) {
+    Write-Host ("{0}: {1}" -f $link, (Test-Path -LiteralPath $link))
+}
+# Las versiones anteriores se registraban solas (tarea o clave Run) y Defender las borraba por eso.
 try {
-    schtasks /Query /TN "ToolKit SISMED Autoarranque" /V /FO LIST 2>$null
+    schtasks /Query /TN "ToolkitOGM_Autorun" /V /FO LIST 2>$null
 }
 catch {
     Write-Host "No se pudo consultar la tarea programada." -ForegroundColor Yellow
 }
+Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "ToolkitOGM_Sync" -ErrorAction SilentlyContinue |
+    Select-Object ToolkitOGM_Sync | Format-List
 
 Write-Host ""
 Write-Host "Diagnostico terminado."

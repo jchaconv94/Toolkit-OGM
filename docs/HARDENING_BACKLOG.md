@@ -77,12 +77,12 @@ Estado: Completada
 ## Fase 6 - Autoarranque Windows endurecido
 
 Prioridad: Media
-Estado: En progreso
+Estado: Hecho (2.3.19)
 
 ### Tareas
-- Mantener la clave Run actual y evaluar ruta alternativa con Tarea Programada.
-- Agregar retraso opcional de arranque para entornos lentos de logon.
-- Detectar y registrar si el registro de autoarranque falla por permisos o politicas.
+- El arranque lo deja el instalador: acceso directo en la carpeta Inicio con `--autorun` (`toolskit/autostart.py`).
+- El Toolkit ya no crea la tarea `ToolkitOGM_Autorun` ni la clave Run `ToolkitOGM_Sync`: Windows Defender lo borraba como `Behavior:Win32/Persistence.A!ml`. La primera vez toma de ellas la preferencia y las borra.
+- La casilla guarda la preferencia `auto_startup`; apagada, el Toolkit abierto al encender Windows se cierra sin mostrar nada.
 
 ### Criterio de salida
 - El autoarranque es mas predecible en laptops lentas o corporativas.
