@@ -117,6 +117,39 @@ class LegacyStartupTests(unittest.TestCase):
         self.assertEqual(legacy.remove(), [])
         self.assertTrue(all(c[1] == "/Query" for c in calls))
 
+    def _task(self, user, encoding=None):
+        calls = []
+        xml = f'<?xml version="1.0"?><Task><Principals><Principal id="Author"><UserId>{user}</UserId>' \
+              '</Principal></Principals></Task>'
+        if encoding:
+            xml = xml.encode(encoding).decode("latin-1")
+
+        def run(arguments):
+            calls.append(arguments)
+            return SimpleNamespace(returncode=0, stdout=xml, stderr="")
+
+        return calls, run
+
+    def test_task_of_another_windows_user_is_left_alone(self):
+        calls, run = self._task("S-1-5-21-1-2-3-1002")
+        legacy = LegacyStartup(run=run, registry=FakeRegistry({}), user_ids={"S-1-5-21-1-2-3-1001", "ana"})
+        self.assertFalse(legacy.enabled())
+        self.assertEqual(legacy.remove(), ["startup_legacy_task_kept owner=S-1-5-21-1-2-3-1002"])
+        self.assertFalse(any("/Delete" in c for c in calls))
+
+    def test_own_task_by_sid_or_name_counts_and_is_removed(self):
+        for user in ("S-1-5-21-1-2-3-1001", "LAPTOP\\Ana", "ana"):
+            calls, run = self._task(user)
+            legacy = LegacyStartup(run=run, registry=FakeRegistry({}),
+                                   user_ids={"s-1-5-21-1-2-3-1001", "laptop\\ana", "ana"})
+            self.assertTrue(legacy.enabled(), user)
+            legacy.remove()
+            self.assertIn(["schtasks", "/Delete", "/TN", "ToolkitOGM_Autorun", "/F"], calls)
+
+    def test_reads_the_owner_from_utf16_output(self):
+        _, run = self._task("S-1-5-21-9", encoding="utf-16-le")
+        self.assertEqual(LegacyStartup(run=run, registry=FakeRegistry({}), user_ids=set()).task_owner(), "S-1-5-21-9")
+
     def test_main_no_longer_registers_itself(self):
         source = (TOOLKIT_DIR / "main.py").read_text(encoding="utf-8")
         for forbidden in ("/Create", "SetValueEx", "CurrentVersion\\Run"):
