@@ -1,9 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 import hashlib
-import importlib.metadata
 import json
 import os
+import platform
 import sys
 from pathlib import Path
 
@@ -95,16 +95,27 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _content(src) -> str:
+    path = Path(str(src or ""))
+    return _sha256(path) if path.is_file() else "-"
+
+
 def _runtime_id(public_key: str) -> str:
     """Identidad del runtime: si cambia, una actualización de código no sirve y hace falta el instalador.
-    Cambia con Python, PyInstaller, cualquier librería, los módulos que entran en el exe y el arranque."""
-    parts = [f"python={sys.version}", f"pyinstaller={PyInstaller.__version__}", f"key={public_key}"]
-    parts += sorted(f"{d.metadata['Name']}=={d.version}" for d in importlib.metadata.distributions())
-    parts += sorted(f"pure:{entry[0]}" for entry in a.pure)
-    parts += sorted(f"bin:{entry[0]}" for entry in a.binaries)
-    parts += sorted(f"data:{entry[0]}" for entry in a.datas if Path(entry[0]).parts[0] != "app")
+
+    Sale del contenido de cada archivo que se instala fuera del código del Toolkit (Python, librerías,
+    sus DLL y datos, Flet), de la versión de PyInstaller (su arranque va en el exe) y de los archivos
+    de la compilación y el instalador. No de lo instalado en el equipo de compilación: pip y lo que no
+    viaja con el programa no cuentan (antes sí, y casi cada versión salía con otro runtime). Para que
+    no cambie solo, Python, PyInstaller y todas las librerías están fijados (build-constraints.txt)."""
+    parts = [f"python={platform.python_version()}", f"pyinstaller={PyInstaller.__version__}", f"key={public_key}"]
+    shipped = [("pure", a.pure), ("bin", a.binaries),
+               ("data", [e for e in a.datas if Path(e[0]).parts[0] != "app"]), ("flet", FLET_DESKTOP_TREE)]
+    for kind, toc in shipped:
+        parts += sorted(f"{kind}:{entry[0]}={_content(entry[1])}" for entry in toc)
     for path in [*(TOOLKIT_DIR / f"{name}.py" for name in RUNTIME_MODULES), Path(SPEC),
-                 SPEC_DIR / "ToolkitOGM.iss", SPEC_DIR / "ToolkitUpdater.cs", SPEC_DIR / "build_windows.ps1"]:
+                 SPEC_DIR / "ToolkitOGM.iss", SPEC_DIR / "ToolkitUpdater.cs", SPEC_DIR / "build_windows.ps1",
+                 SPEC_DIR / "build-constraints.txt"]:
         parts.append(f"file:{path.name}={_sha256(path)}")
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]
 

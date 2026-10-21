@@ -78,12 +78,20 @@ if (-not (Test-Path $pythonExe)) {
     throw "No se encontro el interprete esperado en .venv\Scripts\python.exe"
 }
 
+# Python, PyInstaller y las librerías fijados: así el runtime (ToolkitOGM.spec) solo cambia cuando se
+# actualiza algo a propósito y las PC pueden recibir la actualización chica de código.
+$constraintsFile = Join-Path $scriptDir "build-constraints.txt"
+$pythonVersion = (& $pythonExe -c "import platform; print(platform.python_version())").Trim()
+if ($pythonVersion -ne "3.12.10") {
+    Write-Warning "Se compila con Python $pythonVersion y no con 3.12.10: el runtime cambia y las PC necesitaran el instalador completo."
+}
+
 Write-Host "==> Instalando dependencias de runtime..." -ForegroundColor Cyan
-& $pythonExe -m pip install -r (Join-Path $toolkitDir "requirements.txt")
+& $pythonExe -m pip install -r (Join-Path $toolkitDir "requirements.txt") -c $constraintsFile
 Assert-LastExitCode "Fallo la instalacion de dependencias de runtime"
 
 Write-Host "==> Instalando PyInstaller..." -ForegroundColor Cyan
-& $pythonExe -m pip install pyinstaller
+& $pythonExe -m pip install pyinstaller -c $constraintsFile
 Assert-LastExitCode "Fallo la instalacion de PyInstaller"
 
 if (-not (Test-Path $iconPng)) {

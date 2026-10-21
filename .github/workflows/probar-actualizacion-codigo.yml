@@ -37,7 +37,7 @@ jobs:
       - name: Preparar Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.12.10"
           cache: pip
           cache-dependency-path: toolskit/requirements.txt
 
@@ -46,7 +46,7 @@ jobs:
         run: |
           python -m venv .venv
           .\.venv\Scripts\python.exe -m pip install --upgrade pip
-          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt
+          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt -c packaging\windows\build-constraints.txt
 
       - name: Instalar Inno Setup
         shell: pwsh
@@ -69,6 +69,7 @@ jobs:
         run: |
           pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item build\runtime.json build\runtime-base.json
           .\.venv\Scripts\python.exe tests\e2e_windows_code_update.py base
 
       - name: Armar, firmar y aplicar una actualizacion de codigo
@@ -96,6 +97,11 @@ jobs:
           Set-Content -LiteralPath VERSION -Value "9.9.60"
           pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Otra versión y otro código, mismo programa instalado: el runtime no puede cambiar.
+          $base = (Get-Content build\runtime-base.json -Raw | ConvertFrom-Json).runtime
+          $again = (Get-Content build\runtime.json -Raw | ConvertFrom-Json).runtime
+          if ($base -ne $again) { throw "El runtime cambio entre dos compilaciones iguales ($base / $again)." }
+          Write-Host "Runtime estable entre compilaciones: $base"
           .\.venv\Scripts\python.exe tests\e2e_windows_code_update.py full
 
       - name: Copiar registros si algo falla

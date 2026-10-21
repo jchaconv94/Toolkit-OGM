@@ -133,14 +133,20 @@ class SyncSismedTool(SismedTool):
             self._record_autostart_result("started")
         return True
 
-    def start_from_saved(self, page: ft.Page):
+    def start_from_saved(self, page: ft.Page, resume: bool | None = None):
+        """Al abrir el Toolkit. `resume` viene del reinicio silencioso para actualizar: True si Sync
+        estaba encendido (se enciende aunque la casilla «Iniciar al encender» esté apagada), False si
+        estaba apagado (queda apagado); None en un arranque normal (manda la casilla)."""
         self._init_components(page)
         self._load_saved_preferences()
         self._startup_attempted = True
         if self.sync_manager.is_running:
             self._record_autostart_result("already-running")
             return False
-        if not self._cfg_bool("sync_auto_start", False):
+        if resume is False:
+            self._record_autostart_result("kept-off-after-update-restart")
+            return False
+        if resume is None and not self._cfg_bool("sync_auto_start", False):
             self._record_autostart_result("auto-start-disabled")
             return False
         return self._start_sync_if_valid(page, source="autostart")
