@@ -10,7 +10,9 @@ Toolkit se reinicia solo, sin mostrar nada, cuando se cumple todo esto:
 - no se intentó ya dos veces con esa versión, ni hace menos de RETRY_SECONDS.
 
 Se vuelve a revisar justo antes de reiniciar. El Toolkit nuevo espera a que el anterior termine
-(`--wait-pid`) y arranca escondido, como al encender Windows.
+(`--wait-pid`) y arranca escondido, como al encender Windows. Sync SISMED (y con él la conexión de
+los backups) queda como estaba: encendido si lo estaba aunque la casilla «Iniciar al encender»
+esté apagada, y apagado si alguien lo detuvo (`restart_args`, `sync_choice`).
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ RETRY_SECONDS = 6 * 60 * 60
 MAX_ATTEMPTS = 2
 BUSY_UPDATER_STATES = {"checking", "downloading", "installing"}
 RESTART_ARGS = ("--autorun", "--update-restart")
+SYNC_ON_ARG = "--resume-sync"
+SYNC_OFF_ARG = "--sync-off"
 
 
 def _seconds(name: str, default: int) -> int:
@@ -47,6 +51,21 @@ def check_seconds() -> int:
 
 def _key(version: str) -> tuple:
     return tuple(int(part) for part in version.split("."))
+
+
+def restart_args(sync_running: bool) -> list[str]:
+    """Con qué abrir el Toolkit nuevo: escondido y con Sync SISMED como estaba en el anterior."""
+    return [*RESTART_ARGS, SYNC_ON_ARG if sync_running else SYNC_OFF_ARG]
+
+
+def sync_choice(argv) -> bool | None:
+    """True: encender Sync SISMED (estaba encendido); False: dejarlo apagado (estaba apagado);
+    None: lo que diga la casilla «Iniciar al encender» (un arranque normal)."""
+    if SYNC_ON_ARG in argv:
+        return True
+    if SYNC_OFF_ARG in argv:
+        return False
+    return None
 
 
 def pending_version(bundle, root, running_version: str) -> str | None:

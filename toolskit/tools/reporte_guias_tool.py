@@ -12,6 +12,7 @@ Depende de: guia_report.GuiaReportManager
 import flet as ft
 from datetime import datetime
 
+import activity
 from guia_report import GuiaReportManager
 from tools.base_tool import SismedTool, ToolMetadata
 from tools.app_config import get as cfg_get, set as cfg_set
@@ -251,7 +252,8 @@ class ReporteGuiasTool(SismedTool):
         def _on_save_result(e: ft.FilePickerResultEvent):
             if e.path:
                 rp = e.path if e.path.lower().endswith(".xlsx") else f"{e.path}.xlsx"
-                _run_report(rp)
+                with activity.busy("Reporte de Guías"):
+                    _run_report(rp)
 
         report_save_picker = ft.FilePicker(on_result=_on_save_result)
         page.overlay.append(report_save_picker)

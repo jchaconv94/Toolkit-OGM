@@ -75,9 +75,15 @@ class CodeUpdater:
         """Solo el programa instalado con el código aparte (`runtime.json`) puede usarlas."""
         return bool(self.bundle and app_loader.read_runtime(self.bundle).get("runtime"))
 
+    def failed_here(self, version: str) -> bool:
+        """Esa versión ya no abrió en esta PC (`app_loader` la marcó como mala): no se vuelve a usar
+        como actualización de código, queda el instalador completo."""
+        state = app_loader.State(self.root)
+        return version in state.data["bad"] or state.failed_starts(version) >= app_loader.MAX_FAILED_STARTS
+
     def ready(self, version: str) -> bool:
-        return bool(self.bundle) and app_loader.verify_folder(self.root / version,
-                                                              app_loader.read_runtime(self.bundle)) is not None
+        return bool(self.bundle) and not self.failed_here(version) and app_loader.verify_folder(
+            self.root / version, app_loader.read_runtime(self.bundle)) is not None
 
     def _get(self, url: str, limit: int, digest=None, out=None, progress=None, total=0) -> bytes:
         self.validate_url(url)
@@ -106,6 +112,9 @@ class CodeUpdater:
         """Descarga y deja lista la actualización. None si no es para este runtime (queda el instalador)."""
         runtime = app_loader.read_runtime(self.bundle) if self.bundle else {}
         if not runtime.get("runtime"):
+            return None
+        if self.failed_here(info.version):
+            self.log(f"La actualización de código {info.version} no abrió en esta PC: se usará el instalador completo.")
             return None
         if self.ready(info.version):
             return info.version

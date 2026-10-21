@@ -32,7 +32,7 @@ jobs:
       - name: Preparar Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.12.10"
           cache: pip
           cache-dependency-path: toolskit/requirements.txt
 
@@ -59,7 +59,7 @@ jobs:
         run: |
           python -m venv .venv
           .\.venv\Scripts\python.exe -m pip install --upgrade pip
-          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt
+          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt -c packaging\windows\build-constraints.txt
 
       - name: Instalar Inno Setup
         shell: pwsh
@@ -100,6 +100,28 @@ jobs:
         env:
           UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
         run: .\.venv\Scripts\python.exe packaging\windows\sign_code_update.py dist\installer
+
+      - name: Comparar el runtime con la version anterior
+        # Solo informa: si es el mismo, las PC con la versión anterior reciben solo el código.
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $runtime = (Get-Content build\runtime.json -Raw | ConvertFrom-Json).runtime
+          $latest = gh release view --repo "$env:TARGET_REPOSITORY" --json tagName,assets | ConvertFrom-Json
+          $asset = $latest.assets | Where-Object { $_.name -like "ToolkitOGM-app-*.json" } | Select-Object -First 1
+          if (-not $asset) {
+            $msg = "La version anterior ($($latest.tagName)) no tiene actualizacion de codigo: esta llega con el instalador completo."
+          } else {
+            gh release download $latest.tagName --repo "$env:TARGET_REPOSITORY" --pattern $asset.name --dir build\anterior --clobber
+            $previous = (Get-Content (Join-Path build\anterior $asset.name) -Raw | ConvertFrom-Json).runtime
+            if ($previous -eq $runtime) {
+              $msg = "Mismo runtime que $($latest.tagName): las PC con esa version reciben solo el codigo."
+            } else {
+              $msg = "Runtime distinto de $($latest.tagName) ($previous -> $runtime): esta version llega con el instalador completo."
+            }
+          }
+          Write-Host $msg
+          "### Runtime`n`n$msg" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Probar actualizacion real en una instalacion aislada
         shell: pwsh

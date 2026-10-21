@@ -234,6 +234,44 @@ class LoaderTests(unittest.TestCase):
             app_loader.run_main(broken, None)
         popen.assert_not_called()
 
+    def test_odd_state_file_never_stops_the_toolkit_from_opening(self):
+        self.install.add_update("2.4.5")
+        for content in ("[]", '"x"', "7", '{"trying": [], "bad": "2.4.5"}', '{"trying": {"2.4.5": "x"}}', "{roto"):
+            (self.install.root / "state.json").write_text(content, encoding="utf-8")
+            state = app_loader.State(self.install.root)
+            self.assertEqual((type(state.data["trying"]), type(state.data["bad"])), (dict, list), content)
+            self.assertEqual(self.choose().version, "2.4.5", content)
+            (self.install.root / "state.json").write_text(content, encoding="utf-8")
+            self.assertEqual(self.run_launcher(), ("2.4.5", "2.4.5"), content)
+            (self.install.root / "state.json").write_text(content, encoding="utf-8")
+            env = {"LOCALAPPDATA": str(Path(self.tmp.name) / "local"), "TOOLKIT_VERSION_OVERRIDE": "2.4.5"}
+            with mock.patch.dict(os.environ, env), \
+                    mock.patch.object(sys, "_MEIPASS", str(self.install.bundle), create=True):
+                app_loader.mark_healthy()
+
+    def test_reopened_toolkit_skips_the_version_that_failed_even_without_state_file(self):
+        self.install.add_update("2.4.4")
+        self.install.add_update("2.4.5")
+        update = app_loader.CodeUpdate("2.4.5", self.install.root / "2.4.5")
+        broken = SimpleNamespace(run=lambda: (_ for _ in ()).throw(RuntimeError("falla")))
+        env = {"LOCALAPPDATA": str(Path(self.tmp.name) / "local"), "TOOLKIT_VERSION_OVERRIDE": "2.4.5"}
+        # state.json no se puede escribir: la marca de «mala» no queda en el archivo.
+        with mock.patch.dict(os.environ, env), mock.patch("subprocess.Popen") as popen, \
+                mock.patch.object(app_loader.State, "save"):
+            app_loader.run_main(broken, update)
+        child_env = popen.call_args[1]["env"]
+        self.assertEqual(child_env[app_loader.SKIP_ENV], "2.4.5")
+        self.assertNotIn("TOOLKIT_VERSION_OVERRIDE", child_env)
+        self.assertNotIn("2.4.5", app_loader.State(self.install.root).data["bad"])
+        # El Toolkit que se vuelve a abrir no vuelve a la 2.4.5 (ni el reinicio para actualizar la ofrece).
+        try:
+            with mock.patch.dict(os.environ, {app_loader.SKIP_ENV: "2.4.5"}):
+                self.assertEqual(self.run_launcher(), ("2.4.4", "2.4.4"))
+            self.assertEqual(self.choose().version, "2.4.4")
+        finally:
+            app_loader._skipped = ""
+        self.assertEqual(self.choose().version, "2.4.5")
+
     def test_inherited_version_override_is_cleared(self):
         with mock.patch.dict(os.environ, {"TOOLKIT_VERSION_OVERRIDE": "9.9.9"}):
             self.assertEqual(self.run_launcher(), ("instalador", None))
@@ -301,6 +339,26 @@ class DownloadTests(unittest.TestCase):
         calls = len(updater.session.calls)
         self.assertEqual(updater.install(info), "2.4.5")
         self.assertEqual(len(updater.session.calls), calls)
+
+    def test_version_that_failed_here_is_not_ready_and_goes_to_the_full_installer(self):
+        files = self.files()
+        updater = self.updater(files)
+        info = find_code_update([release("2.4.5", *(u.rsplit("/", 1)[1] for u in files))], "2.4.3")
+        self.assertEqual(updater.install(info), "2.4.5")
+        state = app_loader.State(self.install.root)
+        state.mark_bad("2.4.5")
+        state.save()
+        self.assertFalse(updater.ready("2.4.5"))
+        calls = len(updater.session.calls)
+        self.assertIsNone(updater.install(info))  # None: el actualizador sigue con el instalador completo
+        self.assertEqual(len(updater.session.calls), calls)
+        # Dos arranques sin terminar cuentan igual, aunque todavía no esté marcada.
+        state = app_loader.State(self.install.root)
+        state.data["bad"].clear()
+        state.data["trying"]["2.4.5"] = app_loader.MAX_FAILED_STARTS
+        state.save()
+        self.assertFalse(updater.ready("2.4.5"))
+        self.assertIsNone(updater.install(info))
 
     def test_other_runtime_means_full_installer(self):
         files = self.files(runtime="otro")

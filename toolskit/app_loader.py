@@ -28,6 +28,10 @@ from pathlib import Path
 
 MAX_FAILED_STARTS = 2
 _VERSION = re.compile(r"^\d+(\.\d+){1,3}$")
+# La versión que se acaba de caer al abrir, para el Toolkit que se vuelve a abrir solo (`run_main`):
+# no depende de poder escribir state.json.
+SKIP_ENV = "TOOLKIT_SKIP_CODE_UPDATE"
+_skipped = ""  # la de SKIP_ENV en este arranque: tampoco la ofrece el reinicio para actualizar
 
 
 @dataclass
@@ -128,11 +132,17 @@ class State:
     def __init__(self, root: Path):
         self.path = root / "state.json"
         try:
-            self.data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            self.data = {}
-        self.data.setdefault("trying", {})
-        self.data.setdefault("bad", [])
+            data = {}
+        # Un archivo dañado o con otra forma no puede impedir que el Toolkit abra.
+        if not isinstance(data, dict):
+            data = {}
+        trying = data.get("trying")
+        data["trying"] = {str(k): v for k, v in trying.items() if isinstance(v, int)} if isinstance(trying, dict) else {}
+        bad = data.get("bad")
+        data["bad"] = [str(v) for v in bad if isinstance(v, str)] if isinstance(bad, list) else []
+        self.data = data
 
     def save(self):
         try:
@@ -152,11 +162,13 @@ class State:
         self.data["trying"].pop(version, None)
 
 
-def choose(bundle: Path, root: Path, state: State | None = None) -> CodeUpdate | None:
-    """La actualización de código más nueva que se puede usar, o None para el código del instalador."""
+def choose(bundle: Path, root: Path, state: State | None = None, skip: str = "") -> CodeUpdate | None:
+    """La actualización de código más nueva que se puede usar, o None para el código del instalador.
+    `skip`: una versión que no se debe abrir aunque state.json no la tenga como mala."""
     runtime = read_runtime(bundle)
     base = bundled_version(bundle)
     state = state or State(root)
+    skip = skip or _skipped
     try:
         folders = [p for p in root.iterdir() if p.is_dir() and _VERSION.match(p.name)]
     except OSError:
@@ -164,7 +176,7 @@ def choose(bundle: Path, root: Path, state: State | None = None) -> CodeUpdate |
     changed = False
     for folder in sorted(folders, key=lambda p: version_key(p.name), reverse=True):
         version = folder.name
-        if version_key(version) <= version_key(base) or version in state.data["bad"]:
+        if version_key(version) <= version_key(base) or version in state.data["bad"] or version == skip:
             continue
         if state.failed_starts(version) >= MAX_FAILED_STARTS:
             state.mark_bad(version)
@@ -208,15 +220,17 @@ def _forget_modules(prefix: str):
 
 def prepare() -> CodeUpdate | None:
     """Pone en sys.path el código que se va a abrir. Fuera del programa instalado no hace nada."""
+    global _skipped
     bundle = bundle_dir()
     if bundle is None:
         return None
     # Un Toolkit abierto por el actualizador hereda el entorno del anterior: la versión la decide este arranque.
     os.environ.pop("TOOLKIT_VERSION_OVERRIDE", None)
+    _skipped = os.environ.pop(SKIP_ENV, "")
     root = updates_root()
-    state = State(root)
-    update = None
+    update = state = None
     try:
+        state = State(root)
         update = choose(bundle, root, state)
     except Exception:  # noqa: BLE001 - ante cualquier duda, el código del instalador
         update = None
@@ -272,7 +286,10 @@ def run_main(main, update: CodeUpdate | None):
         state.save()
         import subprocess
 
-        subprocess.Popen([sys.executable, *sys.argv[1:]], close_fds=True,
+        # Aunque state.json no se haya podido escribir, el que se abre no vuelve a esta versión.
+        env = {**os.environ, SKIP_ENV: update.version}
+        env.pop("TOOLKIT_VERSION_OVERRIDE", None)
+        subprocess.Popen([sys.executable, *sys.argv[1:]], close_fds=True, env=env,
                          creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
 
 

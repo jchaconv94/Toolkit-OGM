@@ -432,7 +432,7 @@ def main(page: ft.Page):
     sync_tool = get_tool_by_name("Sync SISMED")
     if sync_tool and hasattr(sync_tool, "start_from_saved"):
         try:
-            sync_started = sync_tool.start_from_saved(page)
+            sync_started = sync_tool.start_from_saved(page, resume=update_restart.sync_choice(sys.argv))
             sync_startup_status = getattr(sync_tool, "last_startup_status", "unknown")
             sync_startup_error = getattr(sync_tool, "last_startup_error", None)
             if sync_started:
@@ -1422,19 +1422,27 @@ def main(page: ft.Page):
             attempts=cfg_get("update_restart_attempts") or {},
         )
 
+    def _sync_running() -> bool:
+        tool = get_tool_by_name("Sync SISMED")
+        manager = getattr(tool, "sync_manager", None) if tool else None
+        # «stopping»: alguien lo está deteniendo, queda apagado.
+        return bool(manager) and getattr(manager, "run_state", "") in {"starting", "running"}
+
     def _restart_for_update(version: str) -> bool:
         cfg_set("update_restart_attempts",
                 update_restart.record_attempt(cfg_get("update_restart_attempts") or {}, version, time.time()))
+        sync_running = _sync_running()
         try:
             subprocess.Popen(
-                [sys.executable, *update_restart.RESTART_ARGS, "--wait-pid", str(os.getpid())],
+                [sys.executable, *update_restart.restart_args(sync_running), "--wait-pid", str(os.getpid())],
                 close_fds=True,
                 creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
             )
         except OSError as exc:
             append_runtime_log("update", f"No se pudo reiniciar para aplicar la versión {version}: {exc}")
             return False
-        append_runtime_log("update", f"Reinicio silencioso para aplicar la versión {version}.")
+        append_runtime_log("update", f"Reinicio silencioso para aplicar la versión {version} "
+                                     f"(Sync SISMED {'encendido' if sync_running else 'apagado'}).")
         _close_toolkit()
         return True
 

@@ -3,6 +3,7 @@ import sys
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +13,7 @@ if str(TOOLKIT_DIR) not in sys.path:
 
 import activity  # noqa: E402
 import app_loader  # noqa: E402
+import update_restart  # noqa: E402
 from update_restart import (MAX_ATTEMPTS, RETRY_SECONDS, RestartWatcher, Situation, decide,  # noqa: E402
                             record_attempt)
 
@@ -164,6 +166,63 @@ class SyncMarksItsWorkTests(unittest.TestCase):
             manager._sync_loop()
         self.assertEqual(seen, [["Sync SISMED"]])
         self.assertEqual(activity.active(), [])
+
+
+class SyncAfterRestartTests(unittest.TestCase):
+    """El reinicio silencioso deja Sync SISMED (y la conexión de los backups) como estaba."""
+
+    def test_the_new_toolkit_is_told_how_sync_was(self):
+        on = update_restart.restart_args(True)
+        off = update_restart.restart_args(False)
+        self.assertEqual(on[:2], list(update_restart.RESTART_ARGS))
+        self.assertIs(update_restart.sync_choice(["ToolkitOGM.exe", *on, "--wait-pid", "12"]), True)
+        self.assertIs(update_restart.sync_choice(["ToolkitOGM.exe", *off, "--wait-pid", "12"]), False)
+        # Al encender Windows o abrirlo a mano manda la casilla «Iniciar al encender».
+        self.assertIsNone(update_restart.sync_choice(["ToolkitOGM.exe", "--autorun"]))
+
+    def tool(self, auto_start: bool):
+        try:
+            from tools.sync_sismed_tool import SyncSismedTool
+        except Exception as exc:  # noqa: BLE001 - depende de flet
+            self.skipTest(f"sync_sismed_tool no se puede importar aquí: {exc}")
+        tool = SyncSismedTool()
+        tool.sync_manager = SimpleNamespace(is_running=False)
+        started = []
+        patches = [
+            mock.patch.object(tool, "_init_components"),
+            mock.patch.object(tool, "_load_saved_preferences"),
+            mock.patch.object(tool, "_record_autostart_result"),
+            mock.patch.object(tool, "_cfg_bool", lambda name, default=False: auto_start),
+            mock.patch.object(tool, "_start_sync_if_valid", lambda page, source: started.append(source) or True),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        return tool, started
+
+    def test_sync_started_by_hand_comes_back_after_the_restart(self):
+        tool, started = self.tool(auto_start=False)
+        self.assertTrue(tool.start_from_saved(None, resume=True))
+        self.assertEqual(started, ["autostart"])
+
+    def test_sync_stopped_on_purpose_stays_stopped(self):
+        tool, started = self.tool(auto_start=True)
+        self.assertFalse(tool.start_from_saved(None, resume=False))
+        self.assertEqual(started, [])
+        tool._record_autostart_result.assert_called_with("kept-off-after-update-restart")
+
+    def test_a_normal_start_follows_the_checkbox(self):
+        tool, started = self.tool(auto_start=False)
+        self.assertFalse(tool.start_from_saved(None))
+        tool, started = self.tool(auto_start=True)
+        self.assertTrue(tool.start_from_saved(None))
+        self.assertEqual(started, ["autostart"])
+
+    def test_main_passes_the_sync_state_to_the_new_toolkit(self):
+        text = (TOOLKIT_DIR / "main.py").read_text(encoding="utf-8")
+        self.assertIn("update_restart.restart_args(sync_running)", text)
+        self.assertIn("resume=update_restart.sync_choice(sys.argv)", text)
+        self.assertNotIn("*update_restart.RESTART_ARGS", text)
 
 
 class WaitForPreviousTests(unittest.TestCase):
