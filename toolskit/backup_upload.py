@@ -22,6 +22,7 @@ import io
 import json
 import os
 import re
+import struct
 import tempfile
 import threading
 import time
@@ -84,11 +85,37 @@ def default_watch_state() -> Path:
 
 
 def _zip_ok(path: Path) -> bool:
-    """El zip está completo: tiene su índice al final y los datos coinciden (no lo descomprime a disco)."""
+    """El zip está completo, sin necesitar su contraseña (no lo descomprime a disco).
+
+    El backup del SISMED tiene contraseña. Hasta la 2.3.18 se comprobaba con `testzip`, que lee cada
+    archivo de adentro: con contraseña no puede, el backup quedaba como dañado y la copia en la nube
+    nunca subía (solo subía si alguien lo pedía desde la web). Ahora se comprueba la estructura, que
+    no está cifrada: el índice del final (el SISMED lo escribe al terminar), y que cada archivo de
+    adentro tenga su cabecera en su lugar y sus datos completos dentro del zip. Los que no tienen
+    contraseña se leen además enteros, para comprobar su CRC.
+    """
     try:
-        with zipfile.ZipFile(path) as archive:
-            return archive.testzip() is None
-    except (zipfile.BadZipFile, OSError, RuntimeError, NotImplementedError, EOFError):
+        size = path.stat().st_size
+        with zipfile.ZipFile(path) as archive, open(path, "rb") as raw:
+            entries = archive.infolist()
+            if not entries:
+                return False
+            for info in entries:
+                raw.seek(info.header_offset)
+                header = raw.read(30)
+                if len(header) < 30 or header[:4] != b"PK\x03\x04":
+                    return False
+                name_length, extra_length = struct.unpack("<HH", header[26:30])
+                if info.header_offset + 30 + name_length + extra_length + info.compress_size > size:
+                    return False
+            for info in entries:
+                if info.flag_bits & 0x1:
+                    continue  # con contraseña: su contenido no se puede leer, basta la estructura
+                with archive.open(info) as member:
+                    while member.read(1 << 20):
+                        pass
+        return True
+    except (zipfile.BadZipFile, OSError, RuntimeError, NotImplementedError, EOFError, struct.error):
         return False
     except Exception:
         return False
