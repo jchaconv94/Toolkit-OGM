@@ -330,6 +330,9 @@ class BackupUploader:
         self.parallel = max(1, min(MAX_PARALLEL, int(parallel or 1)))
         self._stop = threading.Event()
         self._stop_reason = "Se detuvo porque otra parte no se pudo enviar"
+        # La primera parte que falla de verdad (no por haberse detenido): es el error que se informa.
+        self._failure: BaseException | None = None
+        self._failure_lock = threading.Lock()
         # El backup que se envía (o que la nube ya tenía), para no volver a ofrecerlo como copia.
         self.path: Path | None = None
 
@@ -407,13 +410,22 @@ class BackupUploader:
         progress = _Progress(size, lambda sent: self.send({"t": "backup_progress", "job": self.job, "sent": sent}))
 
         def task(number: int) -> dict:
-            offset = (number - 1) * self.part_size
-            with open(path, "rb") as fh:
-                fh.seek(offset)
-                chunk = fh.read(self.part_size)
-            if len(chunk) != min(self.part_size, size - offset):
-                raise BackupUploadError("El backup cambió mientras se enviaba; vuelva a pedirlo")
-            part = self._upload_part(number, chunk, progress)
+            try:
+                offset = (number - 1) * self.part_size
+                with open(path, "rb") as fh:
+                    fh.seek(offset)
+                    chunk = fh.read(self.part_size)
+                if len(chunk) != min(self.part_size, size - offset):
+                    raise BackupUploadError("El backup cambió mientras se enviaba; vuelva a pedirlo")
+                part = self._upload_part(number, chunk, progress)
+            except BaseException as exc:
+                # La parte que falla detiene a las demás en ese mismo momento, sin esperar a que el
+                # hilo principal se entere: antes alcanzaban a salir una o dos partes más.
+                with self._failure_lock:
+                    if self._failure is None and not self._stop.is_set():
+                        self._failure = exc
+                self._stop.set()
+                raise
             progress.finish(number, len(chunk))
             return part
 
@@ -426,10 +438,11 @@ class BackupUploader:
                     parts.append(future.result())
             except BaseException:
                 # Una parte que no salió detiene las demás: no tiene sentido seguir subiendo.
-                if not self._stop.is_set():
-                    self._stop.set()
+                self._stop.set()
                 for future in futures:
                     future.cancel()
+                if self._failure is not None:
+                    raise self._failure
                 raise
         if path.stat().st_size != size:
             raise BackupUploadError("El backup cambió mientras se enviaba; vuelva a pedirlo")
