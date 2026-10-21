@@ -14,6 +14,8 @@ on:
       - toolskit/updater_controller.py
       - toolskit/update_manager.py
       - toolskit/app_version.py
+      - toolskit/update_restart.py
+      - toolskit/activity.py
       - packaging/windows/**
       - tests/e2e_windows_code_update.py
       - .github/workflows/probar-actualizacion-codigo.yml
@@ -79,6 +81,14 @@ jobs:
           .\.venv\Scripts\python.exe packaging\windows\sign_code_update.py build\firmado
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\.venv\Scripts\python.exe tests\e2e_windows_code_update.py update
+
+      - name: Reinicio solo para aplicar la actualizacion
+        shell: pwsh
+        env:
+          TOOLKIT_RESTART_IDLE_SECONDS: "20"
+          TOOLKIT_RESTART_CHECK_SECONDS: "5"
+          TOOLKIT_TEST_ACTIVITY_FILE: ${{ github.workspace }}\build\e2e-codigo\ocupado
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_code_update.py restart
 
       - name: Instalador completo con otra version
         shell: pwsh

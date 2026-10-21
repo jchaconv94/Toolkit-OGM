@@ -23,6 +23,7 @@ from tools.app_config import get as cfg_get, set as cfg_set
 from tformdet_report import TformdetManager
 from tformdet_periods import MESES, clamp_months, last_months, month_range, single_month
 from tools.base_tool import SismedTool, ToolMetadata
+import activity
 
 ACCENT = ft.colors.BLUE_400
 ACCENT_STRONG = ft.colors.BLUE_700
@@ -117,7 +118,7 @@ class ConsultaTformdetTool(SismedTool):
                 btn_run.update()
                 page.update()
 
-            threading.Thread(target=_process, daemon=True).start()
+            activity.background("Consulta TFORMDET", _process)
 
         dir_picker = ft.FilePicker(on_result=_on_dir_picked)
         save_picker = ft.FilePicker(on_result=_on_save_picked)

@@ -5,6 +5,7 @@ import flet as ft
 
 from excel_merge_manager import ExcelMergeManager
 from tools.base_tool import SismedTool, ToolMetadata
+import activity
 
 
 class ExcelMergeTool(SismedTool):
@@ -518,7 +519,7 @@ class ExcelMergeTool(SismedTool):
                     progress_bar.visible = False
                     set_action_buttons(False)
 
-            threading.Thread(target=process_merge, daemon=True).start()
+            activity.background("Unir Excel", process_merge)
 
         def run_merge(e):
             if len(state["paths"]) < 2:

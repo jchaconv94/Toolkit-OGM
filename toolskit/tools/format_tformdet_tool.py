@@ -21,6 +21,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font, Border, Side, NamedStyle
 
 from tools.base_tool import SismedTool, ToolMetadata
+import activity
 
 
 class FormatTformdetTool(SismedTool):
@@ -256,7 +257,7 @@ class FormatTformdetTool(SismedTool):
                     seleccionar_button.disabled = False
                     page.update()
 
-            threading.Thread(target=_process, daemon=True).start()
+            activity.background("Formato TFORMDET", _process)
 
         modificar_button.on_click = _modificar_archivo
 

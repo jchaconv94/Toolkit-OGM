@@ -4,7 +4,9 @@ import ctypes
 import hashlib
 import flet as ft
 import os
+import subprocess
 import sys
+import time
 import traceback
 import threading
 import pystray
@@ -34,6 +36,9 @@ from window_watch import HEARTBEAT_TIMEOUT_SECONDS, WindowHeartbeat, kill_flet_v
 from tools.tool_registry import TOOLS_REGISTRY, get_tool_by_name
 from app_version import get_current_version, is_newer_version
 from autostart import PREFERENCE_KEY as STARTUP_PREFERENCE_KEY, LegacyStartup, shortcut_installed, startup_preference
+import activity
+import app_loader
+import update_restart
 from app_loader import mark_healthy
 from updater_controller import AppUpdaterController
 
@@ -148,6 +153,9 @@ def main(page: ft.Page):
         "sync_startup_message": None,
     }
 
+    # Desde cuándo la ventana está escondida en la bandeja (None si está a la vista): solo se
+    # reinicia para actualizar si lleva un buen rato escondida (update_restart).
+    window_hidden = {"since": None}
     saved_auto_startup = is_startup_enabled()
     startup_shortcut = shortcut_installed()
 
@@ -198,6 +206,7 @@ def main(page: ft.Page):
         page.update()
 
     def _restore_main_window():
+        window_hidden["since"] = None
         try:
             page.window.visible = True
             page.window.minimized = False
@@ -322,10 +331,17 @@ def main(page: ft.Page):
                 pass
 
     def on_quit(icon, item):
+        append_runtime_log("startup", "Cerrar completamente: pedido desde la bandeja.")
+        _close_toolkit()
+
+    def _close_toolkit():
         # Si la ventana está congelada no recibe el pedido de cierre: a los 3 s se cierra a la
         # fuerza (solo flet.exe) y termina el proceso. Si todo cierra bien antes, no hace nada.
-        append_runtime_log("startup", "Cerrar completamente: pedido desde la bandeja.")
         arm_update_exit_watchdog(delay_seconds=3.0, before_exit=kill_flet_views)
+        try:
+            restart_watcher.stop()
+        except NameError:
+            pass
         try:
             window_heartbeat.stop()
         except NameError:
@@ -398,6 +414,7 @@ def main(page: ft.Page):
             except Exception:
                 pass
             page.window.visible = False
+            window_hidden["since"] = time.monotonic()
             page.update()
             
     page.window.on_event = window_event
@@ -448,6 +465,7 @@ def main(page: ft.Page):
 
         if not startup_state["degraded_reasons"]:
             page.window.visible = False
+            window_hidden["since"] = time.monotonic()
             _set_boot_status(
                 "autorun-hidden-ready",
                 f"sync_status={startup_state['sync_startup_status']}"
@@ -1390,11 +1408,45 @@ def main(page: ft.Page):
         if previous_version and not install_success_requested and is_newer_version(current_version, previous_version):
             append_runtime_log("update", f"Actualizacion de codigo {current_version} aplicada.")
             _show_message(f"ToolKit SISMED se actualizó a la versión {current_version}.")
+            if "--update-restart" in sys.argv:
+                _notify_update("ToolKit SISMED actualizado", f"Se actualizó a la versión {current_version}.")
+
+    def _restart_situation():
+        since = window_hidden["since"]
+        return update_restart.Situation(
+            now=time.time(),
+            pending=update_restart.pending_version(app_loader.bundle_dir(), app_loader.updates_root(), current_version),
+            hidden_for=None if since is None else time.monotonic() - since,
+            busy=activity.active(),
+            updater_state=getattr(updater_controller, "state", ""),
+            attempts=cfg_get("update_restart_attempts") or {},
+        )
+
+    def _restart_for_update(version: str) -> bool:
+        cfg_set("update_restart_attempts",
+                update_restart.record_attempt(cfg_get("update_restart_attempts") or {}, version, time.time()))
+        try:
+            subprocess.Popen(
+                [sys.executable, *update_restart.RESTART_ARGS, "--wait-pid", str(os.getpid())],
+                close_fds=True,
+                creationflags=getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            )
+        except OSError as exc:
+            append_runtime_log("update", f"No se pudo reiniciar para aplicar la versión {version}: {exc}")
+            return False
+        append_runtime_log("update", f"Reinicio silencioso para aplicar la versión {version}.")
+        _close_toolkit()
+        return True
+
+    restart_watcher = update_restart.RestartWatcher(
+        _restart_situation, _restart_for_update, lambda message: append_runtime_log("update", message))
+    if getattr(sys, "frozen", False):
+        restart_watcher.start()
 
 
 def run():
     # El acceso directo de Inicio siempre abre el Toolkit; con la casilla apagada se cierra sin mostrar nada.
-    if "--autorun" in sys.argv and not is_startup_enabled():
+    if "--autorun" in sys.argv and "--update-restart" not in sys.argv and not is_startup_enabled():
         mark_healthy()
         sys.exit(0)
     if not _acquire_single_instance():

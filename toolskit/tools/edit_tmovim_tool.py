@@ -6,6 +6,7 @@ from tmovim_search import (
 )
 from tools.base_tool import SismedTool, ToolMetadata
 from tools.app_config import get as cfg_get, set as cfg_set
+import activity
 
 
 class EditTmovimTool(SismedTool):
@@ -339,7 +340,7 @@ class EditTmovimTool(SismedTool):
                     input_search.disabled = False
                     page.update()
 
-            threading.Thread(target=_thread, daemon=True).start()
+            activity.background("Editar TMOVIM", _thread)
 
         def _show_situa_dialog():
             map_situa = {"1": "1 — Habilitar guía", "0": "0 — Anular guía"}
@@ -361,7 +362,7 @@ class EditTmovimTool(SismedTool):
                     log_text.color = ft.colors.GREEN_400
                     _do_search()
 
-                threading.Thread(target=_thread, daemon=True).start()
+                activity.background("Editar TMOVIM", _thread)
 
             dropdown = ft.Dropdown(
                 options=[ft.dropdown.Option(k, v) for k, v in map_situa.items()],
@@ -415,7 +416,7 @@ class EditTmovimTool(SismedTool):
                     log_text.color = ft.colors.GREEN_400
                     _do_search()
 
-                threading.Thread(target=_thread, daemon=True).start()
+                activity.background("Editar TMOVIM", _thread)
 
             dialog = ft.AlertDialog(
                 title=ft.Row([
@@ -472,7 +473,7 @@ class EditTmovimTool(SismedTool):
                     log_text.color = ft.colors.GREEN_400 if total else ft.colors.AMBER_300
                     _do_search()
 
-                threading.Thread(target=_thread, daemon=True).start()
+                activity.background("Editar TMOVIM", _thread)
 
             dialog = ft.AlertDialog(
                 title=ft.Row([

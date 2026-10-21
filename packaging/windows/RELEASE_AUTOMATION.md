@@ -38,6 +38,8 @@ Desde la 2.4.4 el codigo del Toolkit va aparte del programa, en `_internal/app/a
 
 Las computadoras que ya tienen el mismo runtime (mismo Python, mismas librerias y mismo arranque) bajan solo el zip a `%LOCALAPPDATA%\ToolkitOGM\app\<version>` y lo abren la proxima vez que arranca el Toolkit, sin instalador ni permiso de Windows. Si el runtime cambio, usan el instalador completo, como antes. El programa verifica la firma en cada arranque; si la version nueva falla, vuelve sola a la anterior. Detalle en `toolskit/app_loader.py` y `toolskit/code_update.py`; prueba de punta a punta en `.github/workflows/probar-actualizacion-codigo.yml`.
 
+Para no esperar al dia siguiente, el Toolkit se reinicia solo, sin mostrar nada, cuando la actualizacion ya esta descargada y verificada, la ventana lleva 20 minutos escondida en la bandeja y no hay nada trabajando (herramientas, envio de Sync SISMED, subida de backups ni el propio actualizador). Revisa cada 5 minutos, vuelve a comprobar justo antes, lo intenta como maximo dos veces por version y con 6 horas de separacion, y el Toolkit nuevo espera a que el anterior termine. Detalle en `toolskit/update_restart.py` y `toolskit/activity.py`.
+
 Para firmar hace falta un segundo secreto, una sola vez:
 
 1. En `jchaconv94/Toolkit-OGM`, entre a `Settings > Secrets and variables > Actions`.

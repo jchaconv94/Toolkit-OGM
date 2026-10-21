@@ -27,6 +27,7 @@ from urllib.parse import unquote, urlparse
 
 import requests
 
+import activity
 from app_version import get_current_version
 from send_key_check import SUPABASE_URL, keys_by_code, supabase_public_key
 from backup_upload import DEFAULT_PARALLEL, BackupUploader, BackupWatcher, service_http_base, sha256_file
@@ -363,7 +364,7 @@ class BackupConnection:
             finally:
                 self._upload_lock.release()
 
-        threading.Thread(target=work, name="backup-upload", daemon=True).start()
+        activity.background("Backup SISMED", work)
 
     # --- copia en la nube ------------------------------------------------------------
     def _copy_due(self, code: str, name: str, now: float) -> bool:
@@ -453,7 +454,7 @@ class BackupConnection:
                 self._copy_uploader = None
                 self._upload_lock.release()
 
-        threading.Thread(target=work, name="backup-copy", daemon=True).start()
+        activity.background("Copia del backup", work)
 
     def _keepalive(self, ws):
         while not self._stop.is_set() and self.connected:

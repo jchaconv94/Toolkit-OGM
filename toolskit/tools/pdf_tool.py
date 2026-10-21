@@ -27,6 +27,7 @@ except Exception:
 
 from tools.base_tool import SismedTool, ToolMetadata
 from pdf_manager import PdfManager
+import activity
 
 _CARD_W = 140
 _CARD_H = 188
@@ -182,7 +183,7 @@ class PdfTool(SismedTool):
                     _safe_up(loading_spin, loading_txt)
                     _rebuild_grid()
 
-            threading.Thread(target=_thread, daemon=True).start()
+            activity.background("PDF", _thread)
 
         def _on_file_pick(e: ft.FilePickerResultEvent):
             if not e.files:
@@ -1147,7 +1148,7 @@ class PdfTool(SismedTool):
                 finally:
                     _set_save_busy(False)
 
-            threading.Thread(target=_thread, daemon=True).start()
+            activity.background("PDF", _thread)
 
         save_btn_icon = ft.Icon(ft.icons.SAVE_ROUNDED, size=18, color=ft.colors.WHITE)
         save_btn_text = ft.Text("GUARDAR", size=13, weight="w700", color=ft.colors.WHITE)

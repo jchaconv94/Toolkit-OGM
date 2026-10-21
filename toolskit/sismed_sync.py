@@ -11,6 +11,7 @@ import socket
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+import activity
 from app_version import get_current_version
 from dbf_utils import DbfReadMetrics, iter_dbf_records, open_dbf, snapshot_dbf
 from tools.app_config import set_many, update_runtime_status
@@ -861,7 +862,8 @@ class SismedSyncManager:
         self._set_run_state("running", "Hilo de sincronizacion activo")
         try:
             while not self._stop_event.is_set():
-                self.perform_sync()
+                with activity.busy("Sync SISMED"):
+                    self.perform_sync()
 
                 if self._stop_event.is_set():
                     break

@@ -3,5 +3,6 @@ y lo abre. Va dentro de ToolkitOGM.exe y casi nunca cambia; ver app_loader."""
 
 import app_loader
 
+app_loader.wait_for_previous()
 update = app_loader.prepare()
 app_loader.run_main(app_loader.import_main(update), update)

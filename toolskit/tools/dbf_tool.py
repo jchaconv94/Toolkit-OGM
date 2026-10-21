@@ -17,6 +17,7 @@ import xlsxwriter
  
 from dbf_utils import open_dbf, snapshot_dbf
 from tools.base_tool import SismedTool, ToolMetadata
+import activity
  
  
 class DbfExcelTool(SismedTool):
@@ -190,7 +191,7 @@ class DbfExcelTool(SismedTool):
                     btn_dest.disabled    = False
                     page.update()
 
-            threading.Thread(target=_process, daemon=True).start()
+            activity.background("DBF a Excel", _process)
 
         # ── Botones ──────────────────────────────────────────────────────────
         btn_convert = ft.ElevatedButton(
