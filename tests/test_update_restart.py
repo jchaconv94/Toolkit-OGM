@@ -145,6 +145,27 @@ class ActivityTests(unittest.TestCase):
                 self.assertEqual(activity.active(), ["prueba"])
 
 
+class SyncMarksItsWorkTests(unittest.TestCase):
+    def test_each_sync_cycle_counts_as_work(self):
+        try:
+            from sismed_sync import SismedSyncManager
+        except Exception as exc:  # noqa: BLE001 - depende de librerías de Windows
+            self.skipTest(f"sismed_sync no se puede importar aquí: {exc}")
+        seen = []
+        manager = SismedSyncManager()
+
+        def perform_sync():
+            seen.append(activity.active())
+            manager._stop_event.set()
+
+        with mock.patch.object(manager, "perform_sync", perform_sync), \
+                mock.patch.object(manager, "_set_run_state"), mock.patch.object(manager, "_stop_backup_connection"), \
+                mock.patch.object(manager, "log"):
+            manager._sync_loop()
+        self.assertEqual(seen, [["Sync SISMED"]])
+        self.assertEqual(activity.active(), [])
+
+
 class WaitForPreviousTests(unittest.TestCase):
     def test_ignores_missing_or_bad_arguments(self):
         app_loader.wait_for_previous(["ToolkitOGM.exe", "--autorun"])
