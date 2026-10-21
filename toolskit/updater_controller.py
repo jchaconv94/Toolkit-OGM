@@ -12,6 +12,7 @@ from tools.app_config import (
     set as cfg_set,
     set_many as cfg_set_many,
 )
+from code_update import CodeUpdater, find_code_update
 from update_manager import UpdateError, UpdateInfo, UpdateManager, UpdateSecurityError
 
 
@@ -30,6 +31,7 @@ class AppUpdaterController:
         navigate_to_settings=None,
         startup_hidden: bool = False,
         manager: UpdateManager | None = None,
+        code_updater: CodeUpdater | None = None,
     ):
         self.page = page
         self.on_installer_launched = on_installer_launched
@@ -56,6 +58,15 @@ class AppUpdaterController:
         self.manager = manager or UpdateManager(
             logger=lambda message: append_runtime_log("update", message)
         )
+        # Actualizaciones de código: si la versión nueva es para este mismo programa instalado, baja
+        # solo el código del Toolkit (menos de 1 MB) y se aplica al volver a abrirlo. Ver code_update.
+        self.code_updater = code_updater or CodeUpdater(
+            getattr(self.manager, "session", None),
+            validate_url=getattr(self.manager, "_validate_url", lambda _url: None),
+            user_agent=f"ToolkitSISMED-Updater/{get_current_version()}",
+            log=lambda message: append_runtime_log("update", message),
+        )
+        self.code_ready_version = ""
 
         self.status_icon = ft.Icon(ft.icons.INFO_OUTLINE_ROUNDED, color=ft.colors.BLUE_400)
         self.status_title = ft.Text("Actualizaciones automáticas", weight=ft.FontWeight.W_800)
@@ -206,6 +217,7 @@ class AppUpdaterController:
             "error": ft.colors.RED_400,
             "available": ft.colors.AMBER_400,
             "installing": ft.colors.CYAN_400,
+            "code-ready": ft.colors.GREEN_400,
         }.get(state, ft.colors.BLUE_400)
         icon = {
             "checking": ft.icons.SYNC_ROUNDED,
@@ -215,6 +227,7 @@ class AppUpdaterController:
             "error": ft.icons.ERROR_OUTLINE_ROUNDED,
             "available": ft.icons.NEW_RELEASES_ROUNDED,
             "installing": ft.icons.INSTALL_DESKTOP_ROUNDED,
+            "code-ready": ft.icons.DOWNLOAD_DONE_ROUNDED,
         }.get(state, ft.icons.INFO_OUTLINE_ROUNDED)
 
         self.status_icon.name = icon
@@ -232,6 +245,7 @@ class AppUpdaterController:
             "error": "No se pudo comprobar. Haz clic para reintentar.",
             "available": title,
             "installing": title,
+            "code-ready": title,
         }.get(state, "Buscar actualizaciones")
         self.appbar_badge.label_visible = state in {"available", "downloading", "ready"}
         self.appbar_badge.bgcolor = {
@@ -437,6 +451,9 @@ class AppUpdaterController:
                         return
 
                     self.current_info = info
+                    if (manual or offer_download or bool(cfg_get("update_auto_download"))) \
+                            and self._install_code_update(info):
+                        return
                     self._set_state(
                         "available",
                         f"Versión {info.version} disponible",
@@ -486,6 +503,33 @@ class AppUpdaterController:
             self._release_request("check")
         if download_after_check:
             self.download_async(download_after_check)
+
+    def _install_code_update(self, info: UpdateInfo) -> bool:
+        """Baja solo el código de la versión nueva si sirve para este programa instalado.
+        False si hay que seguir con el instalador completo."""
+        try:
+            if not self.code_updater.supported():
+                return False
+            code = find_code_update(getattr(self.manager, "last_payload", None) or [], self.manager.current_version)
+            if not code or code.version != info.version:
+                return False
+            if self.code_ready_version != code.version:
+                self._set_state("downloading", f"Descargando la versión {code.version}",
+                                "Solo el código del Toolkit: menos de 1 MB.", 0)
+                version = self.code_updater.install(
+                    code, progress=lambda done, total: self._set_state(
+                        "downloading", f"Descargando la versión {code.version}",
+                        "Solo el código del Toolkit: menos de 1 MB.", done / max(total, 1)))
+                if not version:
+                    return False
+                self.code_ready_version = version
+        except Exception as exc:  # noqa: BLE001 - si falla, queda el instalador completo
+            append_runtime_log("update", f"No se pudo bajar la actualización de código: {type(exc).__name__}: {exc}")
+            return False
+        self._set_state("code-ready", f"Versión {info.version} lista",
+                        "Se aplicará la próxima vez que se abra ToolKit SISMED.")
+        self._notify_available_once(info, f"La versión {info.version} se aplicará al volver a abrir ToolKit SISMED.")
+        return True
 
     def _notify_available_once(self, info: UpdateInfo, message: str) -> None:
         if self.notified_available_version == info.version:
@@ -738,6 +782,7 @@ class AppUpdaterController:
             self.scheduler_wake_event.clear()
 
     def start(self) -> None:
+        threading.Thread(target=self._cleanup_code_updates, daemon=True, name="ToolkitCodeCleanup").start()
         with self.scheduler_lock:
             if self.scheduler_thread and self.scheduler_thread.is_alive():
                 return
@@ -747,6 +792,13 @@ class AppUpdaterController:
                 name="ToolkitUpdaterScheduler",
             )
             self.scheduler_thread.start()
+
+    def _cleanup_code_updates(self) -> None:
+        try:
+            if self.code_updater.supported():
+                self.code_updater.cleanup(get_current_version())
+        except Exception:
+            pass
 
     def stop(self) -> None:
         self.stop_event.set()

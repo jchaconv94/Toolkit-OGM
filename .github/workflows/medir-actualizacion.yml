@@ -1,0 +1,62 @@
+name: Medir actualizacion
+
+# Compila dos veces y dice qué archivos cambian de una versión a otra y cuánto pesarían.
+# No publica nada.
+
+on:
+  pull_request:
+    paths:
+      - packaging/windows/**
+      - .github/workflows/medir-actualizacion.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  medir:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: toolskit/requirements.txt
+
+      - name: Crear entorno
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt
+
+      - name: Compilar la version A
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.venv\Scripts\python.exe packaging\windows\build_manifest.py dist\ToolkitOGM a.json
+
+      - name: Compilar otra vez sin cambios
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.venv\Scripts\python.exe packaging\windows\build_manifest.py dist\ToolkitOGM a2.json | Out-Null
+          Write-Host "== Mismo codigo, dos compilaciones =="
+          .\.venv\Scripts\python.exe packaging\windows\build_manifest.py --compare a.json a2.json
+
+      - name: Compilar la version B con un cambio de codigo
+        shell: pwsh
+        run: |
+          Add-Content -LiteralPath toolskit\ici_excel.py -Value "`n# cambio de prueba"
+          Set-Content -LiteralPath VERSION -Value "9.9.9"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.venv\Scripts\python.exe packaging\windows\build_manifest.py dist\ToolkitOGM b.json | Out-Null
+          Write-Host "== Un cambio en el codigo del Toolkit =="
+          .\.venv\Scripts\python.exe packaging\windows\build_manifest.py --compare a.json b.json
+          Get-ChildItem dist\installer\*.exe | ForEach-Object { "Instalador: {0} {1:N1} MB" -f $_.Name, ($_.Length / 1MB) }

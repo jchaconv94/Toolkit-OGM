@@ -93,6 +93,14 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1 -Version "${{ steps.release.outputs.version }}"
 
+      - name: Firmar la actualizacion de codigo
+        # Solo el código del Toolkit (menos de 1 MB), para las laptops que ya tienen este mismo programa
+        # instalado. Sin el secreto UPDATE_SIGNING_KEY se publica solo el instalador completo.
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: .\.venv\Scripts\python.exe packaging\windows\sign_code_update.py dist\installer
+
       - name: Probar actualizacion real en una instalacion aislada
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File tests/test_windows_installer_upgrade.ps1 -Version "${{ steps.release.outputs.version }}"
@@ -162,9 +170,10 @@ jobs:
       - name: Crear GitHub Release publica
         shell: pwsh
         run: |
-          gh release create "${{ steps.release.outputs.tag }}" `
-            "${{ steps.artifacts.outputs.installer }}" `
-            "${{ steps.artifacts.outputs.checksum }}" `
+          $files = @("${{ steps.artifacts.outputs.installer }}", "${{ steps.artifacts.outputs.checksum }}")
+          $files += Get-ChildItem -Path "dist\installer\ToolkitOGM-app-${{ steps.release.outputs.version }}.*" |
+            ForEach-Object { $_.FullName }
+          gh release create "${{ steps.release.outputs.tag }}" @files `
             --repo "$env:TARGET_REPOSITORY" `
             --target main `
             --title "ToolKit SISMED Desktop v${{ steps.release.outputs.version }}" `

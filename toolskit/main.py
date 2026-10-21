@@ -32,8 +32,9 @@ from tools.app_config import append_runtime_log, get as cfg_get, get_config_log_
 from update_shutdown import arm_update_exit_watchdog
 from window_watch import HEARTBEAT_TIMEOUT_SECONDS, WindowHeartbeat, kill_flet_views
 from tools.tool_registry import TOOLS_REGISTRY, get_tool_by_name
-from app_version import get_current_version
+from app_version import get_current_version, is_newer_version
 from autostart import PREFERENCE_KEY as STARTUP_PREFERENCE_KEY, LegacyStartup, shortcut_installed, startup_preference
+from app_loader import mark_healthy
 from updater_controller import AppUpdaterController
 
 # ==========================================
@@ -156,6 +157,8 @@ def main(page: ft.Page):
     def _set_boot_status(status: str, detail: str | None = None):
         startup_state["boot_status"] = status
         update_runtime_status("boot", status, detail)
+        if status != "booting":
+            mark_healthy()
         if detail:
             _log_startup_event(f"boot_status={status}; {detail}")
         else:
@@ -184,6 +187,7 @@ def main(page: ft.Page):
         if requested_value and getattr(sys, 'frozen', False) and not shortcut_installed():
             _show_message("Falta el acceso de la carpeta Inicio de Windows: vuelva a instalar ToolKit SISMED.")
     _log_startup_event(f"startup_preference enabled={saved_auto_startup}; shortcut={startup_shortcut}")
+    _log_startup_event(f"version={get_current_version()}; code={sys.path[0] if getattr(sys, 'frozen', False) else 'fuente'}")
     _log_startup_event(
         f"runtime_context cwd={os.getcwd()}; executable={sys.executable}; frozen={getattr(sys, 'frozen', False)}"
     )
@@ -1379,12 +1383,28 @@ def main(page: ft.Page):
             "ToolKit SISMED restauró la versión anterior para proteger la instalación."
         )
 
-if __name__ == "__main__":
+    # Una actualización de código se aplica sola al abrir: se avisa una vez con qué versión quedó.
+    previous_version = str(cfg_get("last_run_version") or "")
+    if previous_version != current_version:
+        cfg_set("last_run_version", current_version)
+        if previous_version and not install_success_requested and is_newer_version(current_version, previous_version):
+            append_runtime_log("update", f"Actualizacion de codigo {current_version} aplicada.")
+            _show_message(f"ToolKit SISMED se actualizó a la versión {current_version}.")
+
+
+def run():
     # El acceso directo de Inicio siempre abre el Toolkit; con la casilla apagada se cierra sin mostrar nada.
     if "--autorun" in sys.argv and not is_startup_enabled():
+        mark_healthy()
         sys.exit(0)
-    if _acquire_single_instance():
-        try:
-            ft.app(target=main)
-        finally:
-            _release_single_instance_resources()
+    if not _acquire_single_instance():
+        mark_healthy()
+        return
+    try:
+        ft.app(target=main)
+    finally:
+        _release_single_instance_resources()
+
+
+if __name__ == "__main__":
+    run()

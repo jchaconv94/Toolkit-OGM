@@ -1,0 +1,105 @@
+name: Probar actualizaciones de codigo
+
+# Instala el Toolkit de verdad en una máquina Windows desechable, le aplica una actualización de
+# código y prueba lo que puede salir mal (tests/e2e_windows_code_update.py). No publica nada.
+
+on:
+  pull_request:
+    paths:
+      - toolskit/main.py
+      - toolskit/launcher.py
+      - toolskit/app_loader.py
+      - toolskit/code_update.py
+      - toolskit/update_signature.py
+      - toolskit/updater_controller.py
+      - toolskit/update_manager.py
+      - toolskit/app_version.py
+      - packaging/windows/**
+      - tests/e2e_windows_code_update.py
+      - .github/workflows/probar-actualizacion-codigo.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codigo:
+    name: Instalar, actualizar el codigo y probar fallas
+    runs-on: windows-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Descargar el codigo
+        uses: actions/checkout@v4
+
+      - name: Preparar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: toolskit/requirements.txt
+
+      - name: Crear entorno de compilacion
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt
+
+      - name: Instalar Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Ejecutar pruebas automaticas
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe -m unittest discover -s tests
+
+      - name: Crear una clave de prueba para firmar
+        shell: pwsh
+        run: |
+          $secret = .\.venv\Scripts\python.exe -c "import os; print(os.urandom(32).hex())"
+          $public = .\.venv\Scripts\python.exe -c "import sys; sys.path.insert(0, 'toolskit'); import update_signature as u; print(u.public_key(bytes.fromhex('$secret')).hex())"
+          "UPDATE_SIGNING_KEY=$secret" >> $env:GITHUB_ENV
+          "UPDATE_PUBLIC_KEY=$public" >> $env:GITHUB_ENV
+
+      - name: Compilar e instalar la version base
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.venv\Scripts\python.exe tests\e2e_windows_code_update.py base
+
+      - name: Armar, firmar y aplicar una actualizacion de codigo
+        shell: pwsh
+        run: |
+          Add-Content -LiteralPath toolskit\app_version.py -Value "`nE2E_MARCA = 'actualizacion de codigo'"
+          Set-Content -LiteralPath VERSION -Value "9.9.10"
+          .\.venv\Scripts\python.exe packaging\windows\build_app.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.venv\Scripts\python.exe packaging\windows\sign_code_update.py build\firmado
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.venv\Scripts\python.exe tests\e2e_windows_code_update.py update
+
+      - name: Instalador completo con otra version
+        shell: pwsh
+        run: |
+          Set-Content -LiteralPath VERSION -Value "9.9.60"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.venv\Scripts\python.exe tests\e2e_windows_code_update.py full
+
+      - name: Copiar registros si algo falla
+        if: failure()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force registros | Out-Null
+          Copy-Item "$env:APPDATA\ToolkitOGM\*.log", "$env:APPDATA\ToolkitOGM\config.json", "$env:LOCALAPPDATA\ToolkitOGM\app\state.json" registros -ErrorAction SilentlyContinue
+          Copy-Item build\e2e-codigo\*.log registros -ErrorAction SilentlyContinue
+
+      - name: Guardar registros si algo falla
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: registros-actualizacion-codigo
+          path: registros
+          if-no-files-found: ignore

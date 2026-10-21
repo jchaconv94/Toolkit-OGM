@@ -29,6 +29,7 @@ def _version_candidates() -> list[Path]:
     candidates: list[Path] = []
     bundle_dir = getattr(sys, "_MEIPASS", None)
     if bundle_dir:
+        candidates.append(Path(bundle_dir) / "app" / "VERSION")
         candidates.append(Path(bundle_dir) / "VERSION")
 
     if getattr(sys, "frozen", False):

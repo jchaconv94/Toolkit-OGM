@@ -94,6 +94,7 @@ class UpdateManager:
         self.helper_path = Path(helper_path) if helper_path else None
         self.install_dir = Path(install_dir) if install_dir else None
         self.logger = logger or (lambda _message: None)
+        self.last_payload = None
 
     def _log(self, message: str) -> None:
         try:
@@ -199,6 +200,7 @@ class UpdateManager:
     def check_for_update(self) -> UpdateInfo | None:
         self._log(f"Consultando actualizaciones. Version instalada: {self.current_version}")
         payload = self._request_json()
+        self.last_payload = payload
         candidates = self._release_candidates(payload)
         if not candidates:
             self._log("No hay una version mas reciente disponible.")
