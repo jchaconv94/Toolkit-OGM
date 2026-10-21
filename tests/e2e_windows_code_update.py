@@ -46,6 +46,8 @@ INSTALL_DIR = Path(os.environ["ProgramFiles"]) / "ToolKit SISMED"
 EXE = INSTALL_DIR / "ToolkitOGM.exe"
 BUNDLE = INSTALL_DIR / "_internal"
 UPDATES = Path(os.environ["LOCALAPPDATA"]) / "ToolkitOGM" / "app"
+UPDATE_LOG = Path(os.environ["APPDATA"]) / "ToolkitOGM" / "update.log"
+BUSY_FILE = Path(os.environ.get("TOOLKIT_TEST_ACTIVITY_FILE") or (ROOT / "build" / "e2e-codigo" / "ocupado"))
 CONFIG = Path(os.environ["APPDATA"]) / "ToolkitOGM" / "config.json"
 STARTUP_LOG = Path(os.environ["APPDATA"]) / "ToolkitOGM" / "startup.log"
 SECRET = bytes.fromhex(os.environ["UPDATE_SIGNING_KEY"])
@@ -279,10 +281,10 @@ def wrong_signature(good: str, app_zip: bytes):
 def broken_import(good: str, base: str, app_zip: bytes):
     place_update("9.9.30", replaced(app_zip, "main.pyc", pyc("raise ImportError('roto a proposito')\n", "main.py")))
     text, _ = open_at_logon()
-    check(running_version(text) == base, f"en el mismo arranque vuelve al código del instalador ({running_version(text)})")
+    check(running_version(text) == good, f"en el mismo arranque vuelve a la última buena ({running_version(text)})")
     check("9.9.30" in state().get("bad", []), "la versión rota queda marcada como mala")
     text, _ = open_at_logon()
-    check(running_version(text) == good, f"el siguiente arranque abre la última buena ({running_version(text)})")
+    check(running_version(text) == good, f"el siguiente arranque sigue en la última buena ({running_version(text)})")
 
 
 @case("Código que se cae al arrancar")
@@ -310,6 +312,114 @@ def error_on_start(good: str, app_zip: bytes):
           "el Toolkit se vuelve a abrir solo, sin mostrar el error")
     check(running_version(log_since(mark)) == good, f"y abre la última buena ({running_version(log_since(mark))})")
     check("9.9.50" in state().get("bad", []), "la versión que falla queda marcada como mala")
+
+
+def toolkit_pids() -> list[int]:
+    out = run(["tasklist", "/FI", "IMAGENAME eq ToolkitOGM.exe", "/FO", "CSV", "/NH"]).stdout
+    return [int(line.split('","')[1]) for line in out.splitlines() if line.startswith('"ToolkitOGM.exe"')]
+
+
+def toolkit_windows() -> list[int]:
+    import win32gui
+    found = []
+
+    def visit(hwnd, _):
+        if win32gui.GetWindowText(hwnd).startswith("ToolKit SISMED (v"):
+            found.append(hwnd)
+    win32gui.EnumWindows(visit, None)
+    return found
+
+
+def window_visible() -> bool:
+    import win32gui
+    return any(win32gui.IsWindowVisible(h) for h in toolkit_windows())
+
+
+def show_window():
+    # Abrirlo otra vez muestra la ventana del que ya está abierto, como hace la persona.
+    subprocess.run([str(EXE)], timeout=60)
+
+
+def hide_window():
+    import win32con
+    import win32gui
+    for hwnd in toolkit_windows():
+        win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+
+
+def update_log_since(mark: int) -> str:
+    if not UPDATE_LOG.exists():
+        return ""
+    with open(UPDATE_LOG, "rb") as f:
+        f.seek(mark)
+        return f.read().decode("utf-8", "replace")
+
+
+def update_log_mark() -> int:
+    return UPDATE_LOG.stat().st_size if UPDATE_LOG.exists() else 0
+
+
+@case("Reinicio solo para aplicar la actualización")
+def silent_restart(good: str, app_zip: bytes):
+    idle = int(os.environ["TOOLKIT_RESTART_IDLE_SECONDS"])
+    check_every = int(os.environ["TOOLKIT_RESTART_CHECK_SECONDS"])
+    wait = idle + 3 * check_every + 5
+    BUSY_FILE.unlink(missing_ok=True)
+    text, _ = open_at_logon()
+    first = toolkit_pids()
+    check(running_version(text) == good and len(first) == 1, f"abierto con la versión {good} (procesos {first})")
+
+    # 1. Con la ventana a la vista no se reinicia.
+    show_window()
+    check(wait_until(window_visible, 20), "la ventana quedó a la vista")
+    mark_u = update_log_mark()
+    place_update("9.9.70", app_zip)
+    time.sleep(wait)
+    check(toolkit_pids() == first, f"con la ventana a la vista no se reinició (procesos {toolkit_pids()})")
+    check("la ventana está a la vista" in update_log_since(mark_u), "el registro dice que esperó por la ventana")
+
+    # 2. Escondida pero trabajando: no se reinicia.
+    BUSY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    BUSY_FILE.write_text("trabajando")
+    hide_window()
+    check(wait_until(lambda: not window_visible(), 20), "la ventana se escondió en la bandeja")
+    mark_u = update_log_mark()
+    time.sleep(wait)
+    check(toolkit_pids() == first, f"mientras trabaja no se reinició (procesos {toolkit_pids()})")
+    check("trabajando: prueba" in update_log_since(mark_u), "el registro dice que esperó porque estaba trabajando")
+
+    # 3. Escondida y sin trabajo: se reinicia solo, aunque la casilla de arranque esté apagada.
+    set_config(auto_startup=False)
+    mark = log_mark()
+    mark_u = update_log_mark()
+    BUSY_FILE.unlink()
+    check(wait_until(lambda: running_version(log_since(mark)) == "9.9.70", wait + 30),
+          f"se reinició solo y abrió la versión 9.9.70 ({running_version(log_since(mark))})")
+    check(wait_until(lambda: "autorun-hidden-ready" in log_since(mark), 60), "volvió a abrir escondido en la bandeja")
+    time.sleep(5)
+    second = toolkit_pids()
+    check(len(second) == 1 and second != first, f"queda un solo Toolkit, el nuevo (antes {first}, ahora {second})")
+    check(not window_visible(), "no mostró la ventana")
+    check("Reinicio silencioso para aplicar la versión 9.9.70" in update_log_since(mark_u), "el registro anota el reinicio")
+    check((config().get("update_restart_attempts") or {}).get("9.9.70", [0])[0] == 1, "anota un intento con esa versión")
+
+    # 4. Una versión que no abre: se reinicia una vez, vuelve sola a la buena y no insiste.
+    mark = log_mark()
+    mark_u = update_log_mark()
+    place_update("9.9.80", replaced(app_zip, "main.pyc", pyc("raise ImportError('roto a proposito')\n", "main.py")))
+    check(wait_until(lambda: "9.9.80" in state().get("bad", []), wait + 60), "la versión que no abre queda marcada como mala")
+    check(wait_until(lambda: "autorun-hidden-ready" in log_since(mark), 60), "el Toolkit volvió a abrir")
+    check(running_version(log_since(mark)) == "9.9.70", f"sigue con la última buena ({running_version(log_since(mark))})")
+    after = toolkit_pids()
+    time.sleep(wait)
+    restarts = update_log_since(mark_u).count("Reinicio silencioso para aplicar la versión 9.9.80")
+    check(restarts == 1, f"lo intentó una sola vez ({restarts})")
+    check(toolkit_pids() == after and len(after) == 1, f"no se volvió a reiniciar (procesos {toolkit_pids()})")
+
+    set_config(auto_startup=True)
+    kill_toolkit()
+    for v in ("9.9.70", "9.9.80"):
+        shutil.rmtree(UPDATES / v, ignore_errors=True)
 
 
 @case("Instalador completo después de una actualización de código")
@@ -348,6 +458,9 @@ def main() -> int:
         broken_import(version, base["version"], app_zip.read_bytes())
         crash_on_start(version, app_zip.read_bytes())
         error_on_start(version, app_zip.read_bytes())
+    elif step == "restart":
+        app_zip = ROOT / "build" / "firmado" / f"ToolkitOGM-app-9.9.10.zip"
+        silent_restart("9.9.10", app_zip.read_bytes())
     elif step == "full":
         base = json.loads((WORK / "base.json").read_text())
         full_installer_wins((ROOT / "VERSION").read_text().strip(), base["runtime"])

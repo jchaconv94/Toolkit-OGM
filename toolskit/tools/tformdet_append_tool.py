@@ -5,6 +5,7 @@ import flet as ft
 from tformdet_append_manager import TformdetAppendError, TformdetAppendManager
 from tools.app_config import get as cfg_get, set as cfg_set
 from tools.base_tool import SismedTool, ToolMetadata
+import activity
 
 
 class TformdetAppendTool(SismedTool):
@@ -569,7 +570,7 @@ class TformdetAppendTool(SismedTool):
                 finally:
                     _set_busy(False)
 
-            threading.Thread(target=_worker, daemon=True).start()
+            activity.background("Agregar TFORMDET", _worker)
 
         btn_action.on_click = _process_one_click
 

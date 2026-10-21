@@ -26,6 +26,7 @@ from ici_excel import EXCEL_ONLY, SHEETS, write_reports
 from tformdet_periods import MESES
 from tools.app_config import get as cfg_get, set as cfg_set
 from tools.base_tool import SismedTool, ToolMetadata
+import activity
 
 ACCENT = ft.colors.PINK_400
 ACCENT_STRONG = ft.colors.PINK_700
@@ -282,7 +283,7 @@ class GenerarIciTool(SismedTool):
                     btn_run.disabled = False
                     page.update()
 
-            threading.Thread(target=_process, daemon=True).start()
+            activity.background("Generar ICI", _process)
 
         btn_run = ft.ElevatedButton(
             content=ft.Row([

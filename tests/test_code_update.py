@@ -212,6 +212,14 @@ class LoaderTests(unittest.TestCase):
         self.assertEqual(self.run_launcher(), ("instalador", None))
         self.assertIn("2.4.5", app_loader.State(self.install.root).data["bad"])
 
+    def test_broken_newest_update_falls_back_to_the_last_good_one(self):
+        self.install.add_update("2.4.4")
+        self.install.add_update("2.4.5", zip_with({"main.pyc": compiled("raise ImportError('roto')\n")}))
+        self.assertEqual(self.run_launcher(), ("2.4.4", "2.4.4"))
+        state = app_loader.State(self.install.root)
+        self.assertIn("2.4.5", state.data["bad"])
+        self.assertEqual(state.failed_starts("2.4.4"), 1)
+
     def test_update_that_fails_when_running_reopens_the_toolkit_with_the_previous_code(self):
         self.install.add_update("2.4.5")
         update = app_loader.CodeUpdate("2.4.5", self.install.root / "2.4.5")

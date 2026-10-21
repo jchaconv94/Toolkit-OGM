@@ -5,6 +5,7 @@ import time
 from edit_sismed_manager import EditSismedManager
 from tools.base_tool import SismedTool, ToolMetadata
 from tools.app_config import get as cfg_get, set as cfg_set
+import activity
 
 class ChangeMedestTool(SismedTool):
     """Herramienta para modificar el estado (MEDEST) de medicamentos en MPRODUCTO.DBF."""
@@ -192,7 +193,7 @@ class ChangeMedestTool(SismedTool):
                 _update_actions_visibility()
                 page.update()
 
-            threading.Thread(target=_thread_search, daemon=True).start()
+            activity.background("Cambiar MEDEST", _thread_search)
 
         def _show_edit_dialog():
             map_l = {"E": "Estratégico (E)", "S": "Soporte (S)", "_": "Otros (_)"}
@@ -211,7 +212,7 @@ class ChangeMedestTool(SismedTool):
                     log_text.value = "✨ Cambios aplicados con éxito"
                     _do_search()
 
-                threading.Thread(target=_thread_save, daemon=True).start()
+                activity.background("Cambiar MEDEST", _thread_save)
 
             dialog = ft.AlertDialog(
                 title=ft.Row([

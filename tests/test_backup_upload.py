@@ -158,6 +158,8 @@ class UploaderTests(unittest.TestCase):
         self.assertFalse(self._uploader(session, parallel=2).run(self.tmp.name, "030S05"))
         self.assertEqual(self.sent[-1]["t"], "backup_error")
         self.assertIsNone(session.completed)
+        # Se informa el error de la parte que falló, no el «se detuvo» de las demás.
+        self.assertNotIn("Se detuvo", self.sent[-1]["reason"])
 
     def test_the_backup_details_also_go_with_the_start_of_the_upload(self):
         session = _Session()

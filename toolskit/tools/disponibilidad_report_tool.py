@@ -25,6 +25,7 @@ from datetime import date
 from disponibilidad_report_manager import DisponibilidadReportManager
 from tools.base_tool import SismedTool, ToolMetadata
 from tools.app_config import get as cfg_get, set as cfg_set
+import activity
 
 
 class DisponibilidadReportTool(SismedTool):
@@ -504,7 +505,7 @@ class DisponibilidadReportTool(SismedTool):
                 btn_generar.update()
                 page.update()
 
-            threading.Thread(target=_process, daemon=True).start()
+            activity.background("Disponibilidad", _process)
 
         save_picker = ft.FilePicker(on_result=_on_save)
         page.overlay.append(save_picker)

@@ -16,6 +16,7 @@ import flet as ft
 from consumo_valorizado_report_manager import ConsumoValorizadoReportManager
 from tools.app_config import get as cfg_get, set as cfg_set
 from tools.base_tool import SismedTool, ToolMetadata
+import activity
 
 
 class ConsumoValorizadoReportTool(SismedTool):
@@ -389,7 +390,7 @@ class ConsumoValorizadoReportTool(SismedTool):
                     page.snack_bar.open = True
                     page.update()
 
-            threading.Thread(target=_process_periods, daemon=True).start()
+            activity.background("Consumo valorizado", _process_periods)
 
         dir_row = ft.Container(
             height=48,
@@ -559,7 +560,7 @@ class ConsumoValorizadoReportTool(SismedTool):
                 btn_generar.update()
                 page.update()
 
-            threading.Thread(target=_process, daemon=True).start()
+            activity.background("Consumo valorizado", _process)
 
         save_picker = ft.FilePicker(on_result=_on_save)
         page.overlay.append(save_picker)

@@ -179,6 +179,27 @@ def choose(bundle: Path, root: Path, state: State | None = None) -> CodeUpdate |
     return None
 
 
+def wait_for_previous(argv=None, timeout: float = 60.0):
+    """Con `--wait-pid N` (reinicio para actualizar), espera a que termine el Toolkit anterior antes
+    de abrir: si no, el nuevo encontraría el anterior abierto y se cerraría solo."""
+    argv = sys.argv if argv is None else argv
+    if "--wait-pid" not in argv or os.name != "nt":
+        return
+    try:
+        pid = int(argv[argv.index("--wait-pid") + 1])
+    except (IndexError, ValueError):
+        return
+    import ctypes
+
+    synchronize = 0x00100000
+    handle = ctypes.windll.kernel32.OpenProcess(synchronize, False, pid)
+    if handle:
+        try:
+            ctypes.windll.kernel32.WaitForSingleObject(handle, int(timeout * 1000))
+        finally:
+            ctypes.windll.kernel32.CloseHandle(handle)
+
+
 def _forget_modules(prefix: str):
     for name, module in list(sys.modules.items()):
         if str(getattr(module, "__file__", "") or "").startswith(prefix):
@@ -209,22 +230,33 @@ def prepare() -> CodeUpdate | None:
 
 
 def import_main(update: CodeUpdate | None):
-    """Importa `main`; si el código descargado ni siquiera se puede importar, vuelve al del instalador."""
-    try:
-        import main
-        return main
-    except Exception:
-        if update is None:
-            raise
-        state = State(updates_root())
-        state.mark_bad(update.version)
-        state.save()
-        _forget_modules(str(update.zip_path))
-        sys.path.remove(str(update.zip_path))
-        os.environ.pop("TOOLKIT_VERSION_OVERRIDE", None)
-        sys.path.insert(0, str(bundle_dir() / "app" / "app.zip"))
-        import main
-        return main
+    """Importa `main`; si el código descargado ni siquiera se puede importar, lo marca como malo y
+    abre la última actualización buena o, si no hay, el código del instalador."""
+    while True:
+        try:
+            import main
+            return main
+        except Exception:
+            if update is None:
+                raise
+            root = updates_root()
+            state = State(root)
+            state.mark_bad(update.version)
+            state.save()
+            _forget_modules(str(update.zip_path))
+            sys.path.remove(str(update.zip_path))
+            os.environ.pop("TOOLKIT_VERSION_OVERRIDE", None)
+            try:
+                update = choose(bundle_dir(), root, state)
+            except Exception:  # noqa: BLE001
+                update = None
+            if update:
+                sys.path.insert(0, str(update.zip_path))
+                os.environ["TOOLKIT_VERSION_OVERRIDE"] = update.version
+                state.data["trying"][update.version] = state.failed_starts(update.version) + 1
+                state.save()
+            else:
+                sys.path.insert(0, str(bundle_dir() / "app" / "app.zip"))
 
 
 def run_main(main, update: CodeUpdate | None):
