@@ -116,7 +116,9 @@ def log_since(mark: int) -> str:
 
 
 def open_at_logon(wait_ready: bool = True) -> tuple[str, subprocess.Popen]:
-    """Abre el Toolkit como al encender Windows y devuelve lo que anotó en el registro de arranque."""
+    """Abre el Toolkit como al encender Windows y devuelve lo que anotó en el registro de arranque.
+    Antes lo cierra: si quedara abierto, la nueva apertura se cerraría sola (como debe)."""
+    kill_toolkit()
     mark = log_mark()
     process = subprocess.Popen([str(EXE), "--autorun"])
     if wait_ready:
@@ -260,7 +262,7 @@ def tampered(good: str, base: str):
     finally:
         path.write_bytes(original)
     text, _ = open_at_logon()
-    check(running_version(text) == good, "con el zip bueno vuelve a abrir la actualización")
+    check(running_version(text) == good, f"con el zip bueno vuelve a abrir la actualización ({running_version(text)})")
 
 
 @case("Firma de otra clave y otro runtime")
@@ -301,6 +303,7 @@ def crash_on_start(good: str, app_zip: bytes):
 def error_on_start(good: str, app_zip: bytes):
     source = "def run():\n    raise RuntimeError('falla a proposito')\n"
     place_update("9.9.50", replaced(app_zip, "main.pyc", pyc(source, "main.py")))
+    kill_toolkit()
     mark = log_mark()
     subprocess.Popen([str(EXE), "--autorun"])
     check(wait_until(lambda: "boot_status=autorun" in log_since(mark), 90),
