@@ -37,12 +37,14 @@ jobs:
         shell: pwsh
         run: |
           pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\.venv\Scripts\python.exe packaging\windows\build_manifest.py dist\ToolkitOGM a.json
 
       - name: Compilar otra vez sin cambios
         shell: pwsh
         run: |
           pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\.venv\Scripts\python.exe packaging\windows\build_manifest.py dist\ToolkitOGM a2.json | Out-Null
           Write-Host "== Mismo codigo, dos compilaciones =="
           .\.venv\Scripts\python.exe packaging\windows\build_manifest.py --compare a.json a2.json
@@ -53,6 +55,7 @@ jobs:
           Add-Content -LiteralPath toolskit\ici_excel.py -Value "`n# cambio de prueba"
           Set-Content -LiteralPath VERSION -Value "9.9.9"
           pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\.venv\Scripts\python.exe packaging\windows\build_manifest.py dist\ToolkitOGM b.json | Out-Null
           Write-Host "== Un cambio en el codigo del Toolkit =="
           .\.venv\Scripts\python.exe packaging\windows\build_manifest.py --compare a.json b.json

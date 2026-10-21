@@ -66,6 +66,7 @@ jobs:
         shell: pwsh
         run: |
           pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\.venv\Scripts\python.exe tests\e2e_windows_code_update.py base
 
       - name: Armar, firmar y aplicar una actualizacion de codigo
@@ -74,7 +75,9 @@ jobs:
           Add-Content -LiteralPath toolskit\app_version.py -Value "`nE2E_MARCA = 'actualizacion de codigo'"
           Set-Content -LiteralPath VERSION -Value "9.9.10"
           .\.venv\Scripts\python.exe packaging\windows\build_app.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\.venv\Scripts\python.exe packaging\windows\sign_code_update.py build\firmado
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\.venv\Scripts\python.exe tests\e2e_windows_code_update.py update
 
       - name: Instalador completo con otra version
@@ -82,6 +85,7 @@ jobs:
         run: |
           Set-Content -LiteralPath VERSION -Value "9.9.60"
           pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\.venv\Scripts\python.exe tests\e2e_windows_code_update.py full
 
       - name: Copiar registros si algo falla

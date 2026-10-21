@@ -1,3 +1,4 @@
+import contextlib
 import hashlib
 import io
 import json
@@ -328,7 +329,8 @@ class SignScriptTests(unittest.TestCase):
             (build / "app" / "VERSION").write_text("2.4.5\n")
             (build / "runtime.json").write_text(json.dumps({"runtime": RUNTIME, "public_key": PUBLIC}))
             out = Path(tmp) / "out"
-            with mock.patch.dict(os.environ, {"UPDATE_SIGNING_KEY": SECRET.hex()}):
+            with mock.patch.dict(os.environ, {"UPDATE_SIGNING_KEY": SECRET.hex()}), \
+                    contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(sign_code_update.main(out, build), 0)
             manifest = (out / "ToolkitOGM-app-2.4.5.json").read_bytes()
             signature = (out / "ToolkitOGM-app-2.4.5.json.sig").read_bytes()
@@ -336,10 +338,11 @@ class SignScriptTests(unittest.TestCase):
             self.assertEqual(data["version"], "2.4.5")
             self.assertEqual(data["app"]["size"], 3)
             # Otra clave: no firma.
-            with mock.patch.dict(os.environ, {"UPDATE_SIGNING_KEY": "11" * 32}):
+            with mock.patch.dict(os.environ, {"UPDATE_SIGNING_KEY": "11" * 32}), \
+                    contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(sign_code_update.main(Path(tmp) / "otra", build), 1)
             # Sin clave: avisa y no escribe nada.
-            with mock.patch.dict(os.environ, {"UPDATE_SIGNING_KEY": ""}):
+            with mock.patch.dict(os.environ, {"UPDATE_SIGNING_KEY": ""}), contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(sign_code_update.main(Path(tmp) / "nada", build), 0)
             self.assertFalse((Path(tmp) / "nada").exists())
 

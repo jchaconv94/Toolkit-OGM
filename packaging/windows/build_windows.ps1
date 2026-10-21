@@ -167,7 +167,7 @@ if (-not (Test-Path -LiteralPath $updaterSource)) {
 }
 
 $updaterExe = Join-Path $appDistDir "ToolkitUpdateHost.exe"
-& $cscPath /nologo /deterministic /target:winexe /optimize+ /reference:System.Windows.Forms.dll "/out:$updaterExe" $updaterSource
+& $cscPath /nologo /target:winexe /optimize+ /reference:System.Windows.Forms.dll "/out:$updaterExe" $updaterSource
 Assert-LastExitCode "Fallo la compilacion de ToolkitUpdateHost.exe"
 if (-not (Test-Path -LiteralPath $updaterExe)) {
     throw "No se genero el auxiliar esperado: $updaterExe"
