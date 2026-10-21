@@ -1,8 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import hashlib
+import importlib.metadata
+import json
+import os
+import sys
 from pathlib import Path
 
 import flet_desktop
+import PyInstaller
 from PyInstaller.building.datastruct import Tree
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
@@ -14,10 +20,19 @@ ICON_FILE = SPEC_DIR / "ToolkitOGM.ico"
 VERSION_FILE = SPEC_DIR / "ToolkitOGM.version.txt"
 FLET_DESKTOP_DIR = Path(flet_desktop.__file__).resolve().parent
 FLET_DESKTOP_TREE = Tree(str(FLET_DESKTOP_DIR / "app"), prefix="flet_desktop/app")
+APP_BUILD_DIR = REPO_ROOT / "build" / "app"
+
+# El código del Toolkit va aparte del exe, en _internal/app/app.zip (lo arma build_app.py): una
+# actualización de código solo cambia ese zip y el exe se queda igual. Ver toolskit/app_loader.py.
+sys.path.insert(0, str(SPEC_DIR))
+from build_app import RUNTIME_MODULES, app_modules  # noqa: E402
+
+APP_MODULES = app_modules(TOOLKIT_DIR)
 
 datas = [
     (str(TOOLKIT_DIR / "assets"), "assets"),
-    (str(REPO_ROOT / "VERSION"), "."),
+    (str(APP_BUILD_DIR / "app.zip"), "app"),
+    (str(APP_BUILD_DIR / "VERSION"), "app"),
 ]
 datas += collect_data_files("flet")
 
@@ -37,6 +52,8 @@ hiddenimports = [
     "pythoncom",
 ]
 hiddenimports += collect_submodules("pdf2docx")
+# Todo el código del Toolkit se analiza para que entren las librerías que usa, aunque luego vaya en app.zip.
+hiddenimports += [name for name, _ in APP_MODULES]
 
 excludes = [
     "IPython",
@@ -56,7 +73,7 @@ excludes = [
 
 
 a = Analysis(
-    [str(TOOLKIT_DIR / "main.py")],
+    [str(TOOLKIT_DIR / "launcher.py")],
     pathex=[str(TOOLKIT_DIR)],
     binaries=[],
     datas=datas,
@@ -68,6 +85,36 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+# Fuera del exe: el código del Toolkit (va en app.zip). Dentro: el arranque y las librerías.
+_own = {str(path.resolve()).lower() for _, path in APP_MODULES}
+a.pure = [entry for entry in a.pure if str(Path(entry[1]).resolve()).lower() not in _own]
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _runtime_id(public_key: str) -> str:
+    """Identidad del runtime: si cambia, una actualización de código no sirve y hace falta el instalador.
+    Cambia con Python, PyInstaller, cualquier librería, los módulos que entran en el exe y el arranque."""
+    parts = [f"python={sys.version}", f"pyinstaller={PyInstaller.__version__}", f"key={public_key}"]
+    parts += sorted(f"{d.metadata['Name']}=={d.version}" for d in importlib.metadata.distributions())
+    parts += sorted(f"pure:{entry[0]}" for entry in a.pure)
+    parts += sorted(f"bin:{entry[0]}" for entry in a.binaries)
+    parts += sorted(f"data:{entry[0]}" for entry in a.datas if Path(entry[0]).parts[0] != "app")
+    for path in [*(TOOLKIT_DIR / f"{name}.py" for name in RUNTIME_MODULES), Path(SPEC),
+                 SPEC_DIR / "ToolkitOGM.iss", SPEC_DIR / "ToolkitUpdater.cs", SPEC_DIR / "build_windows.ps1"]:
+        parts.append(f"file:{path.name}={_sha256(path)}")
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+# Clave pública de las actualizaciones de código: la de producción, o la de prueba que pase el flujo.
+_public_key = (os.environ.get("UPDATE_PUBLIC_KEY") or (SPEC_DIR / "update_public_key.txt").read_text()).strip().lower()
+_runtime_file = APP_BUILD_DIR.parent / "runtime.json"
+_runtime_file.write_text(json.dumps({"runtime": _runtime_id(_public_key), "public_key": _public_key}, indent=1),
+                         encoding="utf-8")
+a.datas += [("runtime.json", str(_runtime_file), "DATA")]
 
 pyz = PYZ(a.pure)
 

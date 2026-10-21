@@ -88,6 +88,10 @@ Filename: "{app}\{#MyAppExeName}"; Parameters: "--install-success"; Description:
 ; El auxiliar seguro envia tambien /SAFEUPDATE y abre la app despues de verificarla.
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--install-success"; Flags: nowait; Check: IsLegacyAutoUpdateMode
 
+[UninstallDelete]
+; Actualizaciones de codigo descargadas por el Toolkit (toolskit/app_loader.py).
+Type: filesandordirs; Name: "{localappdata}\ToolkitOGM\app"
+
 [UninstallRun]
 ; Tarea de arranque que creaban las versiones anteriores a la 2.3.19.
 Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ToolkitOGM_Autorun /F"; Flags: runhidden; RunOnceId: "BorrarArranqueAnterior"

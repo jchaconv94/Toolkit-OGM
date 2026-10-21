@@ -141,6 +141,14 @@ if (Test-Path $buildDir) {
 
 Remove-DirectoryWithRetries -Path $appDistDir
 
+# Compilacion reproducible: con la misma version del codigo salen los mismos archivos.
+$env:PYTHONHASHSEED = "0"
+$env:SOURCE_DATE_EPOCH = "315532800"
+
+Write-Host "==> Armando el codigo del Toolkit (app.zip)..." -ForegroundColor Cyan
+& $pythonExe (Join-Path $scriptDir "build_app.py")
+Assert-LastExitCode "Fallo el armado de app.zip"
+
 Write-Host "==> Empaquetando ejecutable con PyInstaller..." -ForegroundColor Cyan
 & $pythonExe -m PyInstaller --noconfirm --clean --distpath $distDir --workpath $buildDir $specFile
 Assert-LastExitCode "Fallo el empaquetado con PyInstaller"
@@ -159,7 +167,7 @@ if (-not (Test-Path -LiteralPath $updaterSource)) {
 }
 
 $updaterExe = Join-Path $appDistDir "ToolkitUpdateHost.exe"
-& $cscPath /nologo /target:winexe /optimize+ /reference:System.Windows.Forms.dll "/out:$updaterExe" $updaterSource
+& $cscPath /nologo /deterministic /target:winexe /optimize+ /reference:System.Windows.Forms.dll "/out:$updaterExe" $updaterSource
 Assert-LastExitCode "Fallo la compilacion de ToolkitUpdateHost.exe"
 if (-not (Test-Path -LiteralPath $updaterExe)) {
     throw "No se genero el auxiliar esperado: $updaterExe"
