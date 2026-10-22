@@ -135,6 +135,28 @@ def new_detections(label: str) -> bool:
                  + ("" if not found else f": {', '.join(sorted({str(d.get('threat')) for d in found}))}"))
 
 
+def fully_on(s: dict) -> bool:
+    return all(s.get(k) for k in ("AntivirusEnabled", "RealTimeProtectionEnabled", "BehaviorMonitorEnabled",
+                                  "IoavProtectionEnabled"))
+
+
+def wait_until_on(timeout: int = 300) -> dict:
+    """Al actualizar sus firmas, Defender puede instalar una versión nueva y reiniciarse: se espera."""
+    deadline = time.time() + timeout
+    s: dict = {}
+    while time.time() < deadline:
+        ps("Start-Service -Name WinDefend -ErrorAction SilentlyContinue")
+        try:
+            s = status()
+        except Exception as exc:  # noqa: BLE001 - mientras se reinicia no responde
+            print(f"      Defender todavía no responde: {exc}", flush=True)
+            s = {}
+        if fully_on(s):
+            return s
+        time.sleep(10)
+    return s
+
+
 def still_on(label: str) -> bool:
     s = status()
     return check(s.get("RealTimeProtectionEnabled") and s.get("BehaviorMonitorEnabled"),
@@ -144,7 +166,7 @@ def still_on(label: str) -> bool:
 # --- encender Defender ------------------------------------------------------------------
 def enable():
     WORK.mkdir(parents=True, exist_ok=True)
-    print("Antes:", json.dumps(status()), json.dumps(preferences()), sep="\n")
+    print("Antes:", json.dumps(status()), json.dumps(preferences()), sep="\n", flush=True)
     script = r"""
 $ErrorActionPreference = 'Continue'
 Remove-Item -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender' -Recurse -Force -ErrorAction SilentlyContinue
@@ -165,10 +187,10 @@ Set-MpPreference -PUAProtection 1
 Update-MpSignature -ErrorAction SilentlyContinue
 """
     result = ps(script)
-    print(result.stdout.strip(), result.stderr.strip(), sep="\n")
-    time.sleep(10)
-    s, p = status(), preferences()
-    print("Después:", json.dumps(s), json.dumps(p), sep="\n")
+    print(result.stdout.strip(), result.stderr.strip(), sep="\n", flush=True)
+    s = wait_until_on()
+    p = preferences()
+    print("Después:", json.dumps(s), json.dumps(p), sep="\n", flush=True)
     check(s.get("AntivirusEnabled"), "el antivirus de Defender está encendido")
     check(s.get("RealTimeProtectionEnabled"), "la protección en tiempo real está encendida")
     check(s.get("BehaviorMonitorEnabled"), "la vigilancia de comportamiento está encendida")
