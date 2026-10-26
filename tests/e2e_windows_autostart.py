@@ -4,7 +4,8 @@ Instala la versión publicada anterior, simula su casilla de arranque como la de
 programada o clave Run), actualiza con el instalador recién compilado y abre el Toolkit como lo
 abre Windows al encender (``--autorun``). Revisa cada caso que puede pasar en una laptop:
 
-- con el arranque encendido en la versión anterior (tarea o clave Run) sigue encendido y lo viejo se borra;
+- con el arranque encendido en la versión anterior (tarea o clave Run) sigue encendido y lo viejo se
+  deja como está: desde la 2.4.5 el Toolkit no toca el arranque de Windows, ni para borrar;
 - con la casilla apagada, el Toolkit se cierra sin abrir nada;
 - si ya está abierto, la segunda apertura se cierra sola;
 - la tarea de otro usuario de Windows no se toca;
@@ -225,7 +226,7 @@ def first_logon_with_task():
     check(wait_until(lambda: config().get("auto_startup") is not None, 60),
           "el Toolkit guardó la preferencia al abrirse")
     check(config().get("auto_startup") is True, "la preferencia quedó encendida, como estaba")
-    check(wait_until(lambda: not task_exists(), 30), "la tarea vieja se borró")
+    check(task_exists(), "la tarea vieja sigue: el Toolkit no la toca")
     time.sleep(20)
     check(first.poll() is None, "el Toolkit sigue abierto en la bandeja después de 20 s")
     text = log_since(mark)
@@ -263,7 +264,17 @@ def legacy_run_value():
     autorun()
     check(wait_until(lambda: config().get("auto_startup") is not None, 60), "el Toolkit guardó la preferencia")
     check(config().get("auto_startup") is True, "la preferencia quedó encendida")
-    check(wait_until(lambda: run_value() is None, 30), "la clave Run vieja se borró")
+    time.sleep(10)
+    check(run_value() == f'"{EXE}" --autorun', "la clave Run vieja sigue: el Toolkit no la toca")
+    # Al encender, la clave vieja abre el Toolkit una vez más: esa apertura se cierra sola.
+    extra = autorun()
+    try:
+        code = extra.wait(60)
+    except subprocess.TimeoutExpired:
+        code = None
+    check(code == 0, f"la apertura de más por la clave vieja se cierra sola (código {code})")
+    kill_toolkit()
+    set_run_value(None)
 
 
 @case("Sin nada de la versión anterior")
@@ -304,7 +315,7 @@ def task_of_another_user():
         check(code == 0, f"el Toolkit se cerró solo: la tarea no es de este usuario (código {code})")
         check(config().get("auto_startup") is False, "la preferencia de este usuario quedó apagada")
         check(task_exists(), "la tarea del otro usuario no se borró")
-        check("startup_legacy_task_kept" in log_since(mark), "el registro anota que la tarea se dejó a su dueño")
+        check("startup_migrated enabled=False" in log_since(mark), "el registro anota que no contó la tarea ajena")
     finally:
         delete_task()
         run(["net", "user", user, "/delete"])

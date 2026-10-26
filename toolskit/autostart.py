@@ -9,17 +9,19 @@ Run ``ToolkitOGM_Sync`` si la tarea fallaba), y Windows Defender lo ponía en cu
 La casilla «Abrir esta aplicación al encender Windows» solo guarda la preferencia. Si está apagada,
 el Toolkit abierto por el acceso directo se cierra sin mostrar nada.
 
-La primera vez, la preferencia sale de lo que dejó la versión anterior (la tarea o la clave Run), y
-eso se borra: borrarlo no es registrarse en el arranque. La tarea es una sola para toda la PC y
-quedaba a nombre del último usuario de Windows que abrió el Toolkit: si es de otro usuario, no cuenta
-para este ni se borra (se la deja a su dueño, o al desinstalador).
+La primera vez, la preferencia sale de lo que dejó la versión anterior (la tarea o la clave Run). Desde
+la 2.4.5 eso solo se lee y se deja como está: el Toolkit no toca el arranque de Windows de ninguna
+forma, ni para borrar (la 2.4.4 lo borraba). Lo viejo que quede abre el Toolkit con ``--autorun`` una
+vez más al encender, y esa apertura se cierra sola: ya hay uno abierto, o la casilla está apagada.
+La tarea se lee con el Programador de tareas de Windows, sin abrir ``schtasks``. Es una sola para
+toda la PC y quedaba a nombre del último usuario de Windows que abrió el Toolkit: si es de otro
+usuario, no cuenta para este.
 """
 
 from __future__ import annotations
 
 import os
 import re
-import subprocess
 import sys
 from typing import Callable
 
@@ -43,32 +45,43 @@ def shortcut_installed(exists: Callable[[str], bool] = os.path.exists, env=None)
 
 
 def startup_preference(get, set_, legacy, log=lambda message: None) -> bool:
-    """La preferencia guardada; la primera vez la toma de la versión anterior y borra su arranque."""
+    """La preferencia guardada; la primera vez la toma de lo que dejó la versión anterior, sin tocarlo."""
     saved = get(PREFERENCE_KEY)
     if isinstance(saved, bool):
         return saved
     enabled = legacy.enabled()
     set_(PREFERENCE_KEY, enabled)
-    for message in legacy.remove():
-        log(message)
-    log(f"startup_migrated enabled={enabled}")
+    log(f"startup_migrated enabled={enabled}; legacy_left=True")
     return enabled
 
 
-def _hidden_run(arguments: list[str]):
-    startupinfo = None
-    if os.name == "nt" and hasattr(subprocess, "STARTUPINFO"):
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-    return subprocess.run(
-        arguments,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-        startupinfo=startupinfo,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+def _read_task_xml() -> str | None:
+    """El XML de la tarea vieja, leído con el Programador de tareas de Windows (sin abrir schtasks).
+    None si no existe o no se puede leer."""
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import pythoncom
+        import win32com.client
+    except Exception:
+        return None
+    try:
+        pythoncom.CoInitialize()
+        initialized = True
+    except Exception:
+        initialized = False
+    try:
+        service = win32com.client.Dispatch("Schedule.Service")
+        service.Connect()
+        return str(service.GetFolder("\\").GetTask(LEGACY_TASK_NAME).Xml)
+    except Exception:
+        return None
+    finally:
+        if initialized:
+            try:
+                pythoncom.CoUninitialize()
+            except Exception:
+                pass
 
 
 def _current_user_ids(env=None) -> set[str]:
@@ -94,10 +107,10 @@ def _current_user_ids(env=None) -> set[str]:
 
 
 class LegacyStartup:
-    """La tarea programada y la clave Run que creaban las versiones anteriores."""
+    """La tarea programada y la clave Run que creaban las versiones anteriores. Solo se leen."""
 
-    def __init__(self, run: Callable[[list[str]], object] = _hidden_run, registry=None, user_ids=None):
-        self.run = run
+    def __init__(self, task_xml: Callable[[], str | None] = _read_task_xml, registry=None, user_ids=None):
+        self.task_xml = task_xml
         self.registry = registry
         self.user_ids = user_ids
         self._task = None
@@ -115,16 +128,15 @@ class LegacyStartup:
         """None si la tarea no existe; "" si existe y no dice de quién es."""
         if self._task is None:
             try:
-                result = self.run(["schtasks", "/Query", "/TN", LEGACY_TASK_NAME, "/XML"])
-                if result.returncode != 0:
-                    self._task = (False, "")
-                else:
-                    # schtasks puede escribir el XML en UTF-16: se quitan los nulos antes de buscar.
-                    xml = str(result.stdout or "").replace("\x00", "")
-                    match = re.search(r"<UserId>\s*([^<]*?)\s*</UserId>", xml)
-                    self._task = (True, match.group(1) if match else "")
+                xml = self.task_xml()
             except Exception:
+                xml = None
+            if xml is None:
                 self._task = (False, "")
+            else:
+                text = str(xml).replace("\x00", "")
+                match = re.search(r"<UserId>\s*([^<]*?)\s*</UserId>", text)
+                self._task = (True, match.group(1) if match else "")
         exists, owner = self._task
         return owner if exists else None
 
@@ -150,27 +162,3 @@ class LegacyStartup:
 
     def enabled(self) -> bool:
         return self.task_is_mine() or self.run_value_exists()
-
-    def remove(self) -> list[str]:
-        messages = []
-        owner = self.task_owner()
-        if owner is not None and not self.task_is_mine():
-            messages.append(f"startup_legacy_task_kept owner={owner}")
-        elif owner is not None:
-            try:
-                result = self.run(["schtasks", "/Delete", "/TN", LEGACY_TASK_NAME, "/F"])
-                ok = result.returncode == 0
-                detail = (result.stdout or result.stderr or "").strip()
-            except Exception as exc:
-                ok, detail = False, f"{type(exc).__name__}: {exc}"
-            messages.append(f"startup_legacy_task_removed={ok}; {detail}".rstrip("; "))
-            self._task = None
-        reg = self._winreg()
-        if reg is not None and self.run_value_exists():
-            try:
-                with reg.OpenKey(reg.HKEY_CURRENT_USER, _RUN_KEY, 0, reg.KEY_SET_VALUE) as key:
-                    reg.DeleteValue(key, LEGACY_RUN_VALUE)
-                messages.append("startup_legacy_run_removed=True")
-            except Exception as exc:
-                messages.append(f"startup_legacy_run_removed=False; {type(exc).__name__}: {exc}")
-        return messages
