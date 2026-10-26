@@ -187,6 +187,7 @@ jobs:
           - Cambio principal: $commitTitle
           - Conserva la configuracion existente durante la actualizacion.
           - El instalador incluye una huella SHA-256 para comprobar la descarga.
+          - Software libre bajo la licencia AGPL-3.0. Codigo fuente: https://github.com/jchaconv94/Toolkit-OGM
           "@ | Set-Content -LiteralPath release-notes.md -Encoding UTF8
 
       - name: Crear GitHub Release publica
