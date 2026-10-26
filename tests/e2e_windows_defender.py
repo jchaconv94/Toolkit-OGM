@@ -263,7 +263,7 @@ def toolkit_running() -> bool:
 
 
 def kill_toolkit():
-    for image in ("ToolkitOGM.exe", "flet.exe"):
+    for image in ("ToolkitOGM.exe", "flet.exe", "ToolkitUpdater.exe"):
         subprocess.run(["taskkill", "/F", "/T", "/IM", image], capture_output=True)
     time.sleep(2)
 
@@ -417,8 +417,16 @@ def upgrade(version: str):
 def oldrun():
     """Control: la versión vieja con Defender encendido. Solo informa."""
     old = load_state().get("old_version", "?")
+    # Que no busque ni baje la versión nueva: se actualizaría sola en medio del control y su auxiliar
+    # de actualización quedaría abierto.
+    data = config()
+    data.update({"update_auto_check": False, "update_auto_download": False})
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG.write_text(json.dumps(data, indent=2), encoding="utf-8")
     mark = log_size()
-    process = subprocess.Popen([str(EXE), "--autorun"])
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    process = subprocess.Popen([str(EXE), "--autorun"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, creationflags=flags)
     end = time.time() + 240
     while time.time() < end and EXE.exists():
         time.sleep(10)
