@@ -72,6 +72,9 @@ jobs:
 
   actualizacion-codigo:
     name: Actualizacion de codigo y reinicio silencioso con Defender encendido
+    # Solo a mano: compilar el Toolkit con Defender analizando todo el disco satura estas máquinas y
+    # a veces se pierden sin dejar registro. Pasó completa el 2026-10-22 (PR #55).
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 50
 
