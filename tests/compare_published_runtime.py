@@ -10,6 +10,7 @@ qué una versión salió con otro runtime y llegó a las PC con el instalador co
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import os
 import subprocess
@@ -56,13 +57,14 @@ def embedded(exe: Path) -> dict[str, str]:
         if entry[-1] == "z":
             pyz = archive.open_embedded_archive(name)
             for module in pyz.toc:
-                found[f"pyz:{module}"] = sha(pyz.extract(module, raw=True))
+                found[f"pyz:{module}"] = sha(pyz.extract(module, raw=True) or b"")
         else:
-            found[f"pkg:{name}"] = sha(archive.extract(name))
+            # Las opciones del arranque no tienen contenido: extract devuelve None.
+            found[f"pkg:{name}"] = sha(archive.extract(name) or b"")
     return found
 
 
-def snapshot(version: str) -> dict[str, str]:
+def snapshot(version: str) -> tuple[dict[str, str], dict[str, str]]:
     kill_toolkit()
     setup = download(version)
     log = WORK / f"instalar-{version}.log"
@@ -73,14 +75,23 @@ def snapshot(version: str) -> dict[str, str]:
     time.sleep(3)
     kill_toolkit()
     files: dict[str, str] = {}
+    texts: dict[str, str] = {}
     for path in sorted(p for p in INSTALL_DIR.rglob("*") if p.is_file()):
-        files[path.relative_to(INSTALL_DIR).as_posix()] = sha(path.read_bytes())
+        name = path.relative_to(INSTALL_DIR).as_posix()
+        data = path.read_bytes()
+        files[name] = sha(data)
+        # Los textos chicos se guardan para mostrar qué líneas cambiaron.
+        if len(data) < 2_000_000 and path.suffix.lower() not in (".exe", ".dll", ".pyd", ".zip"):
+            try:
+                texts[name] = data.decode("utf-8")
+            except UnicodeDecodeError:
+                pass
     try:
         files.update(embedded(INSTALL_DIR / "ToolkitOGM.exe"))
     except Exception as exc:  # noqa: BLE001 - sin el detalle del exe igual sirve lo demás
         print(f"No se pudo leer lo que va dentro de ToolkitOGM.exe {version}: {type(exc).__name__}: {exc}")
     uninstall(version)
-    return files
+    return files, texts
 
 
 def uninstall(version: str):
@@ -95,7 +106,8 @@ def uninstall(version: str):
         raise SystemExit(f"No se pudo desinstalar la {version}")
 
 
-def report(before: str, after: str, a: dict[str, str], b: dict[str, str]) -> list[str]:
+def report(before: str, after: str, a: dict[str, str], b: dict[str, str],
+           texts_a: dict[str, str] | None = None, texts_b: dict[str, str] | None = None) -> list[str]:
     def runtime(name: str) -> bool:
         return not any(name.startswith(prefix) or f"/{prefix}" in name for prefix in ALWAYS_CHANGE)
 
@@ -105,7 +117,13 @@ def report(before: str, after: str, a: dict[str, str], b: dict[str, str]) -> lis
     lines = [f"## Runtime de la {before} a la {after}", "",
              f"Archivos y módulos comparados: {len(b)}. Cambiaron {len(changed)}, nuevos {len(added)}, "
              f"quitados {len(removed)} (sin contar el código del Toolkit ni runtime.json).", ""]
-    lines += [f"- cambió `{k}`" for k in changed]
+    for k in changed:
+        lines.append(f"- cambió `{k}`")
+        if texts_a and texts_b and k in texts_a and k in texts_b:
+            old, new = texts_a[k].splitlines(), texts_b[k].splitlines()
+            diff = [line for line in difflib.unified_diff(old, new, lineterm="", n=0)
+                    if line[:1] in "+-" and line[:3] not in ("+++", "---")]
+            lines += [f"    {line}" for line in diff[:40]]
     lines += [f"- nuevo `{k}`" for k in added]
     lines += [f"- quitado `{k}`" for k in removed]
     return lines
@@ -114,9 +132,9 @@ def report(before: str, after: str, a: dict[str, str], b: dict[str, str]) -> lis
 def main() -> int:
     before, after = sys.argv[1:3]
     WORK.mkdir(parents=True, exist_ok=True)
-    a = snapshot(before)
-    b = snapshot(after)
-    lines = report(before, after, a, b)
+    a, texts_a = snapshot(before)
+    b, texts_b = snapshot(after)
+    lines = report(before, after, a, b, texts_a, texts_b)
     text = "\n".join(lines)
     print(text, flush=True)
     (WORK / "comparacion.md").write_text(text, encoding="utf-8")
