@@ -2,7 +2,6 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLKIT_DIR = ROOT / "toolskit"
@@ -16,14 +15,9 @@ from autostart import LegacyStartup, shortcut_installed, shortcut_paths, startup
 class FakeLegacy:
     def __init__(self, enabled):
         self.was_enabled = enabled
-        self.removed = 0
 
     def enabled(self):
         return self.was_enabled
-
-    def remove(self):
-        self.removed += 1
-        return ["borrado"]
 
 
 class FakeRegistry:
@@ -33,6 +27,7 @@ class FakeRegistry:
 
     def __init__(self, values):
         self.values = values
+        self.accesses = []
 
     class _Key:
         def __enter__(self):
@@ -42,6 +37,7 @@ class FakeRegistry:
             return False
 
     def OpenKey(self, root, path, reserved, access):
+        self.accesses.append(access)
         return self._Key()
 
     def QueryValueEx(self, key, name):
@@ -50,28 +46,31 @@ class FakeRegistry:
         return self.values[name], 1
 
     def DeleteValue(self, key, name):
-        del self.values[name]
+        raise AssertionError("el Toolkit no debe borrar nada del arranque de Windows")
+
+    def SetValueEx(self, *args):
+        raise AssertionError("el Toolkit no debe escribir nada en el arranque de Windows")
 
 
 class PreferenceTests(unittest.TestCase):
-    def test_first_time_takes_legacy_and_removes_it(self):
+    def test_first_time_takes_legacy_and_leaves_it(self):
         config, logs = {}, []
-        legacy = FakeLegacy(True)
-        self.assertTrue(startup_preference(config.get, config.__setitem__, legacy, logs.append))
+        self.assertTrue(startup_preference(config.get, config.__setitem__, FakeLegacy(True), logs.append))
         self.assertEqual(config, {"auto_startup": True})
-        self.assertEqual(legacy.removed, 1)
-        self.assertIn("borrado", logs)
+        self.assertEqual(logs, ["startup_migrated enabled=True; legacy_left=True"])
 
     def test_without_legacy_it_stays_off(self):
         config = {}
         self.assertFalse(startup_preference(config.get, config.__setitem__, FakeLegacy(False)))
         self.assertEqual(config, {"auto_startup": False})
 
-    def test_saved_preference_never_touches_windows(self):
-        legacy = FakeLegacy(True)
+    def test_saved_preference_never_looks_at_windows(self):
+        class Untouchable:
+            def enabled(self):
+                raise AssertionError("con la preferencia guardada no se mira lo viejo")
+
         config = {"auto_startup": False}
-        self.assertFalse(startup_preference(config.get, config.__setitem__, legacy))
-        self.assertEqual(legacy.removed, 0)
+        self.assertFalse(startup_preference(config.get, config.__setitem__, Untouchable()))
 
 
 class ShortcutTests(unittest.TestCase):
@@ -89,66 +88,53 @@ class ShortcutTests(unittest.TestCase):
 
 
 class LegacyStartupTests(unittest.TestCase):
-    def test_never_creates_anything(self):
-        calls = []
-
-        def run(arguments):
-            calls.append(arguments)
-            return SimpleNamespace(returncode=0, stdout="", stderr="")
-
+    def test_reads_the_old_run_value_and_leaves_it(self):
         registry = FakeRegistry({"ToolkitOGM_Sync": '"C:\\ToolkitOGM.exe" --autorun'})
-        legacy = LegacyStartup(run=run, registry=registry)
+        legacy = LegacyStartup(task_xml=lambda: None, registry=registry)
         self.assertTrue(legacy.enabled())
-        messages = legacy.remove()
-        self.assertIn(["schtasks", "/Delete", "/TN", "ToolkitOGM_Autorun", "/F"], calls)
-        self.assertFalse(any("/Create" in c for c in calls))
-        self.assertEqual(registry.values, {})
-        self.assertIn("startup_legacy_run_removed=True", messages)
+        self.assertEqual(registry.values, {"ToolkitOGM_Sync": '"C:\\ToolkitOGM.exe" --autorun'})
+        self.assertEqual(set(registry.accesses), {FakeRegistry.KEY_READ})
+        self.assertFalse(hasattr(legacy, "remove"))
 
-    def test_nothing_left_means_nothing_to_remove(self):
-        calls = []
+    def test_nothing_left_means_off(self):
+        self.assertFalse(LegacyStartup(task_xml=lambda: None, registry=FakeRegistry({})).enabled())
 
-        def run(arguments):
-            calls.append(arguments)
-            return SimpleNamespace(returncode=1, stdout="", stderr="no existe")
+    def test_a_task_reader_that_fails_counts_as_no_task(self):
+        def broken():
+            raise OSError("sin acceso al Programador de tareas")
 
-        legacy = LegacyStartup(run=run, registry=FakeRegistry({}))
-        self.assertFalse(legacy.enabled())
-        self.assertEqual(legacy.remove(), [])
-        self.assertTrue(all(c[1] == "/Query" for c in calls))
+        self.assertFalse(LegacyStartup(task_xml=broken, registry=FakeRegistry({})).enabled())
 
-    def _task(self, user, encoding=None):
-        calls = []
+    @staticmethod
+    def _task(user, nulls=False):
         xml = f'<?xml version="1.0"?><Task><Principals><Principal id="Author"><UserId>{user}</UserId>' \
               '</Principal></Principals></Task>'
-        if encoding:
-            xml = xml.encode(encoding).decode("latin-1")
+        return "\x00".join(xml) if nulls else xml
 
-        def run(arguments):
-            calls.append(arguments)
-            return SimpleNamespace(returncode=0, stdout=xml, stderr="")
-
-        return calls, run
-
-    def test_task_of_another_windows_user_is_left_alone(self):
-        calls, run = self._task("S-1-5-21-1-2-3-1002")
-        legacy = LegacyStartup(run=run, registry=FakeRegistry({}), user_ids={"S-1-5-21-1-2-3-1001", "ana"})
+    def test_task_of_another_windows_user_does_not_count(self):
+        legacy = LegacyStartup(task_xml=lambda: self._task("S-1-5-21-1-2-3-1002"), registry=FakeRegistry({}),
+                               user_ids={"S-1-5-21-1-2-3-1001", "ana"})
         self.assertFalse(legacy.enabled())
-        self.assertEqual(legacy.remove(), ["startup_legacy_task_kept owner=S-1-5-21-1-2-3-1002"])
-        self.assertFalse(any("/Delete" in c for c in calls))
+        self.assertEqual(legacy.task_owner(), "S-1-5-21-1-2-3-1002")
 
-    def test_own_task_by_sid_or_name_counts_and_is_removed(self):
+    def test_own_task_by_sid_or_name_counts(self):
         for user in ("S-1-5-21-1-2-3-1001", "LAPTOP\\Ana", "ana"):
-            calls, run = self._task(user)
-            legacy = LegacyStartup(run=run, registry=FakeRegistry({}),
+            legacy = LegacyStartup(task_xml=lambda: self._task(user), registry=FakeRegistry({}),
                                    user_ids={"s-1-5-21-1-2-3-1001", "laptop\\ana", "ana"})
             self.assertTrue(legacy.enabled(), user)
-            legacy.remove()
-            self.assertIn(["schtasks", "/Delete", "/TN", "ToolkitOGM_Autorun", "/F"], calls)
 
-    def test_reads_the_owner_from_utf16_output(self):
-        _, run = self._task("S-1-5-21-9", encoding="utf-16-le")
-        self.assertEqual(LegacyStartup(run=run, registry=FakeRegistry({}), user_ids=set()).task_owner(), "S-1-5-21-9")
+    def test_reads_the_owner_even_with_nulls(self):
+        legacy = LegacyStartup(task_xml=lambda: self._task("S-1-5-21-9", nulls=True), registry=FakeRegistry({}),
+                               user_ids=set())
+        self.assertEqual(legacy.task_owner(), "S-1-5-21-9")
+
+    def test_the_toolkit_never_touches_windows_startup(self):
+        # Desde la 2.4.5 ni crea ni borra: Defender ponía en cuarentena el Toolkit por tocar el arranque.
+        for name in ("autostart.py", "main.py"):
+            source = (TOOLKIT_DIR / name).read_text(encoding="utf-8")
+            for forbidden in ("/Create", "/Delete", "SetValueEx", "DeleteValue", "CreateKey", "import subprocess\n"
+                              if name == "autostart.py" else "/Create"):
+                self.assertNotIn(forbidden, source, f"{name}: {forbidden}")
 
     def test_main_no_longer_registers_itself(self):
         source = (TOOLKIT_DIR / "main.py").read_text(encoding="utf-8")

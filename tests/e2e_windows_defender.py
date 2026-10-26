@@ -20,8 +20,8 @@ cuarentena como «Behavior:Win32/Persistence.A!ml»):
 
 - `legacy <versión vieja>`: con Defender todavía apagado, instala esa versión y deja su tarea y su
   clave Run, como en una PC que la usaba;
-- `upgrade <versión>`: con Defender encendido, instala la versión publicada encima y la abre: la
-  primera vez borra la tarea y la clave viejas. No debe detectar nada;
+- `upgrade <versión>`: con Defender encendido, instala la versión publicada encima y la abre. Desde
+  la 2.4.5 deja la tarea y la clave viejas como están (la 2.4.4 las borraba). No debe detectar nada;
 - `oldrun`: control: con Defender encendido, abre la versión vieja, que vuelve a crear su tarea.
   Si Defender la detecta, estas máquinas reproducen lo que pasa en las PC.
 """
@@ -407,9 +407,13 @@ def upgrade(version: str):
     print(text, flush=True)
     check(f"version={version}" in text, f"abrió la versión {version}")
     check("startup_migrated enabled=True" in text, "tomó el arranque de la versión vieja y lo dejó encendido")
-    check(not task_exists(), "borró la tarea vieja")
-    check(run_value() is None, "borró la clave Run vieja")
-    new_detections(f"al abrir la {version} y borrar el arranque viejo")
+    if tuple(int(x) for x in version.split(".")) >= (2, 4, 5):
+        check(task_exists(), "dejó la tarea vieja como estaba: no toca el arranque de Windows")
+        check(run_value() is not None, "dejó la clave Run vieja como estaba")
+    else:
+        check(not task_exists(), "borró la tarea vieja")
+        check(run_value() is None, "borró la clave Run vieja")
+    new_detections(f"al abrir la {version} por primera vez sobre la versión vieja")
     subprocess.Popen([str(EXE)])
     time.sleep(30)
     new_detections("con la ventana abierta")
