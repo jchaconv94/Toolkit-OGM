@@ -107,3 +107,91 @@ jobs:
             build/e2e-defender/*.log
             build/e2e-codigo/*.log
           if-no-files-found: ignore
+
+  actualizar-desde-vieja:
+    name: Actualizar desde la 2.3.18 con Defender encendido
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PUBLISHED_VERSION: ${{ github.event.inputs.version || '2.4.4' }}
+    steps:
+      - name: Descargar el codigo
+        uses: actions/checkout@v4
+
+      - name: Preparar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+          cache: pip
+          cache-dependency-path: toolskit/requirements.txt
+
+      - name: Crear entorno
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt -c packaging\windows\build-constraints.txt
+
+      - name: Dejar la PC como la tenia la 2.3.18 (Defender todavia apagado)
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py legacy 2.3.18
+
+      - name: Encender Defender y comprobar que detecta
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py enable
+
+      - name: Instalar la version publicada encima y abrirla
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py upgrade $env:PUBLISHED_VERSION
+
+      - name: Informe de Defender
+        if: always()
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py report
+
+      - name: Guardar el informe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: informe-defender-actualizacion
+          path: |
+            build/e2e-defender/*.json
+            build/e2e-defender/*.log
+          if-no-files-found: ignore
+
+  version-vieja:
+    name: Control con la 2.3.18 y Defender encendido (solo informa)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Descargar el codigo
+        uses: actions/checkout@v4
+
+      - name: Preparar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+          cache: pip
+          cache-dependency-path: toolskit/requirements.txt
+
+      - name: Crear entorno
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt -c packaging\windows\build-constraints.txt
+
+      - name: Instalar la 2.3.18 con su arranque (Defender todavia apagado)
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py legacy 2.3.18
+
+      - name: Encender Defender y comprobar que detecta
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py enable
+
+      - name: Abrir la 2.3.18 con Defender encendido
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py oldrun
+
+      - name: Informe de Defender
+        if: always()
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py report --informe
