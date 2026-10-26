@@ -11,7 +11,7 @@ Para levantar este proyecto en una máquina nueva, sigue estos pasos:
 
 ### 1. Clonar el repositorio
 ```bash
-git clone https://github.com/tu-usuario/Toolkit-OGM.git
+git clone https://github.com/jchaconv94/Toolkit-OGM.git
 cd Toolkit-OGM/toolskit
 ```
 
