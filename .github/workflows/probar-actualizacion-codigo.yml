@@ -94,10 +94,17 @@ jobs:
       - name: Instalador completo con otra version
         shell: pwsh
         run: |
+          # En un entorno nuevo, como cada publicación: pip vuelve a instalar las librerías y lo que
+          # cambie en cada instalación (el RECORD de numpy, hasta la 2.4.5) no puede cambiar el runtime.
+          Remove-Item -Recurse -Force .venv
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt -c packaging\windows\build-constraints.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Set-Content -LiteralPath VERSION -Value "9.9.60"
           pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          # Otra versión y otro código, mismo programa instalado: el runtime no puede cambiar.
+          # Otra versión, otro código y otro entorno, mismo programa instalado: el runtime no puede cambiar.
           $base = (Get-Content build\runtime-base.json -Raw | ConvertFrom-Json).runtime
           $again = (Get-Content build\runtime.json -Raw | ConvertFrom-Json).runtime
           if ($base -ne $again) { throw "El runtime cambio entre dos compilaciones iguales ($base / $again)." }

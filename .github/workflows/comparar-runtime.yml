@@ -1,0 +1,56 @@
+name: Comparar el runtime de dos versiones
+
+# Instala dos versiones publicadas y dice qué archivos del runtime cambiaron entre ellas
+# (tests/compare_published_runtime.py): por qué una versión llegó con el instalador completo en vez
+# de la actualización de código. No publica nada.
+
+on:
+  pull_request:
+    paths:
+      - tests/compare_published_runtime.py
+      - .github/workflows/comparar-runtime.yml
+  workflow_dispatch:
+    inputs:
+      before:
+        description: "Versión anterior"
+        required: false
+        default: "2.4.4"
+      after:
+        description: "Versión nueva"
+        required: false
+        default: "2.4.5"
+
+permissions:
+  contents: read
+
+jobs:
+  comparar:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      BEFORE: ${{ github.event.inputs.before || '2.4.4' }}
+      AFTER: ${{ github.event.inputs.after || '2.4.5' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+
+      - name: Crear entorno
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install requests pyinstaller -c packaging\windows\build-constraints.txt
+
+      - name: Comparar lo instalado
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\compare_published_runtime.py $env:BEFORE $env:AFTER
+
+      - name: Guardar la comparacion
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: comparacion-runtime
+          path: build/comparar-runtime/*.md
+          if-no-files-found: ignore

@@ -103,6 +103,15 @@ class SignatureTests(unittest.TestCase):
 
 
 class BuildAppTests(unittest.TestCase):
+    def test_what_counts_for_the_runtime(self):
+        # El RECORD lleva la huella de los lanzadores .exe que pip arma al instalar (con la hora): con él,
+        # cada publicación salía con otro runtime (2.4.4 -> 2.4.5).
+        for dest in ("numpy-2.5.4.dist-info\\RECORD", "numpy-2.5.4.dist-info/RECORD", "app\\app.zip", "app/VERSION"):
+            self.assertFalse(build_app.counts_for_runtime(dest), dest)
+        for dest in ("numpy-2.5.4.dist-info\\METADATA", "flet\\controls\\icons.json", "assets/icono.png",
+                     "certifi\\cacert.pem", "RECORD", "datos\\RECORD"):
+            self.assertTrue(build_app.counts_for_runtime(dest), dest)
+
     def test_runtime_modules_and_tests_stay_out_of_app_zip(self):
         names = [name for name, _ in build_app.app_modules()]
         for runtime in build_app.RUNTIME_MODULES:

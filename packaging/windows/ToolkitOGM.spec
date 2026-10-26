@@ -25,7 +25,7 @@ APP_BUILD_DIR = REPO_ROOT / "build" / "app"
 # El código del Toolkit va aparte del exe, en _internal/app/app.zip (lo arma build_app.py): una
 # actualización de código solo cambia ese zip y el exe se queda igual. Ver toolskit/app_loader.py.
 sys.path.insert(0, str(SPEC_DIR))
-from build_app import RUNTIME_MODULES, app_modules  # noqa: E402
+from build_app import RUNTIME_MODULES, app_modules, counts_for_runtime  # noqa: E402
 
 APP_MODULES = app_modules(TOOLKIT_DIR)
 
@@ -106,11 +106,12 @@ def _runtime_id(public_key: str) -> str:
     Sale del contenido de cada archivo que se instala fuera del código del Toolkit (Python, librerías,
     sus DLL y datos, Flet), de la versión de PyInstaller (su arranque va en el exe) y de los archivos
     de la compilación y el instalador. No de lo instalado en el equipo de compilación: pip y lo que no
-    viaja con el programa no cuentan (antes sí, y casi cada versión salía con otro runtime). Para que
+    viaja con el programa no cuentan (antes sí, y casi cada versión salía con otro runtime), ni el
+    RECORD de cada librería, que cambia en cada instalación (build_app.counts_for_runtime). Para que
     no cambie solo, Python, PyInstaller y todas las librerías están fijados (build-constraints.txt)."""
     parts = [f"python={platform.python_version()}", f"pyinstaller={PyInstaller.__version__}", f"key={public_key}"]
     shipped = [("pure", a.pure), ("bin", a.binaries),
-               ("data", [e for e in a.datas if Path(e[0]).parts[0] != "app"]), ("flet", FLET_DESKTOP_TREE)]
+               ("data", [e for e in a.datas if counts_for_runtime(e[0])]), ("flet", FLET_DESKTOP_TREE)]
     for kind, toc in shipped:
         parts += sorted(f"{kind}:{entry[0]}={_content(entry[1])}" for entry in toc)
     for path in [*(TOOLKIT_DIR / f"{name}.py" for name in RUNTIME_MODULES), Path(SPEC),

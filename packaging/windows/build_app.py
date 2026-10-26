@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
@@ -42,6 +42,19 @@ def app_modules(toolkit_dir: Path = TOOLKIT_DIR) -> list[tuple[str, Path]]:
             continue
         found.append((name, path))
     return found
+
+
+def counts_for_runtime(dest: str) -> bool:
+    """Si un archivo de datos instalado cuenta para la identidad del runtime (ToolkitOGM.spec).
+
+    No cuentan el código del Toolkit (va en app/) ni el RECORD de cada librería: pip lo escribe al
+    instalarla con la huella de los lanzadores .exe que arma en ese momento (f2py.exe de numpy), y
+    esos llevan la hora de instalación. Con el RECORD, cada compilación en un entorno nuevo salía
+    con otro runtime y ninguna versión llegaba como actualización chica (2.4.5)."""
+    parts = PureWindowsPath(dest).parts
+    if not parts or parts[0] == "app":
+        return False
+    return not (len(parts) >= 2 and parts[-2].endswith(".dist-info") and parts[-1] == "RECORD")
 
 
 def build_zip(out_zip: Path, toolkit_dir: Path = TOOLKIT_DIR):
