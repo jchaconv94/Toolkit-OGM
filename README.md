@@ -35,6 +35,8 @@ Qué se envía por internet y a dónde está detallado en [CODE_SIGNING.md](CODE
 Las versiones para Windows 10 y 11 (64 bits) se publican gratis en
 **https://github.com/jchaconv94/ToolkitSISMED/releases/latest** (`ToolkitOGM-Setup-<versión>.exe`, con su huella SHA-256). Una vez instalado, el Toolkit busca y descarga solo sus actualizaciones.
 
+Los ejecutables de Windows se firman con el programa de código abierto de **SignPath Foundation** (firma gratuita de [SignPath.io](https://signpath.io), certificado de [SignPath Foundation](https://signpath.org)); ver [CODE_SIGNING.md](CODE_SIGNING.md). / *Windows executables are signed through the SignPath Foundation open source program (free code signing provided by SignPath.io, certificate by SignPath Foundation).*
+
 Cada versión se compila desde este repositorio con GitHub Actions (`.github/workflows/publish-desktop-release.yml`); cómo se arma y se publica está en [packaging/windows/RELEASE_AUTOMATION.md](packaging/windows/RELEASE_AUTOMATION.md), y cómo trabajar con el código en [toolskit/README.md](toolskit/README.md).
 
 ## Firma del código
