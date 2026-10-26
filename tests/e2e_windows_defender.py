@@ -199,6 +199,12 @@ Set-MpPreference -DisableBlockAtFirstSeen $false
 Set-MpPreference -MAPSReporting 2
 Set-MpPreference -SubmitSamplesConsent 1
 Set-MpPreference -PUAProtection 1
+# Sin análisis completos programados ni de recuperación: en estas máquinas saturan el disco y la
+# máquina se pierde a media prueba. La protección en tiempo real y la de comportamiento siguen.
+Set-MpPreference -DisableCatchupFullScan $true
+Set-MpPreference -DisableCatchupQuickScan $true
+Set-MpPreference -ScanScheduleDay 8
+Set-MpPreference -RemediationScheduleDay 8
 Update-MpSignature -ErrorAction SilentlyContinue
 """
     result = ps(script)

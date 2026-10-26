@@ -24,7 +24,7 @@ jobs:
   defender:
     name: Instalar y usar el Toolkit con Defender encendido
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 40
     env:
       PUBLISHED_VERSION: ${{ github.event.inputs.version || '2.4.4' }}
 
@@ -53,6 +53,49 @@ jobs:
       - name: Instalar y usar el Toolkit publicado
         shell: pwsh
         run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py published $env:PUBLISHED_VERSION
+
+      - name: Informe de Defender
+        if: always()
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py report
+
+      - name: Guardar el informe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: informe-defender
+          path: |
+            build/e2e-defender/*.json
+            build/e2e-defender/*.log
+          if-no-files-found: ignore
+
+
+  actualizacion-codigo:
+    name: Actualizacion de codigo y reinicio silencioso con Defender encendido
+    runs-on: windows-latest
+    timeout-minutes: 50
+
+    steps:
+      - name: Descargar el codigo
+        uses: actions/checkout@v4
+
+      - name: Preparar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+          cache: pip
+          cache-dependency-path: toolskit/requirements.txt
+
+      - name: Crear entorno de compilacion
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt -c packaging\windows\build-constraints.txt
+
+      - name: Encender Defender y comprobar que detecta
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py enable
 
       - name: Instalar Inno Setup
         shell: pwsh
@@ -101,10 +144,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: informe-defender
+          name: informe-defender-codigo
           path: |
             build/e2e-defender/*.json
-            build/e2e-defender/*.log
             build/e2e-codigo/*.log
           if-no-files-found: ignore
 
