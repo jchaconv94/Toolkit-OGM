@@ -370,7 +370,8 @@ def legacy(old_version: str):
     # Lo mismo que hacía la versión vieja: la tarea al iniciar sesión y, si fallaba, la clave Run.
     subprocess.run(["schtasks", "/Create", "/TN", LEGACY_TASK, "/TR", command, "/SC", "ONLOGON", "/RL", "LIMITED",
                     "/IT", "/DELAY", "0002:00", "/F"], capture_output=True)
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+    # En una cuenta nueva la clave Run puede no existir todavía.
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
         winreg.SetValueEx(key, LEGACY_RUN, 0, winreg.REG_SZ, command)
     check(task_exists(), f"quedó la tarea de arranque de la {old_version}")
     check(run_value() == command, f"quedó la clave Run de la {old_version}")
