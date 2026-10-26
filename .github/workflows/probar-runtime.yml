@@ -1,0 +1,75 @@
+name: Probar el runtime
+
+# Compila como la publicación (entorno nuevo, clave de producción) y compara el runtime con el de la
+# última versión publicada: dice antes de publicar si la próxima versión llegará a las PC como
+# actualización chica de código o con el instalador completo. No publica nada.
+
+on:
+  pull_request:
+    paths:
+      - packaging/windows/**
+      - toolskit/requirements.txt
+      - toolskit/launcher.py
+      - toolskit/app_loader.py
+      - toolskit/update_signature.py
+      - .github/workflows/probar-runtime.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    name: Comparar el runtime con la ultima version publicada
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_REPOSITORY: jchaconv94/ToolkitSISMED
+
+    steps:
+      - name: Descargar el codigo
+        uses: actions/checkout@v4
+
+      - name: Preparar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+          cache: pip
+          cache-dependency-path: toolskit/requirements.txt
+
+      - name: Crear entorno de compilacion
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt -c packaging\windows\build-constraints.txt
+
+      - name: Instalar Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Compilar
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
+
+      - name: Comparar con la ultima version publicada
+        shell: pwsh
+        run: |
+          $runtime = (Get-Content build\runtime.json -Raw | ConvertFrom-Json).runtime
+          $latest = gh release view --repo "$env:TARGET_REPOSITORY" --json tagName,assets | ConvertFrom-Json
+          $asset = $latest.assets | Where-Object { $_.name -like "ToolkitOGM-app-*.json" } | Select-Object -First 1
+          if (-not $asset) {
+            $msg = "La ultima version ($($latest.tagName)) no tiene actualizacion de codigo para comparar."
+          } else {
+            gh release download $latest.tagName --repo "$env:TARGET_REPOSITORY" --pattern $asset.name --dir build\anterior --clobber
+            $previous = (Get-Content (Join-Path build\anterior $asset.name) -Raw | ConvertFrom-Json).runtime
+            if ($previous -eq $runtime) {
+              $msg = "Mismo runtime que $($latest.tagName) ($runtime): la proxima version llega a las PC como actualizacion de codigo."
+            } else {
+              $msg = "Runtime distinto de $($latest.tagName) ($previous -> $runtime): la proxima version llega con el instalador completo."
+              Write-Host "::warning::$msg"
+            }
+          }
+          Write-Host $msg
+          "### Runtime`n`n$msg" >> $env:GITHUB_STEP_SUMMARY
