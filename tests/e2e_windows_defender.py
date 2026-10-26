@@ -8,10 +8,22 @@ descargas) y se comprueba que de verdad detecta con el archivo de prueba EICAR. 
 - `published <versión>`: baja el instalador publicado en la Release (marcado como descargado de
   internet), lo hace analizar, lo instala, analiza lo instalado y deja el Toolkit abierto unos
   minutos, como al encender la PC y abierto a mano;
-- `report`: lista lo que Defender detectó desde que se encendió (sin el EICAR) y falla si hubo algo.
+- `report`: lista lo que Defender detectó desde que se encendió (sin el EICAR) y falla si hubo algo
+  (`report --informe` solo informa).
 
 Entre `published` y `report` el flujo corre las pruebas de actualización de código (instalar,
 actualizar, reinicio silencioso) con Defender encendido.
+
+Actualizar desde una versión vieja (la 2.3.18 y anteriores creaban en cada arranque la tarea
+`ToolkitOGM_Autorun` o, si no podían, la clave Run `ToolkitOGM_Sync`, y Defender las ponía en
+cuarentena como «Behavior:Win32/Persistence.A!ml»):
+
+- `legacy <versión vieja>`: con Defender todavía apagado, instala esa versión y deja su tarea y su
+  clave Run, como en una PC que la usaba;
+- `upgrade <versión>`: con Defender encendido, instala la versión publicada encima y la abre: la
+  primera vez borra la tarea y la clave viejas. No debe detectar nada;
+- `oldrun`: control: con Defender encendido, abre la versión vieja, que vuelve a crear su tarea.
+  Si Defender la detecta, estas máquinas reproducen lo que pasa en las PC.
 """
 
 from __future__ import annotations
@@ -37,6 +49,9 @@ CONFIG = APPDATA / "ToolkitOGM" / "config.json"
 STARTUP_LOG = APPDATA / "ToolkitOGM" / "startup.log"
 RELEASES = "https://github.com/jchaconv94/ToolkitSISMED/releases/download"
 EICAR_NAME = "prueba-eicar.com"
+RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+LEGACY_TASK = "ToolkitOGM_Autorun"
+LEGACY_RUN = "ToolkitOGM_Sync"
 DETECTION_EVENTS = (1006, 1007, 1008, 1015, 1116, 1117, 1118, 1119, 1121, 1122, 1125, 1126)
 CHANGE_EVENTS = (5001, 5004, 5007, 5010, 5012)
 
@@ -184,6 +199,12 @@ Set-MpPreference -DisableBlockAtFirstSeen $false
 Set-MpPreference -MAPSReporting 2
 Set-MpPreference -SubmitSamplesConsent 1
 Set-MpPreference -PUAProtection 1
+# Sin análisis completos programados ni de recuperación: en estas máquinas saturan el disco y la
+# máquina se pierde a media prueba. La protección en tiempo real y la de comportamiento siguen.
+Set-MpPreference -DisableCatchupFullScan $true
+Set-MpPreference -DisableCatchupQuickScan $true
+Set-MpPreference -ScanScheduleDay 8
+Set-MpPreference -RemediationScheduleDay 8
 Update-MpSignature -ErrorAction SilentlyContinue
 """
     result = ps(script)
@@ -248,7 +269,7 @@ def toolkit_running() -> bool:
 
 
 def kill_toolkit():
-    for image in ("ToolkitOGM.exe", "flet.exe"):
+    for image in ("ToolkitOGM.exe", "flet.exe", "ToolkitUpdater.exe"):
         subprocess.run(["taskkill", "/F", "/T", "/IM", image], capture_output=True)
     time.sleep(2)
 
@@ -270,8 +291,7 @@ def keep_open(process: subprocess.Popen, seconds: int, label: str):
     check(alive and EXE.exists(), f"el Toolkit sigue abierto y en su lugar tras {seconds} s {label}")
 
 
-def published(version: str):
-    WORK.mkdir(parents=True, exist_ok=True)
+def download(version: str, defender_on: bool = True) -> Path:
     name = f"ToolkitOGM-Setup-{version}.exe"
     setup = WORK / name
     with requests.get(f"{RELEASES}/desktop-v{version}/{name}", stream=True, timeout=120) as r:
@@ -279,21 +299,34 @@ def published(version: str):
         with open(setup, "wb") as out:
             for chunk in r.iter_content(1 << 20):
                 out.write(chunk)
-    declared = requests.get(f"{RELEASES}/desktop-v{version}/{name}.sha256", timeout=60).text.split()[0].lower()
-    check(hashlib.sha256(setup.read_bytes()).hexdigest() == declared, f"bajó el instalador publicado {version} con su huella correcta")
+    sums = requests.get(f"{RELEASES}/desktop-v{version}/{name}.sha256", timeout=60)
+    if sums.ok:
+        declared = sums.text.split()[0].lower()
+        check(hashlib.sha256(setup.read_bytes()).hexdigest() == declared,
+              f"bajó el instalador publicado {version} con su huella correcta")
     # Como si lo hubieran bajado con el navegador: Windows lo marca como venido de internet.
     with open(f"{setup}:Zone.Identifier", "w", encoding="ascii") as ads:
         ads.write(f"[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={RELEASES}/desktop-v{version}/{name}\r\n")
-    time.sleep(5)
-    check(setup.exists(), "el instalador sigue ahí después de descargarlo (no lo puso en cuarentena)")
-    new_detections("al descargar el instalador")
-    scan(setup, "el instalador")
+    if defender_on:
+        time.sleep(5)
+        check(setup.exists(), f"el instalador {version} sigue ahí después de descargarlo (no lo puso en cuarentena)")
+        new_detections(f"al descargar el instalador {version}")
+        scan(setup, f"el instalador {version}")
+    return setup
 
+
+def install(setup: Path, version: str, *extra: str, log: str = "instalacion.log", defender_on: bool = True):
     result = subprocess.run([str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/ALLUSERS",
-                             f"/LOG={WORK / 'instalacion.log'}"], timeout=900)
+                             f"/LOG={WORK / log}", *extra], timeout=900)
     check(result.returncode == 0 and EXE.exists(), f"el instalador {version} terminó bien y dejó ToolkitOGM.exe")
-    new_detections("al instalar")
-    scan(INSTALL_DIR, "la carpeta instalada")
+    if defender_on:
+        new_detections(f"al instalar la {version}")
+        scan(INSTALL_DIR, "la carpeta instalada")
+
+
+def published(version: str):
+    WORK.mkdir(parents=True, exist_ok=True)
+    install(download(version), version)
 
     # Como al encender la PC: escondido en la bandeja.
     data = config()
@@ -318,8 +351,109 @@ def published(version: str):
     kill_toolkit()
 
 
+# --- actualizar desde una versión vieja -------------------------------------------------------
+def task_exists() -> bool:
+    return subprocess.run(["schtasks", "/Query", "/TN", LEGACY_TASK], capture_output=True).returncode == 0
+
+
+def run_value() -> str | None:
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as key:
+            return winreg.QueryValueEx(key, LEGACY_RUN)[0]
+    except OSError:
+        return None
+
+
+def legacy(old_version: str):
+    """Defender todavía apagado: la PC queda como la dejaba la versión vieja."""
+    import winreg
+
+    WORK.mkdir(parents=True, exist_ok=True)
+    install(download(old_version, defender_on=False), old_version, log="anterior.log", defender_on=False)
+    command = f'"{EXE}" --autorun'
+    # Lo mismo que hacía la versión vieja: la tarea al iniciar sesión y, si fallaba, la clave Run.
+    subprocess.run(["schtasks", "/Create", "/TN", LEGACY_TASK, "/TR", command, "/SC", "ONLOGON", "/RL", "LIMITED",
+                    "/IT", "/DELAY", "0002:00", "/F"], capture_output=True)
+    # En una cuenta nueva la clave Run puede no existir todavía.
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as key:
+        winreg.SetValueEx(key, LEGACY_RUN, 0, winreg.REG_SZ, command)
+    check(task_exists(), f"quedó la tarea de arranque de la {old_version}")
+    check(run_value() == command, f"quedó la clave Run de la {old_version}")
+    save_state(old_version=old_version)
+
+
+def open_at_logon(label: str, seconds: int = 180) -> str:
+    kill_toolkit()
+    mark = log_size()
+    process = subprocess.Popen([str(EXE), "--autorun"])
+    deadline = time.time() + 120
+    while time.time() < deadline and "boot_status=autorun" not in log_since(mark) and process.poll() is None:
+        time.sleep(2)
+    keep_open(process, seconds, label)
+    return log_since(mark)
+
+
+def upgrade(version: str):
+    """Defender encendido: la versión publicada se instala encima de la vieja y se abre al encender."""
+    WORK.mkdir(parents=True, exist_ok=True)
+    check(task_exists() and run_value(), "antes de actualizar siguen la tarea y la clave Run viejas")
+    # Los mismos parámetros que usa el actualizador del Toolkit.
+    install(download(version), version, "/SP-", "/NORESTARTAPPLICATIONS", "/CLOSEAPPLICATIONS",
+            "/FORCECLOSEAPPLICATIONS", f"/DIR={INSTALL_DIR}", log="actualizacion.log")
+    # Sin tocar config.json: la primera vez la preferencia sale de la tarea y la clave viejas.
+    text = open_at_logon(f"al encender por primera vez con la {version}")
+    print(text, flush=True)
+    check(f"version={version}" in text, f"abrió la versión {version}")
+    check("startup_migrated enabled=True" in text, "tomó el arranque de la versión vieja y lo dejó encendido")
+    check(not task_exists(), "borró la tarea vieja")
+    check(run_value() is None, "borró la clave Run vieja")
+    new_detections(f"al abrir la {version} y borrar el arranque viejo")
+    subprocess.Popen([str(EXE)])
+    time.sleep(30)
+    new_detections("con la ventana abierta")
+    # Segundo encendido: ya no hay nada que borrar.
+    open_at_logon("al encender por segunda vez", 120)
+    new_detections("en el segundo encendido")
+    still_on("durante la prueba")
+    kill_toolkit()
+
+
+def oldrun():
+    """Control: la versión vieja con Defender encendido. Solo informa."""
+    old = load_state().get("old_version", "?")
+    # Que no busque ni baje la versión nueva: se actualizaría sola en medio del control y su auxiliar
+    # de actualización quedaría abierto.
+    data = config()
+    data.update({"update_auto_check": False, "update_auto_download": False})
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    mark = log_size()
+    flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    process = subprocess.Popen([str(EXE), "--autorun"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, creationflags=flags)
+    end = time.time() + 240
+    while time.time() < end and EXE.exists():
+        time.sleep(10)
+    since = load_state().get("since", "")
+    found = [d for d in detections(since) if not is_eicar(d)]
+    print(log_since(mark), flush=True)
+    for d in found:
+        print(f"      {d['time']} {d.get('threat')} · {d.get('process')} · {d.get('resources')}", flush=True)
+    names = ", ".join(sorted({str(d.get("threat")) for d in found})) or "nada"
+    print(f"CONTROL: con la {old}, Defender detectó: {names}; ToolkitOGM.exe "
+          f"{'sigue' if EXE.exists() else 'ya no está (cuarentena)'}", flush=True)
+    results.append((True, f"control con la {old}: Defender detectó {names}"))
+    try:
+        process.kill()
+    except OSError:
+        pass
+    kill_toolkit()
+
+
 # --- informe ----------------------------------------------------------------------------
-def report():
+def report(informative: bool = False):
     since = load_state().get("since", "")
     if not since:
         check(False, "Defender no se llegó a encender")
@@ -336,8 +470,11 @@ def report():
     print(f"Cambios de configuración de Defender: {len(changes)}")
     for e in changes:
         print(f"  {e['time']} [{e['id']}] {e['message'][:200]}")
-    check(not found, "ninguna detección de Defender en toda la prueba (sin contar el EICAR)")
-    check(not seen, "ningún evento de detección en el registro de Defender (sin contar el EICAR)")
+    if informative:
+        results.append((True, f"detecciones: {len(found)}; eventos de detección: {len(seen)} (solo informa)"))
+    else:
+        check(not found, "ninguna detección de Defender en toda la prueba (sin contar el EICAR)")
+        check(not seen, "ningún evento de detección en el registro de Defender (sin contar el EICAR)")
     check(not any(e["id"] == 5001 for e in changes), "la protección en tiempo real no se apagó en ningún momento")
     still_on("al final")
     (WORK / "informe.json").write_text(json.dumps({"detections": found, "events": seen, "changes": changes},
@@ -356,8 +493,14 @@ def main() -> int:
             enable()
         elif step == "published":
             published(sys.argv[2])
+        elif step == "legacy":
+            legacy(sys.argv[2])
+        elif step == "upgrade":
+            upgrade(sys.argv[2])
+        elif step == "oldrun":
+            oldrun()
         elif step == "report":
-            report()
+            report(informative="--informe" in sys.argv)
         else:
             raise SystemExit(f"Paso desconocido: {step}")
     except Exception as exc:  # noqa: BLE001 - que quede en el informe
