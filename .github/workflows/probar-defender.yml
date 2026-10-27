@@ -10,8 +10,7 @@ on:
     paths:
       - tests/e2e_windows_defender.py
       - .github/workflows/probar-defender.yml
-      - packaging/windows/build_bootloader.py
-      - packaging/windows/build_windows.ps1
+      - packaging/windows/**
   workflow_dispatch:
     inputs:
       version:
@@ -243,18 +242,15 @@ jobs:
         shell: pwsh
         run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py report --informe
 
-  lanzador:
-    # El mismo instalador compilado aquí con el arranque de PyInstaller de serie y con el propio
-    # (build_bootloader.py), los dos marcados como bajados de internet, analizados, instalados y
-    # abiertos con Defender encendido. El de serie solo informa: es la comparación. El propio no debe
-    # dar ninguna detección.
-    name: Instalador recien compilado (arranque ${{ matrix.arranque }}) con Defender encendido
+  instalador-nuevo:
+    # Como llegaría la próxima versión: un instalador compilado aquí con otro número (9.9.9, así su
+    # ToolkitOGM.exe es un archivo que Defender nunca vio), marcado como bajado de internet,
+    # analizado, instalado y abierto con Defender encendido. No debe dar ninguna detección.
+    # Probado el 2026-10-27: con el arranque de PyInstaller de serie pasa limpio; compilado desde su
+    # código, Defender lo marcó como «Trojan:Win32/Bearfoos.A!ml» (por eso se dejó el de serie).
+    name: Instalador recien compilado con Defender encendido
     runs-on: windows-latest
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        arranque: [propio, de serie]
 
     steps:
       - name: Descargar el codigo
@@ -278,14 +274,12 @@ jobs:
         shell: pwsh
         run: choco install innosetup --no-progress -y
 
-      - name: Compilar el instalador (Defender todavia apagado)
+      - name: Compilar el instalador 9.9.9 (Defender todavia apagado)
         shell: pwsh
         run: |
-          $extra = @()
-          if ("${{ matrix.arranque }}" -eq "de serie") { $extra += "-StockBootloader" }
-          pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1 @extra
+          Set-Content -LiteralPath VERSION -Value "9.9.9"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (Test-Path build\bootloader\bootloader.json) { Get-Content build\bootloader\bootloader.json }
 
       - name: Encender Defender y comprobar que detecta
         shell: pwsh
@@ -293,25 +287,19 @@ jobs:
 
       - name: Bajar, instalar y abrir el instalador compilado
         shell: pwsh
-        run: |
-          $version = (Get-Content VERSION -Raw).Trim()
-          .\.venv\Scripts\python.exe tests\e2e_windows_defender.py local "dist\installer\ToolkitOGM-Setup-$version.exe" $version
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py local "dist\installer\ToolkitOGM-Setup-9.9.9.exe" 9.9.9
 
       - name: Informe de Defender
         if: always()
         shell: pwsh
-        run: |
-          $extra = @()
-          if ("${{ matrix.arranque }}" -eq "de serie") { $extra += "--informe" }
-          .\.venv\Scripts\python.exe tests\e2e_windows_defender.py report @extra
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py report
 
       - name: Guardar el informe
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: informe-defender-arranque-${{ matrix.arranque == 'propio' && 'propio' || 'serie' }}
+          name: informe-defender-instalador-nuevo
           path: |
             build/e2e-defender/*.json
             build/e2e-defender/*.log
-            build/bootloader/bootloader.json
           if-no-files-found: ignore

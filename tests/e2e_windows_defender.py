@@ -8,8 +8,8 @@ descargas) y se comprueba que de verdad detecta con el archivo de prueba EICAR. 
 - `published <versión>`: baja el instalador publicado en la Release («latest»: el de la última
   versión publicada), marcado como descargado de internet, lo hace analizar, lo instala, analiza lo
   instalado y deja el Toolkit abierto unos minutos, como al encender la PC y abierto a mano;
-- `local <instalador> <versión>`: lo mismo con un instalador recién compilado en esta máquina (con
-  el arranque de PyInstaller propio, build_bootloader.py), marcado como bajado de internet;
+- `local <instalador> <versión>`: lo mismo con un instalador recién compilado en esta máquina,
+  marcado como bajado de internet (como llegaría la próxima versión);
 - `report`: lista lo que Defender detectó desde que se encendió (sin el EICAR) y falla si hubo algo
   (`report --informe` solo informa).
 
@@ -348,6 +348,13 @@ def install(setup: Path, version: str, *extra: str, log: str = "instalacion.log"
     result = subprocess.run([str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/ALLUSERS",
                              f"/LOG={WORK / log}", *extra], timeout=900)
     check(result.returncode == 0 and EXE.exists(), f"el instalador {version} terminó bien y dejó ToolkitOGM.exe")
+    # Para comparar entre pruebas: Defender decide por el archivo exacto (el de la 2.4.6 pasa limpio y
+    # el de la 2.4.4 no).
+    for label, path in (("instalador", setup), ("ToolkitOGM.exe instalado", EXE)):
+        try:
+            print(f"Huella SHA-256 del {label}: {hashlib.sha256(path.read_bytes()).hexdigest()}", flush=True)
+        except OSError as exc:
+            print(f"No se pudo leer el {label} para su huella: {exc}", flush=True)
     if defender_on:
         new_detections(f"al instalar la {version}")
         scan(INSTALL_DIR, "la carpeta instalada")

@@ -105,12 +105,10 @@ def _runtime_id(public_key: str) -> str:
 
     Sale del contenido de cada archivo que se instala fuera del código del Toolkit (Python, librerías,
     sus DLL y datos, Flet), de la versión de PyInstaller (su arranque va en el exe) y de los archivos
-    de la compilación y el instalador (build_bootloader.py incluido: el arranque se compila en cada
-    publicación y su huella cambia, así que cuenta cómo se compila y no el archivo que sale). No de lo
-    instalado en el equipo de compilación: pip y lo que no viaja con el programa no cuentan (antes sí,
-    y casi cada versión salía con otro runtime), ni el RECORD de cada librería, que cambia en cada
-    instalación (build_app.counts_for_runtime). Para que no cambie solo, Python, PyInstaller y todas las
-    librerías están fijados (build-constraints.txt)."""
+    de la compilación y el instalador. No de lo instalado en el equipo de compilación: pip y lo que no
+    viaja con el programa no cuentan (antes sí, y casi cada versión salía con otro runtime), ni el
+    RECORD de cada librería, que cambia en cada instalación (build_app.counts_for_runtime). Para que
+    no cambie solo, Python, PyInstaller y todas las librerías están fijados (build-constraints.txt)."""
     parts = [f"python={platform.python_version()}", f"pyinstaller={PyInstaller.__version__}", f"key={public_key}"]
     shipped = [("pure", a.pure), ("bin", a.binaries),
                ("data", [e for e in a.datas if counts_for_runtime(e[0])]), ("flet", FLET_DESKTOP_TREE)]
@@ -118,7 +116,7 @@ def _runtime_id(public_key: str) -> str:
         parts += sorted(f"{kind}:{entry[0]}={_content(entry[1])}" for entry in toc)
     for path in [*(TOOLKIT_DIR / f"{name}.py" for name in RUNTIME_MODULES), Path(SPEC),
                  SPEC_DIR / "ToolkitOGM.iss", SPEC_DIR / "ToolkitUpdater.cs", SPEC_DIR / "build_windows.ps1",
-                 SPEC_DIR / "build-constraints.txt", SPEC_DIR / "build_bootloader.py"]:
+                 SPEC_DIR / "build-constraints.txt"]:
         parts.append(f"file:{path.name}={_sha256(path)}")
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]
 
