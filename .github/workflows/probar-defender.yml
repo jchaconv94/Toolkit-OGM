@@ -10,12 +10,13 @@ on:
     paths:
       - tests/e2e_windows_defender.py
       - .github/workflows/probar-defender.yml
+      - packaging/windows/**
   workflow_dispatch:
     inputs:
       version:
-        description: "Versión publicada a probar"
+        description: "Versión publicada a probar (latest: la última publicada)"
         required: false
-        default: "2.4.4"
+        default: "latest"
 
 permissions:
   contents: read
@@ -26,7 +27,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     env:
-      PUBLISHED_VERSION: ${{ github.event.inputs.version || '2.4.4' }}
+      PUBLISHED_VERSION: ${{ github.event.inputs.version || 'latest' }}
 
     steps:
       - name: Descargar el codigo
@@ -158,7 +159,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     env:
-      PUBLISHED_VERSION: ${{ github.event.inputs.version || '2.4.4' }}
+      PUBLISHED_VERSION: ${{ github.event.inputs.version || 'latest' }}
     steps:
       - name: Descargar el codigo
         uses: actions/checkout@v4
@@ -240,3 +241,65 @@ jobs:
         if: always()
         shell: pwsh
         run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py report --informe
+
+  instalador-nuevo:
+    # Como llegaría la próxima versión: un instalador compilado aquí con otro número (9.9.9, así su
+    # ToolkitOGM.exe es un archivo que Defender nunca vio), marcado como bajado de internet,
+    # analizado, instalado y abierto con Defender encendido. No debe dar ninguna detección.
+    # Probado el 2026-10-27: con el arranque de PyInstaller de serie pasa limpio; compilado desde su
+    # código, Defender lo marcó como «Trojan:Win32/Bearfoos.A!ml» (por eso se dejó el de serie).
+    name: Instalador recien compilado con Defender encendido
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Descargar el codigo
+        uses: actions/checkout@v4
+
+      - name: Preparar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+          cache: pip
+          cache-dependency-path: toolskit/requirements.txt
+
+      - name: Crear entorno de compilacion
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt -c packaging\windows\build-constraints.txt
+
+      - name: Instalar Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Compilar el instalador 9.9.9 (Defender todavia apagado)
+        shell: pwsh
+        run: |
+          Set-Content -LiteralPath VERSION -Value "9.9.9"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Encender Defender y comprobar que detecta
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py enable
+
+      - name: Bajar, instalar y abrir el instalador compilado
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py local "dist\installer\ToolkitOGM-Setup-9.9.9.exe" 9.9.9
+
+      - name: Informe de Defender
+        if: always()
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py report
+
+      - name: Guardar el informe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: informe-defender-instalador-nuevo
+          path: |
+            build/e2e-defender/*.json
+            build/e2e-defender/*.log
+          if-no-files-found: ignore

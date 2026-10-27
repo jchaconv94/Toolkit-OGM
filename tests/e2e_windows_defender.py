@@ -5,9 +5,11 @@ en una laptop (protección en tiempo real, vigilancia de comportamiento, protecc
 descargas) y se comprueba que de verdad detecta con el archivo de prueba EICAR. Luego:
 
 - `enable`: enciende Defender y lo comprueba;
-- `published <versión>`: baja el instalador publicado en la Release (marcado como descargado de
-  internet), lo hace analizar, lo instala, analiza lo instalado y deja el Toolkit abierto unos
-  minutos, como al encender la PC y abierto a mano;
+- `published <versión>`: baja el instalador publicado en la Release («latest»: el de la última
+  versión publicada), marcado como descargado de internet, lo hace analizar, lo instala, analiza lo
+  instalado y deja el Toolkit abierto unos minutos, como al encender la PC y abierto a mano;
+- `local <instalador> <versión>`: lo mismo con un instalador recién compilado en esta máquina,
+  marcado como bajado de internet (como llegaría la próxima versión);
 - `report`: lista lo que Defender detectó desde que se encendió (sin el EICAR) y falla si hubo algo
   (`report --informe` solo informa).
 
@@ -31,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -48,6 +51,7 @@ APPDATA = Path(os.environ.get("APPDATA", ""))
 CONFIG = APPDATA / "ToolkitOGM" / "config.json"
 STARTUP_LOG = APPDATA / "ToolkitOGM" / "startup.log"
 RELEASES = "https://github.com/jchaconv94/ToolkitSISMED/releases/download"
+RELEASES_API = "https://api.github.com/repos/jchaconv94/ToolkitSISMED/releases"
 EICAR_NAME = "prueba-eicar.com"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 LEGACY_TASK = "ToolkitOGM_Autorun"
@@ -291,6 +295,21 @@ def keep_open(process: subprocess.Popen, seconds: int, label: str):
     check(alive and EXE.exists(), f"el Toolkit sigue abierto y en su lugar tras {seconds} s {label}")
 
 
+def resolve(version: str) -> str:
+    """«latest» (o vacío) es la última versión publicada, la que reciben las PC; si no, la que se pidió."""
+    if version and version != "latest":
+        return version
+    response = requests.get(RELEASES_API, params={"per_page": 20}, timeout=60,
+                            headers={"Accept": "application/vnd.github+json"})
+    response.raise_for_status()
+    for release in response.json():
+        tag = release.get("tag_name", "")
+        if tag.startswith("desktop-v") and not release.get("draft") and not release.get("prerelease"):
+            print(f"Última versión publicada: {tag}")
+            return tag.removeprefix("desktop-v")
+    raise RuntimeError("No se encontró ninguna versión publicada del Toolkit")
+
+
 def download(version: str, defender_on: bool = True) -> Path:
     name = f"ToolkitOGM-Setup-{version}.exe"
     setup = WORK / name
@@ -304,21 +323,38 @@ def download(version: str, defender_on: bool = True) -> Path:
         declared = sums.text.split()[0].lower()
         check(hashlib.sha256(setup.read_bytes()).hexdigest() == declared,
               f"bajó el instalador publicado {version} con su huella correcta")
+    if defender_on:
+        as_downloaded(setup, version)
+    else:
+        mark_from_internet(setup, version)
+    return setup
+
+
+def mark_from_internet(setup: Path, version: str):
     # Como si lo hubieran bajado con el navegador: Windows lo marca como venido de internet.
     with open(f"{setup}:Zone.Identifier", "w", encoding="ascii") as ads:
-        ads.write(f"[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={RELEASES}/desktop-v{version}/{name}\r\n")
-    if defender_on:
-        time.sleep(5)
-        check(setup.exists(), f"el instalador {version} sigue ahí después de descargarlo (no lo puso en cuarentena)")
-        new_detections(f"al descargar el instalador {version}")
-        scan(setup, f"el instalador {version}")
-    return setup
+        ads.write(f"[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={RELEASES}/desktop-v{version}/{setup.name}\r\n")
+
+
+def as_downloaded(setup: Path, version: str):
+    mark_from_internet(setup, version)
+    time.sleep(5)
+    check(setup.exists(), f"el instalador {version} sigue ahí después de descargarlo (no lo puso en cuarentena)")
+    new_detections(f"al descargar el instalador {version}")
+    scan(setup, f"el instalador {version}")
 
 
 def install(setup: Path, version: str, *extra: str, log: str = "instalacion.log", defender_on: bool = True):
     result = subprocess.run([str(setup), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/ALLUSERS",
                              f"/LOG={WORK / log}", *extra], timeout=900)
     check(result.returncode == 0 and EXE.exists(), f"el instalador {version} terminó bien y dejó ToolkitOGM.exe")
+    # Para comparar entre pruebas: Defender decide por el archivo exacto (el de la 2.4.6 pasa limpio y
+    # el de la 2.4.4 no).
+    for label, path in (("instalador", setup), ("ToolkitOGM.exe instalado", EXE)):
+        try:
+            print(f"Huella SHA-256 del {label}: {hashlib.sha256(path.read_bytes()).hexdigest()}", flush=True)
+        except OSError as exc:
+            print(f"No se pudo leer el {label} para su huella: {exc}", flush=True)
     if defender_on:
         new_detections(f"al instalar la {version}")
         scan(INSTALL_DIR, "la carpeta instalada")
@@ -326,7 +362,22 @@ def install(setup: Path, version: str, *extra: str, log: str = "instalacion.log"
 
 def published(version: str):
     WORK.mkdir(parents=True, exist_ok=True)
-    install(download(version), version)
+    install_and_use(download(version), version)
+
+
+def local(installer: str, version: str):
+    """Un instalador compilado en esta misma máquina, copiado como si se hubiera bajado de internet."""
+    WORK.mkdir(parents=True, exist_ok=True)
+    source = Path(installer)
+    check(source.is_file(), f"está el instalador compilado {source.name}")
+    setup = WORK / source.name
+    shutil.copyfile(source, setup)
+    as_downloaded(setup, version)
+    install_and_use(setup, version)
+
+
+def install_and_use(setup: Path, version: str):
+    install(setup, version)
 
     # Como al encender la PC: escondido en la bandeja.
     data = config()
@@ -496,11 +547,13 @@ def main() -> int:
         if step == "enable":
             enable()
         elif step == "published":
-            published(sys.argv[2])
+            published(resolve(sys.argv[2] if len(sys.argv) > 2 else ""))
+        elif step == "local":
+            local(sys.argv[2], sys.argv[3])
         elif step == "legacy":
             legacy(sys.argv[2])
         elif step == "upgrade":
-            upgrade(sys.argv[2])
+            upgrade(resolve(sys.argv[2] if len(sys.argv) > 2 else ""))
         elif step == "oldrun":
             oldrun()
         elif step == "report":
