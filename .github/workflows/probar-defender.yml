@@ -15,9 +15,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Versión publicada a probar"
+        description: "Versión publicada a probar (latest: la última publicada)"
         required: false
-        default: "2.4.4"
+        default: "latest"
 
 permissions:
   contents: read
@@ -28,7 +28,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 40
     env:
-      PUBLISHED_VERSION: ${{ github.event.inputs.version || '2.4.4' }}
+      PUBLISHED_VERSION: ${{ github.event.inputs.version || 'latest' }}
 
     steps:
       - name: Descargar el codigo
@@ -160,7 +160,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 45
     env:
-      PUBLISHED_VERSION: ${{ github.event.inputs.version || '2.4.4' }}
+      PUBLISHED_VERSION: ${{ github.event.inputs.version || 'latest' }}
     steps:
       - name: Descargar el codigo
         uses: actions/checkout@v4

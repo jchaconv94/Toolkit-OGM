@@ -5,9 +5,9 @@ en una laptop (protección en tiempo real, vigilancia de comportamiento, protecc
 descargas) y se comprueba que de verdad detecta con el archivo de prueba EICAR. Luego:
 
 - `enable`: enciende Defender y lo comprueba;
-- `published <versión>`: baja el instalador publicado en la Release (marcado como descargado de
-  internet), lo hace analizar, lo instala, analiza lo instalado y deja el Toolkit abierto unos
-  minutos, como al encender la PC y abierto a mano;
+- `published <versión>`: baja el instalador publicado en la Release («latest»: el de la última
+  versión publicada), marcado como descargado de internet, lo hace analizar, lo instala, analiza lo
+  instalado y deja el Toolkit abierto unos minutos, como al encender la PC y abierto a mano;
 - `local <instalador> <versión>`: lo mismo con un instalador recién compilado en esta máquina (con
   el arranque de PyInstaller propio, build_bootloader.py), marcado como bajado de internet;
 - `report`: lista lo que Defender detectó desde que se encendió (sin el EICAR) y falla si hubo algo
@@ -51,6 +51,7 @@ APPDATA = Path(os.environ.get("APPDATA", ""))
 CONFIG = APPDATA / "ToolkitOGM" / "config.json"
 STARTUP_LOG = APPDATA / "ToolkitOGM" / "startup.log"
 RELEASES = "https://github.com/jchaconv94/ToolkitSISMED/releases/download"
+RELEASES_API = "https://api.github.com/repos/jchaconv94/ToolkitSISMED/releases"
 EICAR_NAME = "prueba-eicar.com"
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 LEGACY_TASK = "ToolkitOGM_Autorun"
@@ -294,6 +295,21 @@ def keep_open(process: subprocess.Popen, seconds: int, label: str):
     check(alive and EXE.exists(), f"el Toolkit sigue abierto y en su lugar tras {seconds} s {label}")
 
 
+def resolve(version: str) -> str:
+    """«latest» (o vacío) es la última versión publicada, la que reciben las PC; si no, la que se pidió."""
+    if version and version != "latest":
+        return version
+    response = requests.get(RELEASES_API, params={"per_page": 20}, timeout=60,
+                            headers={"Accept": "application/vnd.github+json"})
+    response.raise_for_status()
+    for release in response.json():
+        tag = release.get("tag_name", "")
+        if tag.startswith("desktop-v") and not release.get("draft") and not release.get("prerelease"):
+            print(f"Última versión publicada: {tag}")
+            return tag.removeprefix("desktop-v")
+    raise RuntimeError("No se encontró ninguna versión publicada del Toolkit")
+
+
 def download(version: str, defender_on: bool = True) -> Path:
     name = f"ToolkitOGM-Setup-{version}.exe"
     setup = WORK / name
@@ -524,13 +540,13 @@ def main() -> int:
         if step == "enable":
             enable()
         elif step == "published":
-            published(sys.argv[2])
+            published(resolve(sys.argv[2] if len(sys.argv) > 2 else ""))
         elif step == "local":
             local(sys.argv[2], sys.argv[3])
         elif step == "legacy":
             legacy(sys.argv[2])
         elif step == "upgrade":
-            upgrade(sys.argv[2])
+            upgrade(resolve(sys.argv[2] if len(sys.argv) > 2 else ""))
         elif step == "oldrun":
             oldrun()
         elif step == "report":
