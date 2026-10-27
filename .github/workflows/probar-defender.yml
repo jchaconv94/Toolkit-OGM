@@ -10,6 +10,8 @@ on:
     paths:
       - tests/e2e_windows_defender.py
       - .github/workflows/probar-defender.yml
+      - packaging/windows/build_bootloader.py
+      - packaging/windows/build_windows.ps1
   workflow_dispatch:
     inputs:
       version:
@@ -240,3 +242,76 @@ jobs:
         if: always()
         shell: pwsh
         run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py report --informe
+
+  lanzador:
+    # El mismo instalador compilado aquí con el arranque de PyInstaller de serie y con el propio
+    # (build_bootloader.py), los dos marcados como bajados de internet, analizados, instalados y
+    # abiertos con Defender encendido. El de serie solo informa: es la comparación. El propio no debe
+    # dar ninguna detección.
+    name: Instalador recien compilado (arranque ${{ matrix.arranque }}) con Defender encendido
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        arranque: [propio, de serie]
+
+    steps:
+      - name: Descargar el codigo
+        uses: actions/checkout@v4
+
+      - name: Preparar Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12.10"
+          cache: pip
+          cache-dependency-path: toolskit/requirements.txt
+
+      - name: Crear entorno de compilacion
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install --upgrade pip
+          .\.venv\Scripts\python.exe -m pip install -r toolskit\requirements.txt -c packaging\windows\build-constraints.txt
+
+      - name: Instalar Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Compilar el instalador (Defender todavia apagado)
+        shell: pwsh
+        run: |
+          $extra = @()
+          if ("${{ matrix.arranque }}" -eq "de serie") { $extra += "-StockBootloader" }
+          pwsh -NoProfile -ExecutionPolicy Bypass -File packaging/windows/build_windows.ps1 @extra
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path build\bootloader\bootloader.json) { Get-Content build\bootloader\bootloader.json }
+
+      - name: Encender Defender y comprobar que detecta
+        shell: pwsh
+        run: .\.venv\Scripts\python.exe tests\e2e_windows_defender.py enable
+
+      - name: Bajar, instalar y abrir el instalador compilado
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          .\.venv\Scripts\python.exe tests\e2e_windows_defender.py local "dist\installer\ToolkitOGM-Setup-$version.exe" $version
+
+      - name: Informe de Defender
+        if: always()
+        shell: pwsh
+        run: |
+          $extra = @()
+          if ("${{ matrix.arranque }}" -eq "de serie") { $extra += "--informe" }
+          .\.venv\Scripts\python.exe tests\e2e_windows_defender.py report @extra
+
+      - name: Guardar el informe
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: informe-defender-arranque-${{ matrix.arranque == 'propio' && 'propio' || 'serie' }}
+          path: |
+            build/e2e-defender/*.json
+            build/e2e-defender/*.log
+            build/bootloader/bootloader.json
+          if-no-files-found: ignore

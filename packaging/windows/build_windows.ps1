@@ -1,5 +1,8 @@
 param(
-    [string]$Version
+    [string]$Version,
+    # Solo para la prueba de Defender (probar-defender.yml): deja el arranque de PyInstaller de serie
+    # para comparar. Las publicaciones nunca lo usan.
+    [switch]$StockBootloader
 )
 
 $ErrorActionPreference = "Stop"
@@ -93,6 +96,16 @@ Assert-LastExitCode "Fallo la instalacion de dependencias de runtime"
 Write-Host "==> Instalando PyInstaller..." -ForegroundColor Cyan
 & $pythonExe -m pip install pyinstaller -c $constraintsFile
 Assert-LastExitCode "Fallo la instalacion de PyInstaller"
+
+# El arranque de PyInstaller que trae el paquete es el mismo en miles de programas (tambien en
+# programas maliciosos) y Defender lo usa de pista: se compila desde su codigo (build_bootloader.py).
+if ($StockBootloader) {
+    Write-Warning "Se deja el arranque de PyInstaller de serie (solo para comparar en la prueba de Defender)."
+} else {
+    Write-Host "==> Compilando el arranque de PyInstaller desde su codigo..." -ForegroundColor Cyan
+    & $pythonExe (Join-Path $scriptDir "build_bootloader.py")
+    Assert-LastExitCode "Fallo la compilacion del arranque de PyInstaller"
+}
 
 if (-not (Test-Path $iconPng)) {
     throw "No se encontro el icono base en $iconPng"

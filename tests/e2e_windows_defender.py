@@ -8,6 +8,8 @@ descargas) y se comprueba que de verdad detecta con el archivo de prueba EICAR. 
 - `published <versión>`: baja el instalador publicado en la Release (marcado como descargado de
   internet), lo hace analizar, lo instala, analiza lo instalado y deja el Toolkit abierto unos
   minutos, como al encender la PC y abierto a mano;
+- `local <instalador> <versión>`: lo mismo con un instalador recién compilado en esta máquina (con
+  el arranque de PyInstaller propio, build_bootloader.py), marcado como bajado de internet;
 - `report`: lista lo que Defender detectó desde que se encendió (sin el EICAR) y falla si hubo algo
   (`report --informe` solo informa).
 
@@ -31,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -304,15 +307,25 @@ def download(version: str, defender_on: bool = True) -> Path:
         declared = sums.text.split()[0].lower()
         check(hashlib.sha256(setup.read_bytes()).hexdigest() == declared,
               f"bajó el instalador publicado {version} con su huella correcta")
+    if defender_on:
+        as_downloaded(setup, version)
+    else:
+        mark_from_internet(setup, version)
+    return setup
+
+
+def mark_from_internet(setup: Path, version: str):
     # Como si lo hubieran bajado con el navegador: Windows lo marca como venido de internet.
     with open(f"{setup}:Zone.Identifier", "w", encoding="ascii") as ads:
-        ads.write(f"[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={RELEASES}/desktop-v{version}/{name}\r\n")
-    if defender_on:
-        time.sleep(5)
-        check(setup.exists(), f"el instalador {version} sigue ahí después de descargarlo (no lo puso en cuarentena)")
-        new_detections(f"al descargar el instalador {version}")
-        scan(setup, f"el instalador {version}")
-    return setup
+        ads.write(f"[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={RELEASES}/desktop-v{version}/{setup.name}\r\n")
+
+
+def as_downloaded(setup: Path, version: str):
+    mark_from_internet(setup, version)
+    time.sleep(5)
+    check(setup.exists(), f"el instalador {version} sigue ahí después de descargarlo (no lo puso en cuarentena)")
+    new_detections(f"al descargar el instalador {version}")
+    scan(setup, f"el instalador {version}")
 
 
 def install(setup: Path, version: str, *extra: str, log: str = "instalacion.log", defender_on: bool = True):
@@ -326,7 +339,22 @@ def install(setup: Path, version: str, *extra: str, log: str = "instalacion.log"
 
 def published(version: str):
     WORK.mkdir(parents=True, exist_ok=True)
-    install(download(version), version)
+    install_and_use(download(version), version)
+
+
+def local(installer: str, version: str):
+    """Un instalador compilado en esta misma máquina, copiado como si se hubiera bajado de internet."""
+    WORK.mkdir(parents=True, exist_ok=True)
+    source = Path(installer)
+    check(source.is_file(), f"está el instalador compilado {source.name}")
+    setup = WORK / source.name
+    shutil.copyfile(source, setup)
+    as_downloaded(setup, version)
+    install_and_use(setup, version)
+
+
+def install_and_use(setup: Path, version: str):
+    install(setup, version)
 
     # Como al encender la PC: escondido en la bandeja.
     data = config()
@@ -497,6 +525,8 @@ def main() -> int:
             enable()
         elif step == "published":
             published(sys.argv[2])
+        elif step == "local":
+            local(sys.argv[2], sys.argv[3])
         elif step == "legacy":
             legacy(sys.argv[2])
         elif step == "upgrade":
