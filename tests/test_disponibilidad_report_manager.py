@@ -14,6 +14,19 @@ class DisponibilidadReportManagerTests(unittest.TestCase):
     def setUp(self):
         self.manager = DisponibilidadReportManager("C:\\SISMED")
 
+    def test_codigo_de_ipress_abarca_sus_farmacias(self):
+        lista = {"06502"}
+        for codigo in ("06502", "06502F01", "06502F06", "06502f12"):
+            self.assertTrue(DisponibilidadReportManager._en_lista(codigo, lista), codigo)
+        self.assertFalse(DisponibilidadReportManager._en_lista("06503F01", lista))
+        self.assertFalse(DisponibilidadReportManager._en_lista("065021", lista))
+
+    def test_farmacia_con_codigo_completo_quita_solo_esa(self):
+        lista = {"06502F02"}
+        self.assertTrue(DisponibilidadReportManager._en_lista("06502F02", lista))
+        self.assertFalse(DisponibilidadReportManager._en_lista("06502F01", lista))
+        self.assertFalse(DisponibilidadReportManager._en_lista("06502", lista))
+
     def test_reingreso_is_not_counted_as_consumption(self):
         record = {
             "VENTA": 1,
