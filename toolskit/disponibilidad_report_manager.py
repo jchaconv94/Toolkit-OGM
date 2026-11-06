@@ -116,6 +116,18 @@ class DisponibilidadReportManager:
         """
         return re.sub(r'F\d+$', '', codigo.strip(), flags=re.IGNORECASE)
 
+    @classmethod
+    def _en_lista(cls, codigo: str, lista: set) -> bool:
+        """
+        ¿El código está en la lista de excluir o incluir? Un código de IPRESS (06502) abarca a
+        todas sus farmacias (06502F01, 06502F02…) en cualquier modo. Antes, en «Por Red» y «Por
+        Farmacias», escribir 06502 no quitaba nada: el TFORMDET trae cada farmacia con su
+        código completo y la comparación era exacta (caso del Hospital Bellavista, 2026-11-06).
+        Una farmacia escrita con su código completo (06502F01) sigue quitando solo esa farmacia.
+        """
+        c = (codigo or "").strip().upper()
+        return c in lista or cls._strip_farmacia(c) in lista
+
     @staticmethod
     def _build_periodos(meses: int, mes_ref: str = None) -> list[str]:
         """
@@ -332,7 +344,8 @@ class DisponibilidadReportManager:
           modo            → 'farmacias'  = por código completo de farmacia
                             'ipress'     = consolida quitando Fxx del código
                             'red'        = consolida por RED (sin EESS)
-          excluir_codigos → lista de códigos_pre para filtrar (exacto, ej: ['06502', '06502F01'])
+          excluir_codigos → lista de códigos_pre para filtrar: 06502 abarca todas sus farmacias,
+                            06502F01 solo esa farmacia
           mes_stock_fin   → mes de STOCK_FIN y PRECIO (ej: '202602'); None = último del rango
           filtro_modo     → 'excluir' omite la lista; 'incluir' solo procesa la lista
         """
@@ -424,7 +437,7 @@ class DisponibilidadReportManager:
 
                 # Filtrar por código normalizado y código original.
                 if filtro_codigos:
-                    esta_en_lista = cod_pre.upper() in filtro_codigos or cod_pre_orig.upper() in filtro_codigos
+                    esta_en_lista = self._en_lista(cod_pre_orig, filtro_codigos)
                     if filtro_modo == "excluir" and esta_en_lista:
                         continue
                     if filtro_modo == "incluir" and not esta_en_lista:
